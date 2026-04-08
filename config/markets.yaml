@@ -1,0 +1,18 @@
+# NachoMarket - Mercados target y parametros
+min_daily_volume_usd: 10000  # No operar en mercados con menos volumen
+max_markets_simultaneous: 5
+market_refresh_interval_sec: 300  # Re-escanear mercados cada 5 min
+
+# Filtros de mercado
+filters:
+  min_liquidity_usd: 5000
+  max_spread_pct: 5.0
+  min_time_to_resolution_hours: 24  # Evitar mercados que cierran pronto
+  excluded_categories: []  # Categorias a excluir
+
+# Preferencias de mercado (ordenadas por prioridad)
+preferred_categories:
+  - crypto
+  - politics
+  - sports
+  - entertainment

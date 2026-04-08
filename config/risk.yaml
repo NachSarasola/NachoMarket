@@ -1,0 +1,26 @@
+# NachoMarket - Limites de riesgo
+position_sizing:
+  method: fractional_kelly  # fractional_kelly | fixed
+  kelly_fraction: 0.25  # Usar 25% del Kelly completo (conservador)
+  max_position_usdc: 20.0  # 5% de $400
+  min_position_usdc: 1.0
+
+inventory_management:
+  max_inventory_per_market_usdc: 20.0
+  rebalance_threshold_pct: 30.0  # Rebalancear si inventario se desvia >30%
+  merge_threshold: 5  # Merge posiciones si hay mas de 5 en un mercado
+
+circuit_breakers:
+  max_daily_loss_usdc: 20.0  # Parar si pierdes $20 en un dia
+  max_consecutive_losses: 5  # Parar despues de 5 perdidas seguidas
+  max_single_trade_loss_usdc: 10.0  # Alerta si un trade pierde >$10
+  cooldown_after_break_min: 60  # Esperar 1 hora despues de circuit break
+  max_open_orders: 20  # Maximo de ordenes abiertas simultaneas
+
+market_making:
+  default_spread_bps: 200  # 2% spread por defecto
+  min_spread_bps: 100  # Nunca operar con <1% spread
+  order_size_usdc: 5.0  # Tamano de cada orden
+  num_levels: 3  # Ordenes a cada lado del book
+  level_spacing_bps: 50  # Espacio entre niveles
+  use_post_only: true  # SIEMPRE Post Only para maker fees

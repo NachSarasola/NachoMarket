@@ -1,0 +1,22 @@
+# NachoMarket - Configuracion general
+mode: paper  # paper | live
+capital_usdc: 400.0
+max_risk_per_market_pct: 5.0  # Nunca mas del 5%
+max_daily_drawdown_usdc: 20.0  # 5% de $400
+
+# Loop principal
+main_loop_interval_sec: 10
+health_check_interval_sec: 60
+
+# Self-review con Claude Haiku
+review_interval_hours: 8
+review_model: claude-haiku-4-5-20251001
+
+# Logging
+log_level: INFO
+log_file: data/nachomarket.log
+
+# Telegram
+telegram_enabled: true
+telegram_alert_on_trade: true
+telegram_alert_on_error: true

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(python -m pytest*)",
+      "Bash(python src/main.py --paper*)",
+      "Bash(cat data/trades.jsonl*)"
+    ],
+    "deny": [
+      "Bash(rm -rf*)",
+      "Bash(*PRIVATE_KEY*)",
+      "Bash(*API_SECRET*)"
+    ]
+  },
+  "hooks": {
+    "pre-commit": {
+      "command": "grep -rn 'PRIVATE_KEY\\|API_SECRET\\|API_KEY=' --include='*.py' src/ && echo 'ERROR: Possible secret in code!' && exit 1 || exit 0"
+    }
+  }
+}
