@@ -16,3 +16,11 @@ preferred_categories:
   - politics
   - sports
   - entertainment
+
+# Tokens a escuchar por WebSocket (se actualiza automaticamente al escanear mercados)
+# Formato: token_id (ID del token binario) + condition_id (ID del mercado)
+watch_tokens: []
+# Ejemplo:
+# watch_tokens:
+#   - token_id: "71321045679252212594626385532587992013..."
+#     condition_id: "0xabc123..."
