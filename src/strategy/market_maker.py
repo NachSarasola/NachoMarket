@@ -11,18 +11,21 @@ class MarketMakerStrategy(BaseStrategy):
 
     def __init__(self, client, circuit_breaker, config: dict[str, Any]) -> None:
         super().__init__("market_maker", client, circuit_breaker, config)
-        mm_config = config.get("market_making", {})
-        self._spread_bps = mm_config.get("default_spread_bps", 200)
-        self._min_spread_bps = mm_config.get("min_spread_bps", 100)
-        self._order_size = mm_config.get("order_size_usdc", 5.0)
-        self._num_levels = mm_config.get("num_levels", 3)
-        self._level_spacing_bps = mm_config.get("level_spacing_bps", 50)
+        # Soporta tanto settings.yaml (market_maker.*) como risk.yaml (market_making.*)
+        mm = config.get("market_maker", config.get("market_making", {}))
+        self._spread_offset = mm.get("spread_offset", 0.02)
+        self._min_spread = mm.get("min_spread", 0.01)
+        self._order_size = mm.get("order_size", mm.get("order_size_usdc", 5.0))
+        self._refresh_seconds = mm.get("refresh_seconds", 45)
+        self._max_inventory = mm.get("max_inventory_per_market", 50.0)
+        self._num_levels = mm.get("num_levels", 3)
+        self._level_spacing = mm.get("level_spacing", self._spread_offset / self._num_levels)
 
     def should_enter(self, market: dict[str, Any]) -> bool:
-        """Entra si el spread es suficiente para ser rentable."""
-        spread = market.get("spread_bps", 0)
-        if spread < self._min_spread_bps:
-            logger.debug(f"Spread {spread} bps too tight, skipping")
+        """Entra si el spread del mercado es suficiente para ser rentable."""
+        spread = market.get("spread", market.get("spread_bps", 0) / 100)
+        if spread < self._min_spread:
+            logger.debug(f"Spread {spread:.3f} too tight (min {self._min_spread}), skipping")
             return False
         return True
 
@@ -35,10 +38,9 @@ class MarketMakerStrategy(BaseStrategy):
             return []
 
         orders: list[dict[str, Any]] = []
-        half_spread = self._spread_bps / 20000  # bps to decimal, divided by 2
 
         for level in range(self._num_levels):
-            offset = half_spread + (level * self._level_spacing_bps / 10000)
+            offset = self._spread_offset + (level * self._level_spacing)
 
             bid_price = round(mid_price - offset, 4)
             ask_price = round(mid_price + offset, 4)

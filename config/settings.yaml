@@ -1,16 +1,37 @@
 # NachoMarket - Configuracion general
 mode: paper  # paper | live
-capital_usdc: 400.0
-max_risk_per_market_pct: 5.0  # Nunca mas del 5%
-max_daily_drawdown_usdc: 20.0  # 5% de $400
 
-# Loop principal
-main_loop_interval_sec: 10
-health_check_interval_sec: 60
+# Capital y riesgo
+capital_total: 400           # USDC total disponible
+max_risk_per_market: 0.05    # 5% maximo por mercado
+max_daily_drawdown: 20       # $20 maximo de perdida diaria
+kelly_fraction: 0.25         # Quarter Kelly (conservador)
+min_market_volume: 10000     # Minimo volumen diario en USD
 
 # Self-review con Claude Haiku
 review_interval_hours: 8
 review_model: claude-haiku-4-5-20251001
+
+# Estrategias activas
+strategies_enabled:
+  - market_maker
+  - multi_arb
+
+# Market Making
+market_maker:
+  spread_offset: 0.02          # 2 centavos de offset al mid
+  order_size: 20               # $20 por lado
+  refresh_seconds: 45          # Refrescar ordenes cada 45s
+  max_inventory_per_market: 50 # Maximo $50 de inventario por mercado
+
+# Arbitraje Multi-Outcome
+multi_arb:
+  min_edge: 0.03    # 3% minimo para actuar
+  max_position: 30  # Maximo $30 por posicion de arb
+
+# Loop principal
+main_loop_interval_sec: 10
+health_check_interval_sec: 60
 
 # Logging
 log_level: INFO

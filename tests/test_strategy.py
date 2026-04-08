@@ -45,15 +45,15 @@ def risk_config() -> dict:
 class TestMarketMaker:
     def test_should_enter_sufficient_spread(self, client, circuit_breaker, risk_config) -> None:
         strategy = MarketMakerStrategy(client, circuit_breaker, risk_config)
-        assert strategy.should_enter({"spread_bps": 200}) is True
+        assert strategy.should_enter({"spread": 0.04}) is True  # 4% > min 1%
 
     def test_should_not_enter_tight_spread(self, client, circuit_breaker, risk_config) -> None:
         strategy = MarketMakerStrategy(client, circuit_breaker, risk_config)
-        assert strategy.should_enter({"spread_bps": 50}) is False
+        assert strategy.should_enter({"spread": 0.005}) is False  # 0.5% < min 1%
 
     def test_evaluate_generates_orders(self, client, circuit_breaker, risk_config) -> None:
         strategy = MarketMakerStrategy(client, circuit_breaker, risk_config)
-        market = {"token_id": "test_123", "mid_price": 0.5, "spread_bps": 200}
+        market = {"token_id": "test_123", "mid_price": 0.5, "spread": 0.04}
         orders = strategy.evaluate(market)
         assert len(orders) > 0
         assert all(o["post_only"] is True for o in orders)

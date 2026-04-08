@@ -60,12 +60,14 @@ class NachoMarketBot:
         )
         self._telegram = TelegramBot(bot_controller=self)
 
-        # Estrategias
-        self._strategies = [
-            MarketMakerStrategy(self._client, self._circuit_breaker, self._risk_config),
-            MultiArbStrategy(self._client, self._circuit_breaker, self._risk_config),
-            DirectionalStrategy(self._client, self._circuit_breaker, self._risk_config),
-        ]
+        # Estrategias — solo las habilitadas en settings
+        enabled = self._settings.get("strategies_enabled", ["market_maker", "multi_arb"])
+        all_strategies = {
+            "market_maker": MarketMakerStrategy(self._client, self._circuit_breaker, self._settings),
+            "multi_arb": MultiArbStrategy(self._client, self._circuit_breaker, self._settings),
+            "directional": DirectionalStrategy(self._client, self._circuit_breaker, self._settings),
+        }
+        self._strategies = [all_strategies[s] for s in enabled if s in all_strategies]
 
         # Estado
         self._state = "running"  # running | paused | stopped

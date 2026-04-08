@@ -16,8 +16,13 @@ class MultiArbStrategy(BaseStrategy):
 
     def __init__(self, client, circuit_breaker, config: dict[str, Any]) -> None:
         super().__init__("multi_arb", client, circuit_breaker, config)
-        self._min_edge_pct = config.get("min_arb_edge_pct", 2.0)
-        self._order_size = config.get("arb_order_size_usdc", 5.0)
+        # Soporta tanto settings.yaml (multi_arb.*) como config directo
+        arb = config.get("multi_arb", {})
+        min_edge_raw = arb.get("min_edge", config.get("min_arb_edge_pct", 0.02))
+        # Normalizar: si viene como decimal (0.03) convertir a porcentaje (3.0)
+        self._min_edge_pct = min_edge_raw * 100 if min_edge_raw < 1 else min_edge_raw
+        self._max_position = arb.get("max_position", config.get("arb_order_size_usdc", 5.0))
+        self._order_size = self._max_position / 2  # Dividir en 2 ordenes
 
     def should_enter(self, market: dict[str, Any]) -> bool:
         """Entra si hay una oportunidad de arbitraje."""
