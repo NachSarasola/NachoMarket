@@ -63,9 +63,9 @@ class NachoMarketBot:
         # Estrategias — solo las habilitadas en settings
         enabled = self._settings.get("strategies_enabled", ["market_maker", "multi_arb"])
         all_strategies = {
-            "market_maker": MarketMakerStrategy(self._client, self._circuit_breaker, self._settings),
-            "multi_arb": MultiArbStrategy(self._client, self._circuit_breaker, self._settings),
-            "directional": DirectionalStrategy(self._client, self._circuit_breaker, self._settings),
+            "market_maker": MarketMakerStrategy(self._client, self._settings),
+            "multi_arb": MultiArbStrategy(self._client, self._settings),
+            "directional": DirectionalStrategy(self._client, self._settings),
         }
         self._strategies = [all_strategies[s] for s in enabled if s in all_strategies]
 
@@ -118,18 +118,21 @@ class NachoMarketBot:
         for market in markets:
             for strategy in self._strategies:
                 try:
-                    results = strategy.execute(market)
-                    for trade in results:
+                    trades = strategy.run(market)
+                    for trade in trades:
                         self._inventory.add_position(
-                            token_id=trade.get("token_id", ""),
-                            side=trade.get("side", ""),
-                            price=trade.get("price", 0),
-                            size=trade.get("size", 0),
+                            token_id=trade.token_id,
+                            side=trade.side,
+                            price=trade.price,
+                            size=trade.size,
                         )
+                        if trade.status == "error":
+                            self._circuit_breaker.record_error()
                 except Exception:
                     self._logger.exception(
                         f"Error executing {strategy.name} on market"
                     )
+                    self._circuit_breaker.record_error()
 
     def _run_review(self) -> None:
         """Ejecuta self-review con Claude Haiku."""

@@ -1,83 +1,230 @@
+"""
+Clase abstracta base para todas las estrategias de trading.
+
+Define el contrato Signal → evaluate → execute → Trade → log_trade
+que cada estrategia concreta debe implementar.
+"""
+
+import json
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from src.polymarket.client import PolymarketClient
-from src.risk.circuit_breaker import CircuitBreaker
 
-logger = logging.getLogger("nachomarket.strategy")
+TRADES_FILE = Path("data/trades.jsonl")
+
+
+@dataclass
+class Signal:
+    """Senal de trading generada por evaluate().
+
+    Representa una intencion de operar, antes de colocar la orden real.
+    """
+
+    market_id: str        # condition_id del mercado
+    token_id: str         # token_id del outcome especifico
+    side: str             # "BUY" | "SELL"
+    price: float          # Precio limite deseado
+    size: float           # Tamano en USDC
+    confidence: float     # 0.0 - 1.0 (que tan segura es la senal)
+    strategy_name: str    # Nombre de la estrategia que la genero
+
+
+@dataclass
+class Trade:
+    """Resultado de una orden ejecutada.
+
+    Se loguea a data/trades.jsonl despues de cada ejecucion.
+    """
+
+    timestamp: str            # ISO 8601 UTC
+    market_id: str            # condition_id
+    token_id: str             # token_id
+    side: str                 # "BUY" | "SELL"
+    price: float              # Precio al que se coloco
+    size: float               # Tamano en USDC
+    order_id: str             # ID de la orden retornado por la API
+    status: str               # "submitted" | "filled_paper" | "error" | ...
+    strategy_name: str        # Estrategia que origino el trade
+    fee_paid: float = 0.0     # Fee pagado en USDC (0 si post_only maker)
 
 
 class BaseStrategy(ABC):
-    """Clase abstracta base para todas las estrategias de trading."""
+    """Clase abstracta base para todas las estrategias de trading.
+
+    Flujo:
+        1. evaluate(market_data) → genera Signal's (intenciones)
+        2. execute(signals) → convierte Signal's en Trade's reales
+        3. log_trade(trade) → persiste cada trade a trades.jsonl
+
+    Las subclases DEBEN implementar evaluate() y execute().
+    Opcionalmente pueden override should_act() para filtrado rapido.
+    """
 
     def __init__(
         self,
         name: str,
         client: PolymarketClient,
-        circuit_breaker: CircuitBreaker,
         config: dict[str, Any],
+        logger: logging.Logger | None = None,
     ) -> None:
         self.name = name
         self._client = client
-        self._circuit_breaker = circuit_breaker
         self._config = config
+        self._logger = logger or logging.getLogger(f"nachomarket.strategy.{name}")
         self._active = True
-        logger.info(f"Strategy '{name}' initialized")
+
+        # Asegurar que el directorio de trades existe
+        TRADES_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        self._logger.info(f"Estrategia '{name}' inicializada")
+
+    # ------------------------------------------------------------------
+    # Metodos abstractos — cada estrategia los implementa
+    # ------------------------------------------------------------------
 
     @abstractmethod
-    def evaluate(self, market: dict[str, Any]) -> list[dict[str, Any]]:
-        """Evalua un mercado y retorna lista de ordenes a colocar.
+    def evaluate(self, market_data: dict[str, Any]) -> list[Signal]:
+        """Analiza datos de mercado y genera senales de trading.
+
+        Args:
+            market_data: Dict con datos del mercado (tokens, precios, spread, etc.)
 
         Returns:
-            Lista de dicts con keys: token_id, side, price, size
+            Lista de Signal con las operaciones sugeridas.
         """
         ...
 
     @abstractmethod
-    def should_enter(self, market: dict[str, Any]) -> bool:
-        """Determina si se debe entrar en un mercado."""
+    def execute(self, signals: list[Signal]) -> list[Trade]:
+        """Convierte senales en ordenes reales via el cliente.
+
+        Cada estrategia decide como ejecutar: post_only, GTC, etc.
+        DEBE llamar self.log_trade(trade) por cada trade ejecutado.
+
+        Args:
+            signals: Lista de Signal generadas por evaluate().
+
+        Returns:
+            Lista de Trade con los resultados de ejecucion.
+        """
         ...
 
-    def execute(self, market: dict[str, Any]) -> list[dict[str, Any]]:
-        """Ejecuta la estrategia en un mercado con checks de seguridad."""
+    # ------------------------------------------------------------------
+    # Metodos concretos — compartidos por todas las estrategias
+    # ------------------------------------------------------------------
+
+    def should_act(self, market_data: dict[str, Any]) -> bool:
+        """Filtro rapido antes de evaluate(). Override en subclases.
+
+        Returns:
+            True si la estrategia debe analizar este mercado.
+        """
+        return True
+
+    def run(self, market_data: dict[str, Any]) -> list[Trade]:
+        """Pipeline completo: filtrar → evaluar → ejecutar → loguear.
+
+        Este es el metodo que llama main.py en cada ciclo de trading.
+
+        Returns:
+            Lista de trades ejecutados (vacia si la estrategia esta pausada,
+            no hay senales, o should_act() retorna False).
+        """
         if not self._active:
-            logger.info(f"Strategy '{self.name}' is paused")
+            self._logger.debug(f"Estrategia '{self.name}' pausada, saltando")
             return []
 
-        if self._circuit_breaker.is_triggered():
-            logger.warning(f"Circuit breaker active, skipping {self.name}")
+        if not self.should_act(market_data):
             return []
 
-        if not self.should_enter(market):
+        signals = self.evaluate(market_data)
+        if not signals:
             return []
 
-        orders = self.evaluate(market)
-        results = []
+        self._logger.info(f"'{self.name}': {len(signals)} senales generadas")
+        trades = self.execute(signals)
 
-        for order in orders:
-            try:
-                result = self._client.place_order(
-                    token_id=order["token_id"],
-                    side=order["side"],
-                    price=order["price"],
-                    size=order["size"],
-                    post_only=order.get("post_only", True),
-                )
-                if result:
-                    results.append(result)
-            except Exception:
-                logger.exception(f"Error placing order in {self.name}")
-                self._circuit_breaker.record_error()
+        return trades
 
-        return results
+    def log_trade(self, trade: Trade) -> None:
+        """Persiste un trade a data/trades.jsonl (append-only).
+
+        SIEMPRE loguear cada decision de trading (regla INQUEBRANTABLE).
+        """
+        record = asdict(trade)
+        try:
+            with open(TRADES_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            self._logger.exception("No se pudo escribir en trades.jsonl")
+
+        self._logger.info(
+            f"Trade: {trade.side} {trade.size} USDC @ {trade.price} "
+            f"| {trade.strategy_name} | status={trade.status} "
+            f"| order_id={trade.order_id}"
+        )
 
     def pause(self) -> None:
-        """Pausa la estrategia."""
+        """Pausa la estrategia instantaneamente."""
         self._active = False
-        logger.info(f"Strategy '{self.name}' paused")
+        self._logger.info(f"Estrategia '{self.name}' PAUSADA")
 
     def resume(self) -> None:
         """Reanuda la estrategia."""
         self._active = True
-        logger.info(f"Strategy '{self.name}' resumed")
+        self._logger.info(f"Estrategia '{self.name}' REANUDADA")
+
+    @property
+    def is_active(self) -> bool:
+        """Indica si la estrategia esta activa."""
+        return self._active
+
+    # ------------------------------------------------------------------
+    # Helpers para subclases
+    # ------------------------------------------------------------------
+
+    def _make_signal(
+        self,
+        market_id: str,
+        token_id: str,
+        side: str,
+        price: float,
+        size: float,
+        confidence: float = 0.5,
+    ) -> Signal:
+        """Factory de Signal con strategy_name pre-rellenado."""
+        return Signal(
+            market_id=market_id,
+            token_id=token_id,
+            side=side,
+            price=price,
+            size=size,
+            confidence=confidence,
+            strategy_name=self.name,
+        )
+
+    def _make_trade(
+        self,
+        signal: Signal,
+        order_id: str,
+        status: str,
+        fee_paid: float = 0.0,
+    ) -> Trade:
+        """Factory de Trade a partir de un Signal y resultado de ejecucion."""
+        return Trade(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            market_id=signal.market_id,
+            token_id=signal.token_id,
+            side=signal.side,
+            price=signal.price,
+            size=signal.size,
+            order_id=order_id,
+            status=status,
+            strategy_name=signal.strategy_name,
+            fee_paid=fee_paid,
+        )
