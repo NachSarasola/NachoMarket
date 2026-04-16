@@ -55,3 +55,88 @@
 2026-04-15 15:31:39 | nachomarket.strategy.multi_arb | INFO | Estrategia 'multi_arb' inicializada
 2026-04-15 15:31:39 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'multi_arb']
 2026-04-15 15:31:39 | nachomarket.risk.profitability | INFO | Profitability: 1 mercados cargados
+2026-04-16 20:34:00 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-16 20:34:00 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER
+2026-04-16 20:34:00 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-16 20:34:00 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-16 20:34:00 | nachomarket | INFO | Conexión OK
+2026-04-16 20:34:00 | nachomarket.telegram | INFO | Telegram bot thread started
+2026-04-16 20:34:00 | nachomarket.strategy.market_maker | INFO | Estrategia 'market_maker' inicializada
+2026-04-16 20:34:00 | nachomarket.strategy.multi_arb | INFO | Estrategia 'multi_arb' inicializada
+2026-04-16 20:34:00 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'multi_arb']
+2026-04-16 20:34:00 | nachomarket.risk.profitability | INFO | Profitability: 1 mercados cargados
+2026-04-16 20:34:00 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-16 20:34:00 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-16 20:34:00 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-16 20:34:00 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-16 20:34:00 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-16 20:34:01 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-16 20:34:03 | nachomarket.telegram | INFO | Telegram bot polling started
+2026-04-16 20:34:43 | nachomarket | INFO | NachoMarket iniciando en modo LIVE
+2026-04-16 20:34:43 | nachomarket.client | INFO | PolymarketClient inicializado en modo LIVE (signature_type=1, address=0x7B2833091e32343565D6E3Fb99A09e2DF60471a1)
+2026-04-16 20:34:43 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-16 20:34:44 | nachomarket.resilience | WARNING | Retrying src.polymarket.client.PolymarketClient.test_connection in 1 seconds as it raised PolyApiException: PolyApiException[status_code=401, error_message={'error': 'Unauthorized/Invalid api key'}].
+2026-04-16 20:34:46 | nachomarket.resilience | WARNING | Retrying src.polymarket.client.PolymarketClient.test_connection in 2 seconds as it raised PolyApiException: PolyApiException[status_code=401, error_message={'error': 'Unauthorized/Invalid api key'}].
+2026-04-16 20:34:48 | nachomarket.client | WARNING | [test_connection] ERROR → PolyApiException: PolyApiException[status_code=401, error_message={'error': 'Unauthorized/Invalid api key'}]
+2026-04-16 20:34:48 | nachomarket | ERROR | Fatal startup error
+Traceback (most recent call last):
+  File "C:\Users\Usuario\Desktop\NachoMarket\src\main.py", line 988, in main
+    bot = NachoMarketBot(paper_mode=paper_mode, review_only=args.review_only)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\Desktop\NachoMarket\src\main.py", line 106, in __init__
+    self._client.test_connection()  # lanza excepción si falla
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\Desktop\NachoMarket\src\polymarket\client.py", line 42, in wrapper
+    result = fn(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\site-packages\tenacity\__init__.py", line 331, in wrapped_f
+    return copy(f, *args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\site-packages\tenacity\__init__.py", line 470, in __call__
+    do = self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\site-packages\tenacity\__init__.py", line 371, in iter
+    result = action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\site-packages\tenacity\__init__.py", line 473, in __call__
+    result = fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\Desktop\NachoMarket\src\polymarket\client.py", line 150, in test_connection
+    self._client.get_api_keys()
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\site-packages\py_clob_client\client.py", line 278, in get_api_keys
+    return get("{}{}".format(self.host, GET_API_KEYS), headers=headers)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\site-packages\py_clob_client\http_helpers\helpers.py", line 73, in get
+    return request(endpoint, GET, headers, data)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Local\Programs\Python\Python311\Lib\site-packages\py_clob_client\http_helpers\helpers.py", line 57, in request
+    raise PolyApiException(resp)
+py_clob_client.exceptions.PolyApiException: PolyApiException[status_code=401, error_message={'error': 'Unauthorized/Invalid api key'}]
+2026-04-16 20:37:15 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-16 20:37:15 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER
+2026-04-16 20:37:15 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-16 20:37:15 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-16 20:37:15 | nachomarket | INFO | Conexión OK
+2026-04-16 20:37:15 | nachomarket.telegram | INFO | Telegram bot thread started
+2026-04-16 20:37:15 | nachomarket.strategy.market_maker | INFO | Estrategia 'market_maker' inicializada
+2026-04-16 20:37:15 | nachomarket.strategy.multi_arb | INFO | Estrategia 'multi_arb' inicializada
+2026-04-16 20:37:15 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'multi_arb']
+2026-04-16 20:37:15 | nachomarket.risk.profitability | INFO | Profitability: 1 mercados cargados
+2026-04-16 20:37:15 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-16 20:37:15 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-16 20:37:15 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-16 20:37:15 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-16 20:37:15 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-16 20:37:16 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-16 20:37:17 | nachomarket.telegram | INFO | Telegram bot polling started

@@ -1,5 +1,5 @@
 # NachoMarket - Configuracion general
-mode: live  # paper | live
+mode: paper  # paper | live
 
 # Capital y riesgo
 capital_total: 400           # USDC total disponible

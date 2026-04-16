@@ -950,8 +950,26 @@ def main() -> None:
     """Entry point principal."""
     args = _parse_args()
 
-    # LIVE debe ser explícito — paper es el default seguro
-    paper_mode = not args.live
+    # Determinar modo: línea de comandos > archivo config > default paper
+    if args.live:
+        paper_mode = False
+    elif args.paper:
+        paper_mode = True
+    else:
+        # Leer de settings.yaml
+        try:
+            from pathlib import Path
+            import yaml
+            settings_path = Path("config/settings.yaml")
+            if settings_path.exists():
+                with open(settings_path) as f:
+                    config = yaml.safe_load(f) or {}
+                    mode = config.get("mode", "paper").lower()
+                    paper_mode = (mode == "paper")
+            else:
+                paper_mode = True
+        except Exception:
+            paper_mode = True  # Default seguro
 
     if args.live:
         print(
