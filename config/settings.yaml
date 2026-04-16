@@ -1,12 +1,12 @@
 # NachoMarket - Configuracion general
-mode: paper  # paper | live
+mode: live  # paper | live
 
 # Capital y riesgo
 capital_total: 400           # USDC total disponible
 max_risk_per_market: 0.05    # 5% maximo por mercado
 max_daily_drawdown: 20       # $20 maximo de perdida diaria
 kelly_fraction: 0.25         # Quarter Kelly (conservador)
-min_market_volume: 10000     # Minimo volumen diario en USD
+min_market_volume: 1000      # Bajado: mercados chicos con rewards son mas rentables
 
 # Self-review con Claude Haiku
 review_interval_hours: 8
@@ -20,9 +20,12 @@ strategies_enabled:
 # Market Making
 market_maker:
   spread_offset: 0.02          # 2 centavos de offset al mid
-  order_size: 20               # $20 por lado
+  order_size: 15               # $15 por lado (mas diversificacion en mercados chicos)
   refresh_seconds: 45          # Refrescar ordenes cada 45s
-  max_inventory_per_market: 50 # Maximo $50 de inventario por mercado
+  max_inventory_per_market: 30 # Maximo $30 de inventario por mercado (tighter)
+  repositioning_enabled: true  # Despues de un fill, reposicionar en entry+1c
+  reposition_offset: 0.01      # 1 centavo de offset para reposicionamiento
+  reposition_timeout_min: 90   # Cancelar reposicion si no se ejecuta en 90min
 
 # Arbitraje Multi-Outcome
 multi_arb:

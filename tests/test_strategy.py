@@ -1,6 +1,7 @@
 """Tests para las estrategias de trading con la nueva API Signal/Trade."""
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -157,7 +158,7 @@ class TestBaseStrategy:
     def test_run_skips_when_should_act_false(self, client, mm_config) -> None:
         strategy = MarketMakerStrategy(client, mm_config)
         # Spread demasiado tight → should_act retorna False
-        trades = strategy.run({"spread": 0.001, "mid_price": 0.5, "token_id": "t1"})
+        trades = strategy.run({"spread": 0.001, "mid_price": 0.5, "token_id": "t1", "condition_id": "c1"})
         assert trades == []
 
     def test_run_full_pipeline(self, client, mm_config, tmp_path) -> None:
@@ -229,7 +230,6 @@ class TestMarketMaker:
             "mid_price": 0.5,
             "condition_id": "c1",
         })
-        # Los primeros signals (nivel 0) deben tener mayor confidence
         buy_signals = [s for s in signals if s.side == "BUY"]
         if len(buy_signals) >= 2:
             assert buy_signals[0].confidence >= buy_signals[-1].confidence
@@ -248,6 +248,215 @@ class TestMarketMaker:
         finally:
             base_mod.TRADES_FILE = original
 
+    def test_execute_cancels_previous_orders(self, client, mm_config, tmp_path) -> None:
+        """execute() debe cancelar ordenes previas antes de colocar nuevas."""
+        import src.strategy.base as base_mod
+        original = base_mod.TRADES_FILE
+        base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
+        try:
+            strategy = MarketMakerStrategy(client, mm_config)
+            signals = [
+                strategy._make_signal("cond_1", "t1", "BUY", 0.45, 5.0, 0.9),
+                strategy._make_signal("cond_1", "t1", "SELL", 0.55, 5.0, 0.9),
+            ]
+            trades = strategy.execute(signals)
+            # Ambas ordenes deben ejecutarse exitosamente
+            assert len(trades) == 2
+            assert all(t.status == "filled_paper" for t in trades)
+        finally:
+            base_mod.TRADES_FILE = original
+
+    def test_evaluate_respects_spread_vs_tick_size(self, client, mm_config) -> None:
+        """Si spread <= 2 * tick_size, no hay oportunidad."""
+        strategy = MarketMakerStrategy(client, mm_config)
+        # Paper mode: tick_size = 0.01, so 2*tick = 0.02
+        # spread = 0.015 < 0.02 → no signals
+        signals = strategy.evaluate({
+            "token_id": "tok_1",
+            "mid_price": 0.5,
+            "condition_id": "c1",
+            "spread": 0.015,
+        })
+        assert signals == []
+
+    def test_evaluate_with_sufficient_spread(self, client, mm_config) -> None:
+        """Si spread > 2 * tick_size, genera signals."""
+        strategy = MarketMakerStrategy(client, mm_config)
+        # Paper mode: tick_size = 0.01, so 2*tick = 0.02
+        # spread = 0.05 > 0.02 → signals
+        signals = strategy.evaluate({
+            "token_id": "tok_1",
+            "mid_price": 0.5,
+            "condition_id": "c1",
+            "spread": 0.05,
+        })
+        assert len(signals) > 0
+
+    def test_inventory_skew_adjusts_quotes(self, client, mm_config) -> None:
+        """Con inventario sesgado, los precios se ajustan."""
+        strategy = MarketMakerStrategy(client, mm_config)
+
+        # Sin inventario: evaluamos para tener baseline
+        signals_neutral = strategy.evaluate({
+            "token_id": "tok_1",
+            "mid_price": 0.5,
+            "condition_id": "c1",
+            "spread": 0.05,
+        })
+
+        # Simular inventario long grande
+        strategy._inventory["tok_1"] = 30.0  # 60% del max
+        signals_long = strategy.evaluate({
+            "token_id": "tok_1",
+            "mid_price": 0.5,
+            "condition_id": "c1",
+            "spread": 0.05,
+        })
+
+        # Con inventario long, el bid debe estar mas alejado
+        neutral_bids = [s for s in signals_neutral if s.side == "BUY"]
+        long_bids = [s for s in signals_long if s.side == "BUY"]
+
+        if neutral_bids and long_bids:
+            assert long_bids[0].price <= neutral_bids[0].price
+
+    def test_inventory_limit_blocks_signals(self, client, mm_config) -> None:
+        """Si inventario esta al max, no genera signals en ese lado."""
+        strategy = MarketMakerStrategy(client, mm_config)
+        strategy._inventory["tok_1"] = 49.0  # Casi al max (50)
+
+        signals = strategy.evaluate({
+            "token_id": "tok_1",
+            "mid_price": 0.5,
+            "condition_id": "c1",
+            "spread": 0.05,
+        })
+
+        # No debe haber BUY signals (inventario + order_size > max)
+        buy_signals = [s for s in signals if s.side == "BUY"]
+        assert len(buy_signals) == 0
+
+    def test_execute_updates_inventory(self, client, mm_config, tmp_path) -> None:
+        """execute() debe actualizar el inventario interno."""
+        import src.strategy.base as base_mod
+        original = base_mod.TRADES_FILE
+        base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
+        try:
+            strategy = MarketMakerStrategy(client, mm_config)
+            assert strategy.get_inventory("t1") == 0.0
+
+            signal = strategy._make_signal("m1", "t1", "BUY", 0.45, 5.0, 0.9)
+            strategy.execute([signal])
+            assert strategy.get_inventory("t1") == 5.0
+
+            signal_sell = strategy._make_signal("m1", "t1", "SELL", 0.55, 3.0, 0.9)
+            strategy.execute([signal_sell])
+            assert strategy.get_inventory("t1") == 2.0
+        finally:
+            base_mod.TRADES_FILE = original
+
+    def test_manage_inventory_pauses_overexposed_side(self, client, mm_config) -> None:
+        """manage_inventory() pausa lados cuando inventario > 80% max."""
+        strategy = MarketMakerStrategy(client, mm_config)
+        strategy._inventory["yes_tok"] = 45.0  # 90% de 50 → > 80%
+
+        strategy.manage_inventory({
+            "tokens": [
+                {"token_id": "yes_tok"},
+                {"token_id": "no_tok"},
+            ],
+        })
+
+        assert "BUY" in strategy.get_paused_sides("yes_tok")
+
+    def test_manage_inventory_unpauses_within_limits(self, client, mm_config) -> None:
+        """manage_inventory() desbloquea cuando inventario vuelve a limites."""
+        strategy = MarketMakerStrategy(client, mm_config)
+        strategy._paused_sides["yes_tok"] = {"BUY"}
+        strategy._inventory["yes_tok"] = 10.0  # Dentro de limites
+
+        strategy.manage_inventory({
+            "tokens": [
+                {"token_id": "yes_tok"},
+                {"token_id": "no_tok"},
+            ],
+        })
+
+        assert strategy.get_paused_sides("yes_tok") == set()
+
+    def test_manage_inventory_merge_yes_no(self, client, mm_config) -> None:
+        """manage_inventory() mergea YES+NO shares cuando ambos son positivos."""
+        strategy = MarketMakerStrategy(client, mm_config)
+        strategy._inventory["yes_tok"] = 10.0
+        strategy._inventory["no_tok"] = 7.0
+
+        strategy.manage_inventory({
+            "tokens": [
+                {"token_id": "yes_tok"},
+                {"token_id": "no_tok"},
+            ],
+        })
+
+        # Debe mergear min(10, 7) = 7
+        assert strategy.get_inventory("yes_tok") == 3.0
+        assert strategy.get_inventory("no_tok") == 0.0
+
+    def test_needs_refresh(self, client, mm_config) -> None:
+        """needs_refresh() controla el timing del loop."""
+        strategy = MarketMakerStrategy(client, mm_config)
+        assert strategy.needs_refresh("cond_1") is True
+
+        strategy.mark_refreshed("cond_1")
+        assert strategy.needs_refresh("cond_1") is False
+
+    def test_run_respects_refresh_timing(self, client, mm_config, tmp_path) -> None:
+        """run() no ejecuta si no paso suficiente tiempo."""
+        import src.strategy.base as base_mod
+        original = base_mod.TRADES_FILE
+        base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
+        try:
+            strategy = MarketMakerStrategy(client, mm_config)
+            market_data = {
+                "spread": 0.05,
+                "mid_price": 0.5,
+                "token_id": "t1",
+                "condition_id": "cond_1",
+            }
+
+            # Primera ejecucion: debe ejecutar
+            trades1 = strategy.run(market_data)
+            assert len(trades1) > 0
+
+            # Segunda ejecucion inmediata: debe saltar (no paso refresh_seconds)
+            trades2 = strategy.run(market_data)
+            assert trades2 == []
+        finally:
+            base_mod.TRADES_FILE = original
+
+    def test_round_to_tick(self, client, mm_config) -> None:
+        """_round_to_tick redondea correctamente."""
+        strategy = MarketMakerStrategy(client, mm_config)
+        assert strategy._round_to_tick(0.453, 0.01) == 0.45
+        assert strategy._round_to_tick(0.455, 0.01) == 0.46
+        assert strategy._round_to_tick(0.4567, 0.001) == 0.457
+
+    def test_paused_side_blocks_evaluate(self, client, mm_config) -> None:
+        """Si un lado esta pausado, evaluate() no genera signals para ese lado."""
+        strategy = MarketMakerStrategy(client, mm_config)
+        strategy._paused_sides["tok_1"] = {"BUY"}
+
+        signals = strategy.evaluate({
+            "token_id": "tok_1",
+            "mid_price": 0.5,
+            "condition_id": "c1",
+            "spread": 0.05,
+        })
+
+        buy_signals = [s for s in signals if s.side == "BUY"]
+        sell_signals = [s for s in signals if s.side == "SELL"]
+        assert len(buy_signals) == 0
+        assert len(sell_signals) > 0
+
 
 # ------------------------------------------------------------------
 # Tests: MultiArbStrategy
@@ -262,30 +471,21 @@ class TestMultiArb:
         strategy = MultiArbStrategy(client, arb_config)
         assert strategy.should_act({"tokens": [{"token_id": "a"}]}) is False
 
-    def test_evaluate_sell_when_sum_above_one(self, client, arb_config) -> None:
+    def test_detect_opportunities_buy_when_sum_below_one(self, client, arb_config) -> None:
+        """Si sum(ask) < 1.0 - min_edge, genera BUY signals para todos."""
         strategy = MultiArbStrategy(client, arb_config)
-        signals = strategy.evaluate({
+        signals = strategy.detect_opportunities({
             "condition_id": "c1",
             "tokens": [
-                {"token_id": "a", "price": 0.55},
-                {"token_id": "b", "price": 0.55},
+                {"token_id": "a", "price": 0.40},
+                {"token_id": "b", "price": 0.40},
             ],
         })
         assert len(signals) == 2
-        assert all(s.side == "SELL" for s in signals)
+        assert all(s.side == "BUY" for s in signals)
 
-    def test_evaluate_no_signals_when_no_edge(self, client, arb_config) -> None:
-        strategy = MultiArbStrategy(client, arb_config)
-        signals = strategy.evaluate({
-            "condition_id": "c1",
-            "tokens": [
-                {"token_id": "a", "price": 0.50},
-                {"token_id": "b", "price": 0.50},
-            ],
-        })
-        assert signals == []
-
-    def test_evaluate_buy_when_sum_below_one(self, client, arb_config) -> None:
+    def test_evaluate_delegates_to_detect_opportunities(self, client, arb_config) -> None:
+        """evaluate() llama a detect_opportunities()."""
         strategy = MultiArbStrategy(client, arb_config)
         signals = strategy.evaluate({
             "condition_id": "c1",
@@ -295,6 +495,119 @@ class TestMultiArb:
             ],
         })
         assert len(signals) == 2
+        assert all(s.side == "BUY" for s in signals)
+
+    def test_no_signals_when_no_edge(self, client, arb_config) -> None:
+        """Sin edge suficiente, no genera signals."""
+        strategy = MultiArbStrategy(client, arb_config)
+        signals = strategy.detect_opportunities({
+            "condition_id": "c1",
+            "tokens": [
+                {"token_id": "a", "price": 0.50},
+                {"token_id": "b", "price": 0.50},
+            ],
+        })
+        assert signals == []
+
+    def test_no_signals_when_sum_above_one(self, client, arb_config) -> None:
+        """Si sum(ask) > 1.0, no hay arb de compra."""
+        strategy = MultiArbStrategy(client, arb_config)
+        signals = strategy.detect_opportunities({
+            "condition_id": "c1",
+            "tokens": [
+                {"token_id": "a", "price": 0.55},
+                {"token_id": "b", "price": 0.55},
+            ],
+        })
+        assert signals == []
+
+    def test_profit_calculation_accounts_for_fees(self, client, arb_config) -> None:
+        """El profit potencial descuenta fees estimados."""
+        strategy = MultiArbStrategy(client, arb_config)
+        # sum = 0.94, gross profit = 6%, pero fees pueden reducirlo
+        # Paper mode: fee_rate = 0, asi que solo verifica que genera signals
+        signals = strategy.detect_opportunities({
+            "condition_id": "c1",
+            "tokens": [
+                {"token_id": "a", "price": 0.47},
+                {"token_id": "b", "price": 0.47},
+            ],
+        })
+        assert len(signals) == 2
+
+    def test_execute_uses_fok(self, client, arb_config, tmp_path) -> None:
+        """execute() debe usar FOK orders."""
+        import src.strategy.base as base_mod
+        original = base_mod.TRADES_FILE
+        base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
+        try:
+            strategy = MultiArbStrategy(client, arb_config)
+            signals = [
+                strategy._make_signal("c1", "a", "BUY", 0.40, 5.0, 0.8),
+                strategy._make_signal("c1", "b", "BUY", 0.40, 5.0, 0.8),
+            ]
+            trades = strategy.execute(signals)
+            assert len(trades) == 2
+            assert all(t.status == "filled_paper" for t in trades)
+        finally:
+            base_mod.TRADES_FILE = original
+
+    def test_stats_tracking(self, client, arb_config) -> None:
+        """Estadisticas de oportunidades detectadas vs ejecutadas."""
+        strategy = MultiArbStrategy(client, arb_config)
+        stats = strategy.get_stats()
+        assert stats["opportunities_seen"] == 0
+        assert stats["opportunities_executed"] == 0
+
+        # Detectar una oportunidad
+        strategy.detect_opportunities({
+            "condition_id": "c1",
+            "tokens": [
+                {"token_id": "a", "price": 0.40},
+                {"token_id": "b", "price": 0.40},
+            ],
+        })
+        stats = strategy.get_stats()
+        assert stats["opportunities_seen"] == 1
+
+    def test_confidence_increases_with_edge(self, client, arb_config) -> None:
+        """Mayor edge = mayor confidence en los signals."""
+        strategy = MultiArbStrategy(client, arb_config)
+
+        # Edge moderado
+        signals_small = strategy.detect_opportunities({
+            "condition_id": "c1",
+            "tokens": [
+                {"token_id": "a", "price": 0.45},
+                {"token_id": "b", "price": 0.45},
+            ],
+        })
+
+        # Edge grande
+        signals_large = strategy.detect_opportunities({
+            "condition_id": "c2",
+            "tokens": [
+                {"token_id": "c", "price": 0.30},
+                {"token_id": "d", "price": 0.30},
+            ],
+        })
+
+        if signals_small and signals_large:
+            assert signals_large[0].confidence >= signals_small[0].confidence
+
+    def test_multi_outcome_three_tokens(self, client, arb_config) -> None:
+        """Funciona con 3+ outcomes (NegRisk markets)."""
+        strategy = MultiArbStrategy(client, arb_config)
+        signals = strategy.detect_opportunities({
+            "condition_id": "c1",
+            "tokens": [
+                {"token_id": "a", "price": 0.25},
+                {"token_id": "b", "price": 0.25},
+                {"token_id": "c", "price": 0.25},
+            ],
+        })
+        # sum = 0.75, profit = 25% > 3% min_edge
+        assert len(signals) == 3
         assert all(s.side == "BUY" for s in signals)
 
 

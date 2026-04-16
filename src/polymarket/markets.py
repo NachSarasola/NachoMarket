@@ -6,9 +6,13 @@ Fuentes de datos:
 - CLOB API (https://clob.polymarket.com) — rewards, orderbook, spreads
 
 Todos los resultados se cachean por CACHE_TTL_SEC (15 min) para no saturar las APIs.
+
+Scoring prioriza mercados con BAJA competencia y alta participacion share,
+no volumen bruto. Esto maximiza LP rewards por dolar desplegado.
 """
 
 import logging
+import math
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -16,6 +20,7 @@ from typing import Any
 import requests
 
 from src.polymarket.client import PolymarketClient
+from src.polymarket.market_filter import MarketFilter
 from src.utils.resilience import retry_with_backoff
 
 logger = logging.getLogger("nachomarket.markets")
@@ -79,8 +84,8 @@ class MarketAnalyzer:
         self._cache = _Cache(ttl_sec=CACHE_TTL_SEC)
 
         # Config de filtros
-        self._min_volume = config.get("min_daily_volume_usd", 10000)
-        self._max_markets = config.get("max_markets_simultaneous", 5)
+        self._min_volume = config.get("min_daily_volume_usd", 1000)
+        self._max_markets = config.get("max_markets_simultaneous", 12)
         filters = config.get("filters", {})
         self._min_liquidity = filters.get("min_liquidity_usd", 5000)
         self._max_spread_pct = filters.get("max_spread_pct", 5.0)
@@ -90,11 +95,22 @@ class MarketAnalyzer:
         self._excluded_categories = filters.get("excluded_categories", [])
         self._preferred_categories = config.get("preferred_categories", [])
 
+        # Competition config
+        competition = config.get("competition", {})
+        self._max_book_depth_per_side = competition.get("max_book_depth_per_side", 500.0)
+        self._min_participation_share = competition.get("min_participation_share", 0.05)
+        self._bot_order_size = config.get("bot_order_size", 15.0)
+
+        # Market filter (ban, dedup, news-risk)
+        self._filter = MarketFilter(config)
+
         # Pesos para scoring (suman 1.0)
+        # Competition reemplaza volume como factor dominante:
+        # mercados chicos con baja competencia → mayor participation share → mas profit
         self._weights = {
-            "spread": 0.30,
-            "volume": 0.25,
-            "rewards": 0.20,
+            "spread": 0.20,
+            "competition": 0.30,
+            "rewards": 0.25,
             "volatility": 0.15,
             "time_to_resolution": 0.10,
         }
@@ -301,9 +317,9 @@ class MarketAnalyzer:
         """Puntua un mercado para market making (0.0 a 1.0).
 
         Componentes:
-        - spread (30%): mas ancho → mas oportunidad, normalizado 0-10% → 0-1
-        - volume (25%): mas alto → mas actividad, log-normalizado
-        - rewards (20%): tasa diaria de rewards normalizada
+        - competition (30%): menor profundidad de book → mayor participation share
+        - rewards (25%): tasa diaria de rewards normalizada por participation share
+        - spread (20%): mas ancho → mas oportunidad, normalizado 0-5% → 0-1
         - volatility (15%): menos volatilidad → mejor para MM
         - time_to_resolution (10%): mas tiempo → mas seguro
 
@@ -312,47 +328,40 @@ class MarketAnalyzer:
         """
         scores: dict[str, float] = {}
 
-        # --- Spread ---
+        # --- Competition (30%): baja profundidad = menos competencia ---
+        participation = self._estimate_participation_share(market)
+        market["_participation_share"] = participation
+        # 20%+ share = max score. Menos share = menos score.
+        scores["competition"] = min(participation / 0.20, 1.0)
+
+        # --- Spread (20%) ---
         spread = self._get_market_spread(market)
-        # Spread optimo para MM: 1-5%. Muy ancho (>10%) puede ser riesgoso.
         if spread is not None and spread > 0:
             scores["spread"] = min(spread / 5.0, 1.0)
         else:
             scores["spread"] = 0.0
 
-        # --- Volume ---
-        volume = market.get("volume_24h", 0.0)
-        if volume > 0:
-            # Log-normalizar: $10k → 0.4, $100k → 0.7, $1M → 1.0
-            import math
-            scores["volume"] = min(math.log10(max(volume, 1)) / 6.0, 1.0)
-        else:
-            scores["volume"] = 0.0
-
-        # --- Rewards ---
+        # --- Rewards (25%): ponderado por participation share ---
         rewards_rate = market.get("rewards_rate", 0.0)
-        # Normalizar: $0 → 0.0, $100/dia → 0.5, $500+/dia → 1.0
-        scores["rewards"] = min(rewards_rate / 500.0, 1.0)
+        # Reward efectivo = lo que el bot realmente gana
+        effective_reward = rewards_rate * participation
+        # Normalizar: $0 → 0.0, $10/dia efectivo → 0.5, $20+/dia → 1.0
+        scores["rewards"] = min(effective_reward / 20.0, 1.0)
 
-        # --- Volatility (inversa: menos vol = mejor) ---
-        volatility = market.get("volatility", 0.5)
-        # Precio entre 0.2-0.8 = baja vol (bueno para MM)
-        # Precio cerca de 0 o 1 = mercado casi resuelto (riesgoso)
+        # --- Volatility (15%): menos vol = mejor ---
         mid_price = self._get_representative_price(market)
         if mid_price > 0:
-            # Distancia al 0.5 como proxy de estabilidad
-            price_stability = 1.0 - abs(mid_price - 0.5) * 2  # 0.5→1.0, 0/1→0.0
+            price_stability = 1.0 - abs(mid_price - 0.5) * 2
             scores["volatility"] = max(price_stability, 0.0)
         else:
             scores["volatility"] = 0.0
 
-        # --- Tiempo hasta resolucion ---
+        # --- Tiempo hasta resolucion (10%) ---
         days_left = self._days_to_resolution(market)
         if days_left is not None and days_left > 0:
-            # 7 dias → 0.23, 30 dias → 1.0, >30 → 1.0
             scores["time_to_resolution"] = min(days_left / 30.0, 1.0)
         else:
-            scores["time_to_resolution"] = 0.5  # Desconocido → neutro
+            scores["time_to_resolution"] = 0.5
 
         # --- Score final ponderado ---
         total = sum(
@@ -362,9 +371,10 @@ class MarketAnalyzer:
 
         logger.debug(
             f"score_market '{market.get('question', '?')[:40]}': "
-            f"spread={scores['spread']:.2f} vol={scores['volume']:.2f} "
-            f"rewards={scores['rewards']:.2f} volatility={scores['volatility']:.2f} "
-            f"time={scores['time_to_resolution']:.2f} → {total:.3f}"
+            f"comp={scores['competition']:.2f} spread={scores['spread']:.2f} "
+            f"rewards={scores['rewards']:.2f} vol={scores['volatility']:.2f} "
+            f"time={scores['time_to_resolution']:.2f} "
+            f"share={participation:.1%} → {total:.3f}"
         )
         return total
 
@@ -394,7 +404,10 @@ class MarketAnalyzer:
         # 2. Rewards
         markets = self.enrich_with_rewards(markets)
 
-        # 3+4. Score (spread se calcula dentro de score_market)
+        # 3. Filtrar (ban, news-risk, dedup)
+        markets = self._filter.apply_all(markets)
+
+        # 4. Score (spread y competition se calculan dentro de score_market)
         for market in markets:
             market["_score"] = self.score_market(market)
 
@@ -412,11 +425,13 @@ class MarketAnalyzer:
                 question = m.get("question", "?")[:50]
                 vol = m.get("volume_24h", 0)
                 has_rewards = "SI" if m.get("rewards_active") else "NO"
+                share = m.get("_participation_share", 0)
                 logger.info(
                     f"  #{i}: '{question}' "
                     f"| score={m['_score']:.3f} "
                     f"| vol=${vol:,.0f} "
-                    f"| rewards={has_rewards}"
+                    f"| rewards={has_rewards} "
+                    f"| share={share:.1%}"
                 )
 
         return selected
@@ -437,10 +452,75 @@ class MarketAnalyzer:
     # Cache control
     # ------------------------------------------------------------------
 
+    @property
+    def market_filter(self) -> MarketFilter:
+        """Acceso al filtro de mercados (para /block de Telegram)."""
+        return self._filter
+
     def invalidate_cache(self) -> None:
         """Fuerza re-fetch en la proxima llamada."""
         self._cache.invalidate()
         logger.info("Cache de mercados invalidado")
+
+    # ------------------------------------------------------------------
+    # Competition & Participation
+    # ------------------------------------------------------------------
+
+    def _estimate_participation_share(self, market: dict[str, Any]) -> float:
+        """Estima el % de participacion del bot en un mercado.
+
+        participation_share = bot_order_size / (total_book_depth + bot_order_size)
+
+        Un mercado con $100 de profundidad total y $15 de order_size del bot
+        da ~13% de participacion — mucho mejor que un mercado con $5000 de
+        profundidad donde el bot seria el 0.3%.
+
+        Returns:
+            Float entre 0.0 y 1.0 representando el % de participacion estimado.
+        """
+        book_depth = self._get_book_depth(market)
+        if book_depth <= 0:
+            # Sin datos de book, asumir participacion media
+            return 0.10
+
+        share = self._bot_order_size / (book_depth + self._bot_order_size)
+        return share
+
+    def _get_book_depth(self, market: dict[str, Any]) -> float:
+        """Obtiene la profundidad total del orderbook (bids + asks) en USDC.
+
+        Returns:
+            Suma total de liquidez en ambos lados del book.
+        """
+        tokens = market.get("tokens", [])
+        if not tokens:
+            return 0.0
+
+        token_id = tokens[0].get("token_id", "")
+        if not token_id:
+            return 0.0
+
+        cache_key = f"depth_{token_id}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            book = self._client.get_orderbook(token_id)
+            bid_depth = sum(
+                float(b.get("price", 0)) * float(b.get("size", 0))
+                for b in book.get("bids", [])
+            )
+            ask_depth = sum(
+                float(a.get("price", 0)) * float(a.get("size", 0))
+                for a in book.get("asks", [])
+            )
+            total = bid_depth + ask_depth
+            self._cache.set(cache_key, total)
+            return total
+        except Exception:
+            logger.debug(f"No se pudo obtener depth para {token_id[:8]}...")
+            return 0.0
 
     # ------------------------------------------------------------------
     # Helpers internos

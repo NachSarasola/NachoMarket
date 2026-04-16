@@ -16,13 +16,18 @@ from src.polymarket.markets import MarketAnalyzer, _Cache, _safe_float
 
 def make_config(**overrides) -> dict:
     base = {
-        "min_daily_volume_usd": 10000,
-        "max_markets_simultaneous": 5,
+        "min_daily_volume_usd": 1000,
+        "max_markets_simultaneous": 12,
+        "bot_order_size": 15.0,
         "filters": {
             "min_liquidity_usd": 5000,
             "max_spread_pct": 5.0,
             "min_time_to_resolution_hours": 168,  # 7 dias
             "excluded_categories": [],
+        },
+        "competition": {
+            "max_book_depth_per_side": 500.0,
+            "min_participation_share": 0.05,
         },
         "preferred_categories": ["crypto", "politics"],
     }
@@ -149,7 +154,7 @@ class TestDiscoverMarkets:
             status_code=200,
             json=MagicMock(return_value=[
                 make_gamma_market(condition_id="high", volume=50000),
-                make_gamma_market(condition_id="low", volume=500),
+                make_gamma_market(condition_id="low", volume=500),  # Below 1000 min
             ]),
             raise_for_status=MagicMock(),
         )
@@ -305,15 +310,30 @@ class TestScoreMarket:
         score = self.analyzer.score_market(market)
         assert 0.0 <= score <= 1.0
 
-    def test_high_volume_scores_higher(self) -> None:
+    def test_low_competition_scores_higher(self) -> None:
+        """Un mercado con menos profundidad de book debe puntuar mejor."""
         base = {
             "tokens": [{"token_id": "t1", "price": 0.5}],
-            "rewards_rate": 0,
+            "rewards_rate": 100,
             "end_date": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
         }
-        low_vol = {**base, "volume_24h": 10000}
-        high_vol = {**base, "volume_24h": 500000}
-        assert self.analyzer.score_market(high_vol) > self.analyzer.score_market(low_vol)
+        # Shallow book = low competition (bot gets higher share)
+        self.client.get_orderbook.return_value = {
+            "bids": [{"price": "0.45", "size": "50"}],
+            "asks": [{"price": "0.55", "size": "50"}],
+        }
+        low_comp = self.analyzer.score_market({**base, "volume_24h": 5000})
+
+        # Deep book = high competition (bot gets tiny share)
+        self.client.get_orderbook.return_value = {
+            "bids": [{"price": "0.45", "size": "5000"}],
+            "asks": [{"price": "0.55", "size": "5000"}],
+        }
+        # Invalidate cache so new book is used
+        self.analyzer._cache.invalidate()
+        high_comp = self.analyzer.score_market({**base, "volume_24h": 500000})
+
+        assert low_comp > high_comp
 
     def test_market_with_rewards_scores_higher(self) -> None:
         base = {
@@ -342,6 +362,71 @@ class TestScoreMarket:
         score = self.analyzer.score_market(market)
         assert score >= 0.0  # No debe explotar
 
+    def test_participation_share_stored_in_market(self) -> None:
+        market = {
+            "tokens": [{"token_id": "t1", "price": 0.5}],
+            "volume_24h": 5000,
+            "rewards_rate": 0,
+            "end_date": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+        }
+        self.analyzer.score_market(market)
+        assert "_participation_share" in market
+        assert 0.0 < market["_participation_share"] <= 1.0
+
+
+class TestCompetitionEstimation:
+    def setup_method(self) -> None:
+        self.client = make_client()
+        self.analyzer = MarketAnalyzer(self.client, make_config())
+
+    def test_shallow_book_high_participation(self) -> None:
+        """Con book poco profundo, el bot tiene alta participacion."""
+        self.client.get_orderbook.return_value = {
+            "bids": [{"price": "0.50", "size": "20"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+        }
+        market = {"tokens": [{"token_id": "t1"}]}
+        share = self.analyzer._estimate_participation_share(market)
+        # total_depth ~ $10+$10.4 = ~$20.4, bot_order_size = $15
+        # share ~ 15 / (20.4 + 15) = ~0.42
+        assert share > 0.30
+
+    def test_deep_book_low_participation(self) -> None:
+        """Con book profundo, el bot tiene baja participacion."""
+        self.client.get_orderbook.return_value = {
+            "bids": [{"price": "0.50", "size": "10000"}],
+            "asks": [{"price": "0.52", "size": "10000"}],
+        }
+        market = {"tokens": [{"token_id": "t1"}]}
+        share = self.analyzer._estimate_participation_share(market)
+        # total_depth ~ $5000+$5200 = ~$10200, bot = $15
+        # share ~ 15 / 10215 = ~0.0015
+        assert share < 0.01
+
+    def test_empty_book_returns_default(self) -> None:
+        """Sin datos de book, retorna participacion por defecto."""
+        self.client.get_orderbook.return_value = {"bids": [], "asks": []}
+        market = {"tokens": [{"token_id": "t1"}]}
+        share = self.analyzer._estimate_participation_share(market)
+        assert share == 0.10
+
+    def test_no_tokens_returns_default(self) -> None:
+        market = {"tokens": []}
+        share = self.analyzer._estimate_participation_share(market)
+        assert share == 0.10
+
+    def test_book_depth_cached(self) -> None:
+        """La profundidad del book se cachea."""
+        self.client.get_orderbook.return_value = {
+            "bids": [{"price": "0.50", "size": "100"}],
+            "asks": [{"price": "0.52", "size": "100"}],
+        }
+        market = {"tokens": [{"token_id": "t1"}]}
+        self.analyzer._get_book_depth(market)
+        self.analyzer._get_book_depth(market)
+        # Solo una llamada gracias al cache
+        assert self.client.get_orderbook.call_count == 1
+
 
 # ------------------------------------------------------------------
 # Tests: select_top_markets
@@ -350,8 +435,18 @@ class TestScoreMarket:
 class TestSelectTopMarkets:
     @patch("src.polymarket.markets.requests.get")
     def test_returns_n_markets(self, mock_get) -> None:
+        questions = [
+            "Will BTC reach 100k?", "Will ETH flip BTC?", "Will SOL reach 500?",
+            "Will DOGE hit 1 dollar?", "Federal Reserve rate decision?",
+            "Will gold reach 3000?", "Champions League winner?",
+            "Next US president?", "SpaceX Mars landing?", "AI regulation bill?",
+        ]
         gamma_markets = [
-            make_gamma_market(condition_id=f"m{i}", volume=50000 + i * 10000)
+            make_gamma_market(
+                condition_id=f"m{i}",
+                volume=50000 + i * 10000,
+                question=questions[i],
+            )
             for i in range(10)
         ]
 

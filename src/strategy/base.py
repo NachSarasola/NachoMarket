@@ -32,6 +32,7 @@ class Signal:
     size: float           # Tamano en USDC
     confidence: float     # 0.0 - 1.0 (que tan segura es la senal)
     strategy_name: str    # Nombre de la estrategia que la genero
+    metadata: dict[str, Any] = field(default_factory=dict)  # Datos extra opcionales
 
 
 @dataclass

@@ -1,75 +1,163 @@
+"""Position sizing con Quarter-Kelly para Polymarket.
+
+Funciones standalone + clase PositionSizer que lee configuracion.
+
+Uso tipico:
+    kf = kelly_fraction(estimated_prob=0.65, market_price=0.55)  # → 0.062
+    size = calculate_size(capital=400, kelly_f=kf)               # → $20
+    ok = can_trade(current_exposure=80, capital=400)             # → True
+"""
+
 import logging
 from typing import Any
 
 logger = logging.getLogger("nachomarket.position_sizer")
 
 
+def kelly_fraction(
+    estimated_prob: float,
+    market_price: float,
+    kelly_multiplier: float = 0.25,
+) -> float:
+    """Calcula el kelly fraccional (Quarter-Kelly) para prediction markets.
+
+    Formula: f = kelly_multiplier * (p - q) / (1 - q)
+    donde:
+      p = estimated_prob  — tu estimacion de que ocurra el outcome
+      q = market_price    — precio implicito del mercado (= prob implicita)
+
+    Solo hay edge si p > q. Clampea resultado en [0.0, 0.10].
+    Nunca apuesta mas del 10% del capital independientemente del edge.
+
+    Args:
+        estimated_prob: Probabilidad estimada del outcome (0 < p < 1).
+        market_price: Precio actual del token en el CLOB (0 < q < 1).
+        kelly_multiplier: Fraccion del Kelly completo a usar (default 0.25).
+
+    Returns:
+        Fraccion del capital a arriesgar, en [0.0, 0.10].
+    """
+    p, q = estimated_prob, market_price
+
+    if not (0 < p < 1) or not (0 < q < 1):
+        return 0.0
+    if p <= q:
+        return 0.0  # Sin edge
+
+    raw = kelly_multiplier * (p - q) / (1.0 - q)
+    return max(0.0, min(raw, 0.10))
+
+
+def calculate_size(
+    capital: float,
+    kelly_f: float,
+    min_size: float = 5.0,
+    max_size: float | None = None,
+) -> float:
+    """Calcula el tamano de posicion en USDC.
+
+    size = capital * kelly_f
+    Clampea entre min_size y max(max_size, capital * 0.05).
+    Retorna 0.0 si size resultante < min_size (no vale abrir posicion).
+
+    Args:
+        capital: Capital total disponible en USDC.
+        kelly_f: Fraccion de Kelly (de kelly_fraction()).
+        min_size: Tamano minimo para abrir posicion (default $5).
+        max_size: Tope maximo opcional. Si None, usa capital * 5%.
+
+    Returns:
+        Tamano en USDC, o 0.0 si es demasiado pequeno.
+    """
+    if kelly_f <= 0 or capital <= 0:
+        return 0.0
+
+    raw = capital * kelly_f
+    if raw < min_size:
+        return 0.0
+
+    # Techo: siempre al menos capital * 5% (regla INQUEBRANTABLE del bot)
+    # Si max_size > capital * 5%, permitir hasta max_size
+    upper = capital * 0.05
+    if max_size is not None:
+        upper = max(max_size, upper)
+
+    return round(min(raw, upper), 2)
+
+
+def can_trade(
+    current_exposure: float,
+    capital: float,
+    max_risk_pct: float = 0.05,
+    new_size: float = 0.0,
+) -> bool:
+    """Verifica si se puede abrir una nueva posicion sin superar el limite de riesgo.
+
+    Retorna True si exposure_actual + new_size < capital * max_risk_pct.
+
+    Args:
+        current_exposure: Exposicion actual total en USDC (suma de posiciones abiertas).
+        capital: Capital total disponible en USDC.
+        max_risk_pct: Maximo porcentaje de capital en riesgo (default 5%).
+        new_size: Tamano de la nueva posicion propuesta en USDC.
+
+    Returns:
+        True si hay room para la nueva posicion.
+    """
+    limit = capital * max_risk_pct
+    return (current_exposure + new_size) < limit
+
+
+# ---------------------------------------------------------------------------
+# Clase wrapper para uso con configuracion YAML
+# ---------------------------------------------------------------------------
+
 class PositionSizer:
-    """Position sizing usando Kelly fraccional."""
+    """Lee config de risk.yaml y expone los calculos de sizing.
+
+    Ejemplo de uso en main.py:
+        sizer = PositionSizer(risk_config)
+        size = sizer.size_for_signal(capital=400, estimated_prob=0.65, market_price=0.55)
+    """
 
     def __init__(self, config: dict[str, Any]) -> None:
-        ps_config = config.get("position_sizing", {})
-        self._method = ps_config.get("method", "fractional_kelly")
-        self._kelly_fraction = ps_config.get("kelly_fraction", 0.25)
-        self._max_position = ps_config.get("max_position_usdc", 20.0)
-        self._min_position = ps_config.get("min_position_usdc", 1.0)
+        ps = config.get("position_sizing", {})
+        self._method = ps.get("method", "fractional_kelly")
+        self._kelly_multiplier = ps.get("kelly_fraction", 0.25)
+        self._max_position = ps.get("max_position_usdc", 20.0)
+        self._min_position = ps.get("min_position_usdc", 5.0)
 
-    def calculate_size(
+    def size_for_signal(
         self,
         capital: float,
-        win_probability: float,
-        odds: float,
-        max_risk_pct: float = 5.0,
+        estimated_prob: float,
+        market_price: float,
     ) -> float:
-        """Calcula el tamano optimo de posicion.
+        """Tamano de posicion para una senal de trading.
 
-        Args:
-            capital: Capital total disponible en USDC
-            win_probability: Probabilidad estimada de ganar (0-1)
-            odds: Ratio de pago (ej: 2.0 para pago doble)
-            max_risk_pct: Maximo porcentaje de capital a arriesgar
+        Combina kelly_fraction + calculate_size con los parametros del config.
 
         Returns:
-            Tamano de posicion en USDC
+            Tamano en USDC, o 0.0 si no hay edge suficiente.
         """
         if self._method == "fixed":
-            return min(self._max_position, capital * max_risk_pct / 100)
+            size = min(self._max_position, capital * 0.05)
+            return size if size >= self._min_position else 0.0
 
-        # Kelly fraccional
-        kelly_pct = self._full_kelly(win_probability, odds)
-        fractional_kelly = kelly_pct * self._kelly_fraction
-
-        # Limitar al maximo permitido
-        max_by_risk = capital * max_risk_pct / 100
-        position = capital * fractional_kelly / 100
-
-        position = min(position, max_by_risk, self._max_position)
-        position = max(position, 0)  # Nunca negativo
-
-        if position < self._min_position:
-            logger.debug(f"Position {position:.2f} below minimum, skipping")
-            return 0.0
+        kf = kelly_fraction(estimated_prob, market_price, self._kelly_multiplier)
+        size = calculate_size(capital, kf, self._min_position, self._max_position)
 
         logger.info(
-            f"Position size: ${position:.2f} "
-            f"(Kelly={kelly_pct:.1f}%, Fractional={fractional_kelly:.1f}%)"
+            f"Position size: ${size:.2f} "
+            f"(p={estimated_prob:.3f}, q={market_price:.3f}, kf={kf:.4f})"
         )
-        return round(position, 2)
+        return size
 
-    def _full_kelly(self, win_prob: float, odds: float) -> float:
-        """Calcula el porcentaje Kelly completo.
-
-        Kelly% = (bp - q) / b
-        b = odds decimales - 1
-        p = probabilidad de ganar
-        q = probabilidad de perder
-        """
-        if odds <= 1 or win_prob <= 0 or win_prob >= 1:
-            return 0.0
-
-        b = odds - 1
-        p = win_prob
-        q = 1 - p
-
-        kelly = (b * p - q) / b
-        return max(kelly * 100, 0)  # Retorna porcentaje, nunca negativo
+    def can_trade(
+        self,
+        current_exposure: float,
+        capital: float,
+        new_size: float = 0.0,
+    ) -> bool:
+        """Wrapper de can_trade() con max_risk_pct = 5%."""
+        return can_trade(current_exposure, capital, 0.05, new_size)

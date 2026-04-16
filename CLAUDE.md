@@ -47,7 +47,7 @@ PRIORIDAD ABSOLUTA: preservacion de capital. Nunca arriesgar >5% en un solo merc
 - El bot DEBE poder pausarse instantaneamente via Telegram /pause
 - Si el drawdown diario supera $20 (5% de $400), PARAR todo el trading
 - Cada 8 horas, ejecutar self-review con Claude Haiku
-- NUNCA operar en mercados con volume < $10,000 diario
+- NUNCA operar en mercados sin liquidity rewards Y con volume < $1,000 diario
 
 ## Estilo de codigo
 

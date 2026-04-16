@@ -385,6 +385,123 @@ class PolymarketClient:
             raise
 
     @_log_api_call
+    @retry_with_backoff(max_attempts=2)
+    def place_fok_order(
+        self,
+        token_id: str,
+        side: str,
+        price: float,
+        size: float,
+    ) -> dict[str, Any]:
+        """Coloca una orden Fill-or-Kill (FOK). Se ejecuta completa o se cancela.
+
+        Ideal para arbitraje donde no queremos ejecucion parcial.
+
+        Args:
+            token_id: ID del token de Polymarket.
+            side: 'BUY' o 'SELL'.
+            price: Precio limite maximo (para BUY) o minimo (para SELL).
+            size: Cantidad en USDC.
+
+        Returns:
+            Dict con order_id, status y detalles de la orden.
+        """
+        trade_record: dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "fok",
+            "token_id": token_id,
+            "side": side,
+            "price": price,
+            "size": size,
+            "paper_mode": self.paper_mode,
+            "status": "pending",
+        }
+
+        if self.paper_mode:
+            trade_record["status"] = "filled_paper"
+            ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            trade_record["order_id"] = f"paper_{ts_ms}_{next(self._order_counter)}"
+            self._log_trade(trade_record)
+            logger.info(f"[PAPER] FOK {side} {size} USDC @ {price} | token={token_id[:8]}...")
+            return trade_record
+
+        try:
+            fee_rate_bps = self.get_fee_rate(token_id)
+
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=size,
+                side=side,
+                fee_rate_bps=fee_rate_bps,
+            )
+
+            signed_order = self._client.create_order(order_args)
+            result = self._client.post_order(
+                signed_order,
+                orderType=OrderType.FOK,
+                post_only=False,
+            )
+
+            order_id = result.get("orderID", result.get("id", "unknown"))
+            trade_record["status"] = result.get("status", "submitted")
+            trade_record["order_id"] = order_id
+            trade_record["fee_rate_bps"] = fee_rate_bps
+            self._log_trade(trade_record)
+            logger.info(
+                f"FOK orden colocada: {side} {size} USDC @ {price} "
+                f"| order_id={order_id} | fee={fee_rate_bps}bps"
+            )
+            return trade_record
+
+        except Exception:
+            trade_record["status"] = "error"
+            self._log_trade(trade_record)
+            logger.exception(
+                f"Error al colocar FOK: {side} {size} @ {price} en {token_id[:8]}..."
+            )
+            raise
+
+    @_log_api_call
+    @retry_with_backoff(max_attempts=3)
+    def get_order_status(self, order_id: str) -> dict[str, Any]:
+        """Consulta el estado de una orden por su ID.
+
+        Returns:
+            Dict con 'status' (MATCHED|OPEN|CANCELLED), 'size_matched', 'price'.
+        """
+        if self.paper_mode:
+            # En paper mode simular fill aleatorio (~30% de probabilidad)
+            import random
+            filled = random.random() < 0.30
+            return {
+                "order_id": order_id,
+                "status": "MATCHED" if filled else "OPEN",
+                "size_matched": 1.0 if filled else 0.0,
+                "price": 0.50,
+            }
+
+        try:
+            result = self._client.get_order(order_id)
+            # py-clob-client retorna un dict o un objeto con atributos
+            if isinstance(result, dict):
+                return {
+                    "order_id": order_id,
+                    "status": result.get("status", "UNKNOWN"),
+                    "size_matched": float(result.get("size_matched", 0)),
+                    "price": float(result.get("price", 0)),
+                }
+            return {
+                "order_id": order_id,
+                "status": getattr(result, "status", "UNKNOWN"),
+                "size_matched": float(getattr(result, "size_matched", 0)),
+                "price": float(getattr(result, "price", 0)),
+            }
+        except Exception:
+            logger.debug(f"No se pudo obtener estado de orden {order_id[:12]}...")
+            return {"order_id": order_id, "status": "UNKNOWN", "size_matched": 0.0, "price": 0.0}
+
+    @_log_api_call
     @retry_with_backoff(max_attempts=3)
     def cancel_order(self, order_id: str) -> bool:
         """Cancela una orden por su ID.
@@ -414,6 +531,29 @@ class PolymarketClient:
 
         self._client.cancel_all()
         logger.info("Todas las ordenes canceladas")
+        return True
+
+    @_log_api_call
+    @retry_with_backoff(max_attempts=3)
+    def cancel_market_orders(self, condition_id: str = "", token_id: str = "") -> bool:
+        """Cancela todas las ordenes de un mercado o token especifico.
+
+        Args:
+            condition_id: Condition ID del mercado.
+            token_id: Asset ID del token especifico (opcional).
+
+        Returns:
+            True si la operacion fue exitosa.
+        """
+        if self.paper_mode:
+            logger.info(
+                f"[PAPER] Ordenes canceladas para market={condition_id[:8]}... "
+                f"token={token_id[:8] if token_id else 'all'}..."
+            )
+            return True
+
+        self._client.cancel_market_orders(market=condition_id, asset_id=token_id)
+        logger.info(f"Ordenes canceladas: market={condition_id[:8]}... token={token_id[:8] if token_id else 'all'}...")
         return True
 
     # ------------------------------------------------------------------

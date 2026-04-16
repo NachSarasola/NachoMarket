@@ -1,0 +1,19 @@
+{
+  "mkt1": {
+    "market_id": "mkt1",
+    "question": "mkt1",
+    "total_pnl": 0.30000000000000027,
+    "total_rebates": 0.0,
+    "total_rewards": 0.0,
+    "order_count": 2,
+    "fill_count": 1,
+    "capital_deployed": 15.0,
+    "buy_prices": [
+      0.5
+    ],
+    "sell_prices": [
+      0.52
+    ],
+    "last_updated": "2026-04-15T18:30:18.267770+00:00"
+  }
+}

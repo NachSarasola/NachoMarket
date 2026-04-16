@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from py_clob_client.client import ClobClient; import inspect; methods = [m for m in dir\\(ClobClient\\) if not m.startswith\\('_'\\)]; print\\('\\\\n'.join\\(sorted\\(methods\\)\\)\\)\")",
+      "Bash(python C:\\\\Users\\\\Usuario\\\\Desktop\\\\NachoMarket\\\\scripts\\\\generate_api_keys.py)",
+      "Bash(python scripts/generate_api_keys.py)",
+      "Bash(python -c 'from py_clob_client.client import ClobClient, ApiCreds; import os;:*)",
+      "Bash(python -c ':*)",
+      "Bash(git add *)"
+    ]
+  }
+}

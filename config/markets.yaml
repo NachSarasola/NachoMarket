@@ -1,14 +1,21 @@
 # NachoMarket - Mercados target y parametros
-min_daily_volume_usd: 10000  # No operar en mercados con menos volumen
-max_markets_simultaneous: 5
+min_daily_volume_usd: 1000   # Bajado de 10000: mercados chicos con rewards son mas rentables
+max_markets_simultaneous: 12  # Diversificar en muchos mercados chicos (antes: 5)
+bot_order_size: 15.0          # USDC por lado, usado para calcular participation share
 market_refresh_interval_sec: 300  # Re-escanear mercados cada 5 min
 
 # Filtros de mercado
 filters:
-  min_liquidity_usd: 5000
+  min_liquidity_usd: 500     # Bajado: mercados chicos con rewards pueden tener poca liquidez
   max_spread_pct: 5.0
   min_time_to_resolution_hours: 24  # Evitar mercados que cierran pronto
-  excluded_categories: []  # Categorias a excluir
+  min_market_age_hours: 48    # No operar mercados nuevos (riesgo de book vacio)
+  excluded_categories: []     # Categorias a excluir
+
+# Competition scoring: priorizar mercados donde el bot tiene alta participacion
+competition:
+  max_book_depth_per_side: 500  # Skip mercados con >$500/lado de profundidad
+  min_participation_share: 0.05  # Necesitar al menos 5% de share para entrar
 
 # Preferencias de mercado (ordenadas por prioridad)
 preferred_categories:
@@ -17,10 +24,19 @@ preferred_categories:
   - sports
   - entertainment
 
+# Ventanas de tiempo: ajustar tamaño de ordenes segun actividad del mercado
+time_windows:
+  # Horas UTC de baja actividad: reducir tamaño de ordenes
+  low_activity_hours: [0, 1, 2, 3, 4, 5, 6, 7]
+  # Horas UTC de alta actividad (US market hours)
+  high_activity_hours: [14, 15, 16, 17, 18, 19, 20, 21]
+  # Factor de reduccion durante baja actividad (0.5 = mitad del tamaño)
+  low_activity_size_factor: 0.5
+
+# Banlist de mercados: evitar duplicados y mercados problematicos
+banned_markets:
+  condition_ids: []      # IDs de mercados especificos a bloquear
+  question_patterns: []  # Regex patterns en el titulo del mercado a bloquear
+
 # Tokens a escuchar por WebSocket (se actualiza automaticamente al escanear mercados)
-# Formato: token_id (ID del token binario) + condition_id (ID del mercado)
 watch_tokens: []
-# Ejemplo:
-# watch_tokens:
-#   - token_id: "71321045679252212594626385532587992013..."
-#     condition_id: "0xabc123..."

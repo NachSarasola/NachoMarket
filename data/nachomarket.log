@@ -1,0 +1,57 @@
+2026-04-11 21:03:16 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-11 21:03:16 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER
+2026-04-11 21:03:16 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-11 21:03:16 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-11 21:03:16 | nachomarket | INFO | Conexión OK
+2026-04-11 21:03:16 | nachomarket.telegram | WARNING | TELEGRAM_BOT_TOKEN not set — Telegram bot disabled
+2026-04-11 21:03:16 | nachomarket.strategy.market_maker | INFO | Estrategia 'market_maker' inicializada
+2026-04-11 21:03:16 | nachomarket.strategy.multi_arb | INFO | Estrategia 'multi_arb' inicializada
+2026-04-11 21:03:16 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'multi_arb']
+2026-04-11 21:03:16 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-11 21:03:16 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-11 21:03:16 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-11 21:03:16 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-11 21:03:16 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-11 21:03:17 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-15 15:24:05 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-15 15:24:05 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER
+2026-04-15 15:24:05 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-15 15:24:05 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-15 15:24:05 | nachomarket | INFO | Conexión OK
+2026-04-15 15:24:05 | nachomarket.telegram | WARNING | TELEGRAM_BOT_TOKEN not set — Telegram bot disabled
+2026-04-15 15:24:05 | nachomarket.strategy.market_maker | INFO | Estrategia 'market_maker' inicializada
+2026-04-15 15:24:05 | nachomarket.strategy.multi_arb | INFO | Estrategia 'multi_arb' inicializada
+2026-04-15 15:24:05 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'multi_arb']
+2026-04-15 15:24:05 | nachomarket.risk.profitability | INFO | Profitability: 1 mercados cargados
+2026-04-15 15:24:05 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-15 15:24:05 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-15 15:24:05 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-15 15:24:05 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-15 15:24:05 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-15 15:24:06 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-15 15:30:45 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-15 15:30:45 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER
+2026-04-15 15:30:45 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-15 15:30:45 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-15 15:30:45 | nachomarket | INFO | Conexión OK
+2026-04-15 15:30:45 | nachomarket.telegram | WARNING | TELEGRAM_BOT_TOKEN not set — Telegram bot disabled
+2026-04-15 15:30:45 | nachomarket.strategy.market_maker | INFO | Estrategia 'market_maker' inicializada
+2026-04-15 15:30:45 | nachomarket.strategy.multi_arb | INFO | Estrategia 'multi_arb' inicializada
+2026-04-15 15:30:45 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'multi_arb']
+2026-04-15 15:30:45 | nachomarket.risk.profitability | INFO | Profitability: 1 mercados cargados
+2026-04-15 15:30:46 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-15 15:30:46 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-15 15:30:46 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-15 15:30:46 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-15 15:30:46 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-15 15:30:47 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-15 15:31:39 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-15 15:31:39 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER
+2026-04-15 15:31:39 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-15 15:31:39 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-15 15:31:39 | nachomarket | INFO | Conexión OK
+2026-04-15 15:31:39 | nachomarket.telegram | WARNING | TELEGRAM_BOT_TOKEN not set — Telegram bot disabled
+2026-04-15 15:31:39 | nachomarket.strategy.market_maker | INFO | Estrategia 'market_maker' inicializada
+2026-04-15 15:31:39 | nachomarket.strategy.multi_arb | INFO | Estrategia 'multi_arb' inicializada
+2026-04-15 15:31:39 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'multi_arb']
+2026-04-15 15:31:39 | nachomarket.risk.profitability | INFO | Profitability: 1 mercados cargados
