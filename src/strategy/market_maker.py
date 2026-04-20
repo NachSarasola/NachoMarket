@@ -1,4 +1,5 @@
 import logging
+import random
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -43,6 +44,13 @@ class MarketMakerStrategy(BaseStrategy):
         tw = config.get("time_windows", {})
         self._low_activity_hours: set[int] = set(tw.get("low_activity_hours", range(0, 8)))
         self._low_activity_factor: float = tw.get("low_activity_size_factor", 0.5)
+
+        # Anti-frontrunning jitter (TODO 1.5)
+        jitter_cfg = config.get("anti_frontrun", {})
+        self._jitter_enabled: bool = jitter_cfg.get("enabled", True)
+        self._jitter_size_pct: float = jitter_cfg.get("size_jitter_pct", 0.15)   # ±15%
+        self._jitter_price_prob: float = jitter_cfg.get("price_jitter_prob", 0.30)  # 30%
+        self._jitter_timing_sec: float = jitter_cfg.get("timing_jitter_sec", 5.0)  # ±5s
 
     # ------------------------------------------------------------------
     # BaseStrategy interface
@@ -292,9 +300,13 @@ class MarketMakerStrategy(BaseStrategy):
                     paused.clear()
 
     def needs_refresh(self, condition_id: str) -> bool:
-        """Verifica si paso suficiente tiempo desde el ultimo refresh."""
+        """Verifica si paso suficiente tiempo desde el ultimo refresh.
+
+        Usa un intervalo jittered para evitar patrones de timing predecibles.
+        """
         last = self._last_refresh.get(condition_id, 0.0)
-        return (time.time() - last) >= self._refresh_seconds
+        interval = self._jittered_refresh_seconds()
+        return (time.time() - last) >= interval
 
     def mark_refreshed(self, condition_id: str) -> None:
         """Marca el mercado como recien refresheado."""
@@ -388,20 +400,49 @@ class MarketMakerStrategy(BaseStrategy):
     # ------------------------------------------------------------------
 
     def _get_effective_order_size(self) -> float:
-        """Retorna el tamaño de orden ajustado por hora del dia (UTC).
+        """Retorna el tamaño de orden ajustado por hora del dia y jitter.
 
-        En horas de baja actividad, reduce el tamaño para evitar fill
-        involuntario con liquidez escasa.
+        Anti-frontrunning: aplica ±15% de variacion aleatoria al tamaño.
+        Esto evita que otros bots detecten patrones de tamaño fijo.
         """
         current_hour = datetime.now(timezone.utc).hour
+        base_size = self._order_size
         if current_hour in self._low_activity_hours:
-            reduced = self._order_size * self._low_activity_factor
+            base_size = self._order_size * self._low_activity_factor
             self._logger.debug(
                 f"Baja actividad (hora {current_hour} UTC): "
-                f"order_size reducido a {reduced:.1f}"
+                f"order_size base reducido a {base_size:.1f}"
             )
-            return reduced
-        return self._order_size
+
+        if self._jitter_enabled and self._jitter_size_pct > 0:
+            jitter = random.uniform(
+                1.0 - self._jitter_size_pct,
+                1.0 + self._jitter_size_pct,
+            )
+            jittered = base_size * jitter
+            self._logger.debug("Jitter tamaño: %.2f → %.2f", base_size, jittered)
+            return max(1.0, jittered)
+
+        return base_size
+
+    def _apply_price_jitter(self, price: float, tick_size: float) -> float:
+        """Aplica jitter de ±1 tick al precio con probabilidad 30%.
+
+        Reduce predictibilidad de los precios de las ordenes.
+        """
+        if not self._jitter_enabled:
+            return price
+        if random.random() < self._jitter_price_prob:
+            direction = random.choice([-1, 0, 1])
+            return round(price + direction * tick_size, 4)
+        return price
+
+    def _jittered_refresh_seconds(self) -> float:
+        """Retorna el tiempo de refresh con jitter ±timing_jitter_sec."""
+        if not self._jitter_enabled or self._jitter_timing_sec <= 0:
+            return float(self._refresh_seconds)
+        jitter = random.uniform(-self._jitter_timing_sec, self._jitter_timing_sec)
+        return max(10.0, self._refresh_seconds + jitter)
 
     def _get_tick_size(self, token_id: str) -> float:
         """Obtiene tick_size del mercado via cliente."""

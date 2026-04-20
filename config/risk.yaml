@@ -24,3 +24,30 @@ market_making:
   num_levels: 3  # Ordenes a cada lado del book
   level_spacing_bps: 50  # Espacio entre niveles
   use_post_only: true  # SIEMPRE Post Only para maker fees
+
+# Rolling drawdown — ventanas 7/15/30 dias (TODO 1.4)
+rolling_drawdown:
+  threshold_7d_usdc: 40.0     # -$40 en 7d → scale-down 50%
+  threshold_15d_usdc: 80.0    # -$80 en 15d → pausa arb/directional
+  threshold_30d_usdc: 120.0   # -$120 en 30d → kill-switch total
+  scale_down_factor: 0.5      # Reducir order_size 50%
+
+# Modelo de costos ocultos (TODO 2.3)
+cost_model:
+  maker_fee_bps: 0        # Post Only no paga fees en Polymarket
+  taker_fee_bps: 100      # 1% si se ejecuta como taker
+  slippage_depth_factor: 0.005
+  min_edge_multiplier: 2.0  # Edge debe ser > 2x costos totales
+
+# Anti-frontrunning jitter (TODO 1.5)
+anti_frontrun:
+  enabled: true
+  size_jitter_pct: 0.15     # ±15% variacion en tamaño
+  price_jitter_prob: 0.30   # 30% probabilidad de ±1 tick en precio
+  timing_jitter_sec: 5.0    # ±5s sobre el refresh base
+
+# Strategy Monitor / Kill Switch (TODO 1.6)
+strategy_monitor:
+  kill_calmar_threshold: 0.5   # Calmar < 0.5 por 14d → matar
+  kill_evaluation_days: 14
+  min_trades_for_kill: 10
