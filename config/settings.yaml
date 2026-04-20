@@ -16,6 +16,9 @@ review_model: claude-haiku-4-5-20251001
 strategies_enabled:
   - market_maker
   - multi_arb
+  - stat_arb
+  - rewards_farmer
+  # - event_driven   # Activar cuando se configure FRED API key
 
 # Market Making
 market_maker:
@@ -31,6 +34,33 @@ market_maker:
 multi_arb:
   min_edge: 0.03    # 3% minimo para actuar
   max_position: 30  # Maximo $30 por posicion de arb
+
+# Stat-Arb YES/NO Cointegrado (TODO 4.1)
+stat_arb:
+  edge_threshold: 0.02    # 2 centavos minimo (- fees)
+  max_position: 30        # $30 max por arb
+  max_markets_simultaneous: 5
+  fee_bps: 100            # 1% taker
+
+# LP Rewards Farming (TODO 4.2)
+rewards_farmer:
+  max_capital_per_market: 50.0
+  min_rewards_rate: 0.001   # 0.1% diario minimo
+  max_markets_simultaneous: 3
+  spread_offset: 0.015
+
+# Event-Driven Momentum (TODO 4.3)
+event_driven:
+  max_position: 20.0
+  momentum_delay_sec: 120
+  pre_event_window_sec: 7200
+
+# Anti-frontrunning jitter (TODO 1.5)
+anti_frontrun:
+  enabled: true
+  size_jitter_pct: 0.15
+  price_jitter_prob: 0.30
+  timing_jitter_sec: 5.0
 
 # Loop principal
 main_loop_interval_sec: 10

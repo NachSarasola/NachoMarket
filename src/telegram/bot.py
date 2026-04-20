@@ -140,6 +140,9 @@ class TelegramBot:
             ("markets", self._cmd_markets),
             ("pnl", self._cmd_pnl),
             ("block", self._cmd_block),
+            ("drawdown", self._cmd_drawdown),
+            ("stats", self._cmd_stats),
+            ("attribution", self._cmd_attribution),
         ]
         for name, handler in handlers:
             self._app.add_handler(CommandHandler(name, handler))
@@ -235,11 +238,14 @@ class TelegramBot:
             "*Comandos disponibles:*\n"
             "/status — Estado actual del bot\n"
             "/pnl — PnL dia / semana / mes\n"
+            "/stats — Sharpe/Sortino/Calmar 30d\n"
+            "/attribution — Top/bottom estrategias y mercados\n"
             "/markets — Mercados activos con inventory\n"
             "/review — Forzar self\\-review inmediato\n"
             "/pause — Pausar trading \\(cancela ordenes\\)\n"
             "/resume — Reanudar trading\n"
-            "/kill — Parar el bot completamente\n\n"
+            "/kill — Parar el bot completamente\n"
+            "/drawdown — Rolling drawdown 7/15/30d y scale-down status\n\n"
             "_Notificaciones automaticas: trades, errores, circuit breaker, reviews_"
         )
         if update.message:
@@ -510,6 +516,114 @@ class TelegramBot:
             )
         else:
             await update.message.reply_text("Bot no tiene market analyzer activo")
+
+    async def _cmd_drawdown(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/drawdown — Muestra drawdown rolling 7/15/30d y estado de scale-down."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("Bot controller no conectado.")
+            return
+
+        cb = getattr(self._controller, "_circuit_breaker", None)
+        if cb is None:
+            await update.message.reply_text("Circuit breaker no disponible.")
+            return
+
+        report = cb.get_drawdown_report()
+        dd7 = report["drawdown_7d"]
+        dd15 = report["drawdown_15d"]
+        dd30 = report["drawdown_30d"]
+
+        def fmt(val: float) -> str:
+            icon = "🟢" if val >= 0 else "🔴"
+            return f"{icon} `${val:+.2f}`"
+
+        thresholds = {
+            "7d": getattr(cb, "_drawdown_7d_threshold", 40.0),
+            "15d": getattr(cb, "_drawdown_15d_threshold", 80.0),
+            "30d": getattr(cb, "_drawdown_30d_threshold", 120.0),
+        }
+
+        scale_status = "🔴 ACTIVO (size -50%)" if getattr(cb, "_scale_down_active", False) else "🟢 normal"
+        arb_status = "🔴 PAUSADO" if getattr(cb, "_arb_paused", False) else "🟢 activo"
+
+        text = (
+            "*Rolling Drawdown Report*\n\n"
+            f"📅 7d: {fmt(dd7)} (límite: `${thresholds['7d']:.0f}`)\n"
+            f"📅 15d: {fmt(dd15)} (límite: `${thresholds['15d']:.0f}`)\n"
+            f"📅 30d: {fmt(dd30)} (límite: `${thresholds['30d']:.0f}`)\n\n"
+            f"⚖️ Scale-down 7d: {scale_status}\n"
+            f"🛑 Arb/Directional 15d: {arb_status}"
+        )
+        await update.message.reply_text(text)
+
+    async def _cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/stats — Muestra Sharpe/Sortino/Calmar ratios de los últimos 30 días."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        try:
+            from src.analysis.performance_metrics import compute_metrics_from_trades_file  # noqa: PLC0415
+            metrics = compute_metrics_from_trades_file(
+                str(TRADES_FILE),
+                window_days=30,
+                risk_free_rate=0.04,
+            )
+        except Exception:
+            await update.message.reply_text("❌ Error calculando métricas cuantitativas.")
+            return
+
+        if metrics.get("trade_count_30d", 0) == 0:
+            await update.message.reply_text("Sin trades suficientes en los últimos 30 días.")
+            return
+
+        sharpe = metrics.get("sharpe_ratio", 0.0)
+        sortino = metrics.get("sortino_ratio", 0.0)
+        calmar = metrics.get("calmar_ratio", 0.0)
+        max_dd = metrics.get("max_drawdown", 0.0)
+        total_return = metrics.get("total_return", 0.0)
+        count = metrics.get("trade_count_30d", 0)
+
+        sharpe_icon = "🟢" if sharpe > 1.5 else ("🟡" if sharpe > 0.5 else "🔴")
+        calmar_icon = "🟢" if calmar > 2.0 else ("🟡" if calmar > 0.5 else "🔴")
+        dd_icon = "🟢" if max_dd < 20 else ("🟡" if max_dd < 50 else "🔴")
+
+        text = (
+            "*Métricas Cuantitativas — 30 días*\n\n"
+            f"📊 Sharpe Ratio: {sharpe_icon} `{sharpe:.3f}`\n"
+            f"📉 Sortino Ratio: `{sortino:.3f}`\n"
+            f"{calmar_icon} Calmar Ratio: `{calmar:.3f}`\n"
+            f"{dd_icon} Max Drawdown: `${max_dd:.4f}`\n"
+            f"💰 Return total 30d: `${total_return:.4f}`\n"
+            f"🔢 Trades analizados: `{count}`\n\n"
+            "_Benchmark: Sharpe>1.5 = 🟢, >0.5 = 🟡, <0.5 = 🔴_"
+        )
+        await update.message.reply_text(text)
+
+    async def _cmd_attribution(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/attribution — Top y bottom estrategias/mercados por PnL."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        try:
+            from src.analysis.attribution import TradeAttribution  # noqa: PLC0415
+            attr = TradeAttribution(str(TRADES_FILE))
+            text = attr.format_telegram(top_n=3)
+        except Exception:
+            text = "❌ Error generando attribution report."
+
+        await update.message.reply_text(text or "Sin datos de attribution disponibles.")
 
     # ------------------------------------------------------------------
     # Helpers para calculo de PnL desde trades.jsonl

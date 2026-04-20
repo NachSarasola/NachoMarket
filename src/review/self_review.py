@@ -20,6 +20,8 @@ import anthropic
 import yaml
 from dotenv import load_dotenv
 
+from src.analysis.performance_metrics import compute_metrics_from_trades_file
+
 load_dotenv()
 logger = logging.getLogger("nachomarket.review")
 
@@ -87,6 +89,8 @@ class SelfReviewer:
             return {"status": "no_trades"}
 
         metrics = self._calculate_metrics(trades)
+        # Enriquecer con Sharpe/Sortino/Calmar sobre los últimos 30 días
+        quant_metrics = self._calculate_quant_metrics()
         logger.info(
             "Metrics: winrate=%.1f%% pnl=%.4f profit_factor=%.2f "
             "spread=%.4f trades=%d errors=%d",
@@ -98,7 +102,7 @@ class SelfReviewer:
             metrics["error_trades"],
         )
 
-        prompt = self._build_prompt(metrics, state)
+        prompt = self._build_prompt(metrics, state, quant_metrics)
 
         try:
             response = self._client.messages.create(
@@ -120,6 +124,7 @@ class SelfReviewer:
                 "window_hours": 8,
                 "trade_count": len(trades),
                 "metrics": metrics,
+                "quant_metrics": quant_metrics,
                 "analysis": analysis,
                 "raw_response": raw,
                 "input_tokens": response.usage.input_tokens,
@@ -143,7 +148,7 @@ class SelfReviewer:
 
             review["adjustments_applied"] = adjustments_applied
             self._save_review(review)
-            self._notify_telegram(analysis, metrics, adjustments_applied)
+            self._notify_telegram(analysis, metrics, adjustments_applied, quant_metrics)
 
             logger.info(
                 "Self-review completed: %d trades analyzed, cost≈$%.5f",
@@ -314,15 +319,47 @@ class SelfReviewer:
     # Prompt y parsing
     # ------------------------------------------------------------------
 
-    def _build_prompt(self, metrics: dict[str, Any], state: dict[str, Any] | None) -> str:
+    def _calculate_quant_metrics(self) -> dict[str, Any]:
+        """Calcula Sharpe/Sortino/Calmar sobre los últimos 30 días."""
+        try:
+            result = compute_metrics_from_trades_file(
+                str(TRADES_FILE),
+                window_days=30,
+                risk_free_rate=0.04,
+            )
+            return result
+        except Exception:
+            logger.debug("No se pudieron calcular quant metrics (sin datos suficientes)")
+            return {
+                "sharpe_ratio": 0.0,
+                "sortino_ratio": 0.0,
+                "calmar_ratio": 0.0,
+                "max_drawdown": 0.0,
+                "trade_count_30d": 0,
+            }
+
+    def _build_prompt(
+        self,
+        metrics: dict[str, Any],
+        state: dict[str, Any] | None,
+        quant_metrics: dict[str, Any] | None = None,
+    ) -> str:
         """Construye el prompt para Claude Haiku."""
         current_params = self._load_current_params()
         state_block = ("ESTADO DEL BOT:\n" + json.dumps(state, indent=2)) if state else ""
+        quant_block = ""
+        if quant_metrics:
+            quant_block = (
+                "MÉTRICAS CUANTITATIVAS (30 días):\n"
+                + json.dumps(quant_metrics, indent=2)
+            )
 
         return f"""Sos un analista de trading cuantitativo. Analizá estas métricas de las últimas 8 horas de un market making bot en Polymarket con $400 de capital.
 
-MÉTRICAS:
+MÉTRICAS 8H:
 {json.dumps(metrics, indent=2)}
+
+{quant_block}
 
 PARÁMETROS ACTUALES:
 {json.dumps(current_params, indent=2)}
@@ -351,7 +388,8 @@ Parámetros ajustables y sus rangos seguros:
 - refresh_seconds: entre 30 y 120 (frecuencia de refresh de órdenes)
 
 risk_level debe ser: LOW | MEDIUM | HIGH | CRITICAL
-Sugerí ajustes SOLO si hay evidencia clara en las métricas (winrate < 40%, profit_factor < 1.0, error_rates altas, etc.).
+Alerta CRITICAL si Sharpe < 0 por 14d o Calmar < 0.5.
+Sugerí ajustes SOLO si hay evidencia clara en las métricas (winrate < 40%, profit_factor < 1.0, Sharpe < 0.5, error_rates altas, etc.).
 Si el bot funciona bien, devolvé adjustments como lista vacía [].
 Devolvé SOLO el JSON, sin texto adicional."""
 
@@ -500,6 +538,7 @@ Devolvé SOLO el JSON, sin texto adicional."""
         analysis: dict | str,
         metrics: dict[str, Any],
         adjustments: list[dict],
+        quant_metrics: dict[str, Any] | None = None,
     ) -> None:
         """Envia resumen del review por Telegram (3 lineas + ajustes si aplica)."""
         # Resolver callback: primero el inyectado, luego el modulo bot.py
@@ -538,6 +577,18 @@ Devolvé SOLO el JSON, sin texto adicional."""
             ),
             f"_{summary}_",
         ]
+
+        # Añadir métricas cuantitativas (Sharpe / Sortino / Calmar)
+        if quant_metrics and quant_metrics.get("trade_count_30d", 0) > 0:
+            sharpe = quant_metrics.get("sharpe_ratio", 0.0)
+            sortino = quant_metrics.get("sortino_ratio", 0.0)
+            calmar = quant_metrics.get("calmar_ratio", 0.0)
+            sharpe_icon = "🟢" if sharpe > 1.0 else ("🟡" if sharpe > 0 else "🔴")
+            lines.append(
+                f"📊 30d Sharpe: {sharpe_icon}`{sharpe:.2f}` | "
+                f"Sortino: `{sortino:.2f}` | "
+                f"Calmar: `{calmar:.2f}`"
+            )
 
         if issues:
             lines.append("*Problemas:* " + " · ".join(f"`{i}`" for i in issues[:3]))

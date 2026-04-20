@@ -23,6 +23,12 @@ import schedule
 import yaml
 from dotenv import load_dotenv
 
+from src.analysis.correlation import CorrelationTracker
+from src.analysis.regime_detector import MarketRegimeDetector
+from src.analysis.toxic_flow import ToxicFlowDetector
+from src.analysis.var import VaRCalculator
+from src.external.fred import FREDClient
+from src.external.polyscan import WhaleTracker
 from src.polymarket.client import PolymarketClient
 from src.polymarket.markets import MarketAnalyzer
 from src.polymarket.websocket import OrderbookFeed, OrderbookState
@@ -30,10 +36,16 @@ from src.risk.circuit_breaker import CircuitBreaker
 from src.risk.inventory import InventoryManager
 from src.risk.market_profitability import MarketProfiler
 from src.risk.position_sizer import PositionSizer
+from src.risk.strategy_monitor import StrategyMonitor
 from src.review.self_review import SelfReviewer
+from src.strategy.allocator import StrategyAllocator
+from src.strategy.copy_trade import CopyTradeStrategy
 from src.strategy.directional import DirectionalStrategy
+from src.strategy.event_driven import EventDrivenStrategy
 from src.strategy.market_maker import MarketMakerStrategy
 from src.strategy.multi_arb import MultiArbStrategy
+from src.strategy.rewards_farmer import RewardsFarmerStrategy
+from src.strategy.stat_arb import StatArbStrategy
 from src.telegram.bot import TelegramBot, send_alert
 from src.utils.logger import setup_logger
 
@@ -108,6 +120,9 @@ class NachoMarketBot:
 
         # --- c. WebSocket feed (el thread se arranca en run()) ---
         self._feed = OrderbookFeed()
+        # Dead man's switch: pausar bot si el feed queda sin mensajes >60s
+        self._feed.register_health_callback(self._on_feed_health_event)
+        self._feed_was_stale: bool = False  # Para no repetir alertas
 
         # --- d. Telegram bot (auto-arranca thread daemon en __init__) ---
         # Se inicializa antes que los demás para poder recibir alertas de arranque.
@@ -116,9 +131,15 @@ class NachoMarketBot:
         # --- e. Strategies habilitadas en settings ---
         enabled = self._settings.get("strategies_enabled", ["market_maker", "multi_arb"])
         _strategy_factories = {
-            "market_maker": lambda: MarketMakerStrategy(self._client, self._settings),
-            "multi_arb":    lambda: MultiArbStrategy(self._client, self._settings),
-            "directional":  lambda: DirectionalStrategy(self._client, self._settings),
+            "market_maker":   lambda: MarketMakerStrategy(self._client, self._settings),
+            "multi_arb":      lambda: MultiArbStrategy(self._client, self._settings),
+            "directional":    lambda: DirectionalStrategy(self._client, self._settings),
+            "stat_arb":       lambda: StatArbStrategy(self._client, self._settings),
+            "rewards_farmer": lambda: RewardsFarmerStrategy(self._client, self._settings),
+            "event_driven":   lambda: EventDrivenStrategy(self._client, self._settings),
+            "copy_trade":     lambda: CopyTradeStrategy(
+                self._client, self._settings, whale_tracker=None  # wired post-init
+            ),
         }
         self._strategies = [
             _strategy_factories[name]()
@@ -148,6 +169,30 @@ class NachoMarketBot:
         self._reviewer = SelfReviewer(
             model=self._settings.get("review_model", "claude-haiku-4-5-20251001"),
         )
+
+        # --- i. Hedge-fund-grade: analysis + alpha modules ---
+        self._regime_detector = MarketRegimeDetector(self._settings)
+        self._toxic_flow = ToxicFlowDetector(self._risk_config.get("toxic_flow", {}))
+        self._correlation = CorrelationTracker(self._settings)
+        self._var_calc = VaRCalculator()
+
+        # Strategy monitor (kill switch) + bandit allocator
+        sm_cfg = self._risk_config.get("strategy_monitor", {})
+        self._strategy_monitor = StrategyMonitor(
+            kill_calmar_threshold=sm_cfg.get("kill_calmar_threshold", 0.5),
+            kill_evaluation_days=sm_cfg.get("kill_evaluation_days", 14),
+            min_trades=sm_cfg.get("min_trades_for_kill", 10),
+            pause_callback=self._on_strategy_killed,
+            alert_callback=send_alert,
+        )
+        self._allocator = StrategyAllocator(
+            strategies=[name for name in self._settings.get("strategies_enabled", [])],
+            total_capital=self._settings.get("capital_total", 400.0),
+        )
+
+        # External data (PolyScan + FRED)
+        self._whale_tracker = WhaleTracker()
+        self._fred_client = FREDClient()
 
         self._loop_interval: int = self._settings.get(
             "main_loop_interval_sec", 10
@@ -189,6 +234,14 @@ class NachoMarketBot:
         schedule.every(review_hours).hours.do(self._run_review)
         schedule.every(_MARKET_UPDATE_INTERVAL_MIN).minutes.do(self._update_markets)
         schedule.every().day.at("00:00").do(self._circuit_breaker.reset_daily)
+        # Reconciliación on-chain cada 6h (TODO 1.2)
+        schedule.every(6).hours.do(self._run_reconciliation)
+        # Evaluación del strategy monitor cada hora (kill switch)
+        schedule.every(1).hours.do(self._run_strategy_monitor)
+        # Poll whale tracker cada 60s
+        schedule.every(60).seconds.do(self._poll_whale_tracker)
+        # Evaluar A/B bandit allocator diariamente
+        schedule.every(1).days.do(self._run_allocator_evaluation)
 
         # Notificar arranque exitoso
         strat_names = ", ".join(s.name for s in self._strategies)
@@ -301,17 +354,50 @@ class NachoMarketBot:
             # Enriquecer con datos real-time del WebSocket si están disponibles
             market_data = self._enrich_with_ws(market)
 
+            # Actualizar regime detector y correlation tracker con mid price
+            mid = market_data.get("mid_price", 0.0)
+            condition_id = market.get("condition_id", "")
+            tokens = market.get("tokens", [])
+            token_id = tokens[0].get("token_id", "") if tokens else ""
+            if token_id and mid > 0:
+                self._regime_detector.update(token_id, mid)
+                self._correlation.update(token_id, mid)
+            # Añadir estado de régimen al market_data
+            if token_id:
+                regime_state = self._regime_detector.get_state(token_id)
+                market_data["regime"] = regime_state.regime.value if regime_state else "unknown"
+                market_data["spread_multiplier"] = (
+                    regime_state.spread_multiplier if regime_state else 1.0
+                )
+                market_data["pause_mm"] = (
+                    regime_state.pause_mm if regime_state else False
+                )
+                # Marcar mercados con toxic flow como evitables
+                market_data["toxic_flow"] = self._toxic_flow.is_toxic(token_id)
+
             for strategy in self._strategies:
                 if not strategy.is_active:
+                    continue
+                # Skip MM en régimen VOLATILE
+                if market_data.get("pause_mm") and strategy.name == "market_maker":
+                    continue
+                # Skip mercados con toxic flow (excepto stat_arb que aprovecha ineficiencias)
+                if market_data.get("toxic_flow") and strategy.name not in ("stat_arb", "multi_arb"):
+                    self._logger.debug(
+                        "Toxic flow detectado en %s... — salteando %s",
+                        condition_id[:12], strategy.name,
+                    )
+                    continue
+                # Skip estrategias que el monitor mató
+                if self._strategy_monitor.is_killed(strategy.name):
                     continue
                 try:
                     trades = self._run_strategy(strategy, market_data)
                     for trade in trades:
                         self._handle_trade(trade, market)
                 except Exception:
-                    cid = market.get("condition_id", "?")
                     self._logger.exception(
-                        "Error: estrategia=%s mercado=%s...", strategy.name, cid[:12]
+                        "Error: estrategia=%s mercado=%s...", strategy.name, condition_id[:12]
                     )
                     self._circuit_breaker.record_error()
 
@@ -464,6 +550,23 @@ class NachoMarketBot:
         # Actualizar profiler de rentabilidad por mercado
         question = market.get("question", "")
         self._profiler.update(trade.market_id, trade, question=question)
+
+        # Alimentar strategy monitor + bandit allocator con el PnL del trade
+        pnl_for_monitor = self._estimate_trade_pnl(trade)
+        if pnl_for_monitor is not None:
+            self._strategy_monitor.record_trade(trade.strategy_name, pnl_for_monitor)
+            self._allocator.record_outcome(trade.strategy_name, pnl_for_monitor)
+
+        # Alimentar toxic flow detector con el fill
+        tokens = market.get("tokens", [])
+        token_id = tokens[0].get("token_id", "") if tokens else ""
+        if token_id and trade.side in ("BUY", "SELL"):
+            self._toxic_flow.record_fill(
+                token_id=token_id,
+                side=trade.side,
+                fill_price=trade.price,
+                mid_before=market.get("mid_price", trade.price),
+            )
 
         # Notificación Telegram
         if not self._settings.get("telegram_alert_on_trade", True):
@@ -732,6 +835,55 @@ class NachoMarketBot:
             change_type, token_id[:8], ob.midpoint, ob.depth,
         )
 
+    def _on_feed_health_event(self, event_type: str, staleness_sec: float) -> None:
+        """Dead man's switch callback: reacciona a eventos de salud del WS feed.
+
+        - "stale"    → pausa bot + cancela órdenes + alerta CRÍTICA Telegram.
+        - "recovered"→ alerta de recuperación (NO reanuda sola; requiere /resume).
+
+        El callback es ejecutado desde el asyncio loop del WS thread, pero
+        pause() / send_alert() son thread-safe, así que no hay race condition.
+        """
+        if event_type == "stale":
+            if self._feed_was_stale:
+                return  # Ya notificado, no spamear
+            self._feed_was_stale = True
+            self._logger.critical(
+                "DEAD MAN'S SWITCH: feed WS sin mensajes hace %.0fs — pausando bot",
+                staleness_sec,
+            )
+            # 1. Pausar el bot (stop trading cycle)
+            if self._state == "running":
+                self.pause()
+
+            # 2. Cancelar todas las órdenes abiertas
+            try:
+                self._client.cancel_all_orders()
+                self._logger.warning("Dead man's switch: todas las órdenes canceladas")
+            except Exception:
+                self._logger.exception("Dead man's switch: error cancelando órdenes")
+
+            # 3. Alerta CRÍTICA por Telegram
+            send_alert(
+                "🚨 *DEAD MAN'S SWITCH ACTIVADO*\n"
+                f"Feed WS sin mensajes hace `{staleness_sec:.0f}s`\n"
+                "Bot *PAUSADO* y órdenes *CANCELADAS* automáticamente.\n"
+                "Verificar conexión → usar `/resume` para reactivar."
+            )
+
+        elif event_type == "recovered":
+            self._feed_was_stale = False
+            self._logger.info(
+                "Feed WS recuperado (staleness=%.1fs). Bot sigue PAUSADO. "
+                "Usar /resume para reactivar.",
+                staleness_sec,
+            )
+            send_alert(
+                "✅ *Feed WS recuperado*\n"
+                f"Último dato: `{staleness_sec:.1f}s` atrás.\n"
+                "Bot sigue *PAUSADO* por seguridad → usar `/resume` para reactivar."
+            )
+
     # ------------------------------------------------------------------
     # Actualización de mercados (schedule + startup)
     # ------------------------------------------------------------------
@@ -779,6 +931,28 @@ class NachoMarketBot:
         except Exception:
             self._logger.exception("Self-review fallido")
 
+    def _run_reconciliation(self) -> None:
+        """Reconcilia estado on-chain vs state.json local. Ejecutado cada 6h."""
+        self._logger.info("Iniciando reconciliación on-chain...")
+        try:
+            result = self._client.reconcile_state()
+            if result.get("desync"):
+                delta = result.get("balance_delta", 0.0)
+                send_alert(
+                    f"⚠️ *Desync detectado* en reconciliación\n"
+                    f"On-chain: `${result['balance_onchain']:.4f}` USDC\n"
+                    f"Local: `${result['balance_local']:.4f}` USDC\n"
+                    f"Delta: `${delta:.4f}` | State actualizado con ground truth."
+                )
+            else:
+                self._logger.info(
+                    "Reconciliación OK: balance=%.4f USDC, ordenes=%d",
+                    result.get("balance_onchain", 0.0),
+                    result.get("open_orders_onchain", 0),
+                )
+        except Exception:
+            self._logger.exception("Error en reconciliación on-chain")
+
     def force_review(self) -> dict[str, Any]:
         """Ejecuta un self-review inmediato. Llamado desde Telegram /review.
 
@@ -788,6 +962,38 @@ class NachoMarketBot:
         """
         self._run_review()
         return {"triggered": True}
+
+    def _on_strategy_killed(self, strategy_name: str) -> None:
+        """Callback del StrategyMonitor: pausa la estrategia con Calmar bajo."""
+        self._logger.warning("StrategyMonitor: matando estrategia '%s'", strategy_name)
+        for strategy in self._strategies:
+            if strategy.name == strategy_name:
+                strategy.pause()
+                break
+
+    def _run_strategy_monitor(self) -> None:
+        """Evalúa el strategy monitor (kill switch). Ejecutado cada hora."""
+        try:
+            killed = self._strategy_monitor.evaluate()
+            if killed:
+                self._logger.warning("Strategy monitor mató: %s", killed)
+        except Exception:
+            self._logger.exception("Error en strategy monitor evaluation")
+
+    def _poll_whale_tracker(self) -> None:
+        """Actualiza whale tracker. Ejecutado cada 60s."""
+        try:
+            self._whale_tracker.poll()
+        except Exception:
+            self._logger.debug("Error en whale tracker poll (no crítico)")
+
+    def _run_allocator_evaluation(self) -> None:
+        """Actualiza allocations del bandit allocator. Ejecutado diariamente."""
+        try:
+            allocs = self._allocator.get_allocations(self._cached_balance)
+            self._logger.info("Bandit allocations: %s", allocs)
+        except Exception:
+            self._logger.exception("Error en allocator evaluation")
 
     # ------------------------------------------------------------------
     # Circuit breaker → Telegram
@@ -816,6 +1022,8 @@ class NachoMarketBot:
     def get_status(self) -> dict[str, Any]:
         """Retorna estado completo del bot para Telegram /status y self-review."""
         cb = self._circuit_breaker.get_status()
+        monitor_status = self._strategy_monitor.get_status()
+        killed_strategies = [name for name, info in monitor_status.items() if info.get("is_killed")]
         return {
             "state": self._state,
             "paper_mode": self._paper_mode,
@@ -830,6 +1038,8 @@ class NachoMarketBot:
             "active_markets": len(self._active_markets),
             "ws_connected": self._feed.is_connected(),
             "strategies": [s.name for s in self._strategies if s.is_active],
+            "killed_strategies": killed_strategies,
+            "rolling_drawdown": cb.get("rolling_drawdown", {}),
         }
 
     def get_positions(self) -> dict[str, dict[str, float]]:

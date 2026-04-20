@@ -19,7 +19,12 @@ from typing import Any, Callable
 
 import yaml
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed, ConnectionClosedError, WebSocketException
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    ConnectionClosedOK,
+    WebSocketException,
+)
 
 logger = logging.getLogger("nachomarket.websocket")
 
@@ -34,6 +39,14 @@ DEPTH_LEVELS = 5                   # Niveles que se suman para calcular depth
 BACKOFF_BASE = 1.0
 BACKOFF_MAX = 60.0
 BACKOFF_MULTIPLIER = 2.0
+
+# Dead man's switch — pausa trading si no hay mensajes del WS
+DEFAULT_STALENESS_THRESHOLD_SEC = 60.0
+HEALTH_CHECK_INTERVAL_SEC = 5.0
+
+# Tipo de callback para eventos de salud del feed
+# Recibe (event_type: "stale" | "recovered", seconds_since_last_message)
+HealthCallback = Callable[[str, float], None]
 
 
 @dataclass
@@ -65,7 +78,10 @@ class OrderbookFeed:
     change_type es 'midpoint' o 'depth'.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        staleness_threshold_sec: float = DEFAULT_STALENESS_THRESHOLD_SEC,
+    ) -> None:
         # token_id → list de (condition_id, callback)
         self._subscriptions: dict[str, list[tuple[str, ChangeCallback]]] = {}
         # token_id → OrderbookState (protegido por _lock)
@@ -76,6 +92,13 @@ class OrderbookFeed:
         # Referencia a la conexion activa para suscripciones dinamicas
         self._ws_ref: Any | None = None
         self._ws_lock = asyncio.Lock()  # Para send() concurrente
+
+        # --- Dead man's switch ---
+        self._last_message_time: float = 0.0
+        self._staleness_threshold: float = staleness_threshold_sec
+        self._health_callbacks: list[HealthCallback] = []
+        self._is_stale: bool = False
+        self._health_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # API publica — thread-safe
@@ -166,6 +189,97 @@ class OrderbookFeed:
         return self._connected
 
     # ------------------------------------------------------------------
+    # Dead man's switch — monitor de salud del feed
+    # ------------------------------------------------------------------
+
+    def register_health_callback(self, callback: HealthCallback) -> None:
+        """Registra un callback que se invoca en eventos 'stale' y 'recovered'.
+
+        El callback recibe (event_type, seconds_since_last_message) donde
+        event_type es 'stale' (feed sin updates por >threshold) o 'recovered'.
+
+        Los callbacks deben ser rapidos y no-bloqueantes. Son ejecutados
+        desde el asyncio loop del feed.
+        """
+        self._health_callbacks.append(callback)
+        logger.info(f"Health callback registrado (total: {len(self._health_callbacks)})")
+
+    def seconds_since_last_message(self) -> float:
+        """Retorna segundos desde el ultimo mensaje recibido del WS.
+
+        Retorna inf si nunca se recibio un mensaje (feed no iniciado).
+        """
+        if self._last_message_time == 0.0:
+            return float("inf")
+        return time.time() - self._last_message_time
+
+    def is_healthy(self, staleness_threshold_sec: float | None = None) -> bool:
+        """Indica si el feed esta saludable (mensajes recientes).
+
+        Args:
+            staleness_threshold_sec: Override del threshold. Default al configurado.
+
+        Returns:
+            True si hay mensajes recientes, False si el feed esta stale o no iniciado.
+        """
+        threshold = staleness_threshold_sec or self._staleness_threshold
+        return self.seconds_since_last_message() <= threshold
+
+    def mark_message_received(self) -> None:
+        """Actualiza timestamp del ultimo mensaje. Thread-safe.
+
+        Llamado internamente cuando llega un mensaje valido del WS.
+        Publico para facilitar tests.
+        """
+        self._last_message_time = time.time()
+
+    async def _health_monitor_loop(self) -> None:
+        """Task asincrono que verifica staleness del feed periodicamente."""
+        logger.info(
+            f"Health monitor iniciado (threshold={self._staleness_threshold:.0f}s)"
+        )
+        while self._running:
+            try:
+                await asyncio.sleep(HEALTH_CHECK_INTERVAL_SEC)
+                if not self._running:
+                    break
+
+                staleness = self.seconds_since_last_message()
+
+                # Solo revisar despues de haber recibido al menos un mensaje
+                if self._last_message_time == 0.0:
+                    continue
+
+                if staleness > self._staleness_threshold:
+                    if not self._is_stale:
+                        self._is_stale = True
+                        logger.warning(
+                            f"FEED STALE — sin mensajes del WS hace {staleness:.0f}s "
+                            f"(threshold={self._staleness_threshold:.0f}s)"
+                        )
+                        self._fire_health_callbacks("stale", staleness)
+                else:
+                    if self._is_stale:
+                        self._is_stale = False
+                        logger.info(
+                            f"FEED RECUPERADO — nuevo mensaje recibido "
+                            f"({staleness:.1f}s desde el ultimo)"
+                        )
+                        self._fire_health_callbacks("recovered", staleness)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Error en health monitor")
+
+    def _fire_health_callbacks(self, event_type: str, staleness: float) -> None:
+        """Dispara todos los health callbacks registrados."""
+        for callback in list(self._health_callbacks):
+            try:
+                callback(event_type, staleness)
+            except Exception:
+                logger.exception(f"Error en health callback ({event_type})")
+
+    # ------------------------------------------------------------------
     # Ciclo de vida
     # ------------------------------------------------------------------
 
@@ -178,6 +292,10 @@ class OrderbookFeed:
         backoff = BACKOFF_BASE
 
         logger.info("OrderbookFeed iniciando...")
+
+        # Lanzar health monitor (dead man's switch)
+        if self._health_task is None or self._health_task.done():
+            self._health_task = asyncio.create_task(self._health_monitor_loop())
 
         while self._running:
             try:
@@ -237,6 +355,12 @@ class OrderbookFeed:
             try:
                 await self._ws_ref.close()
             except Exception:
+                pass
+        if self._health_task is not None and not self._health_task.done():
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except (asyncio.CancelledError, Exception):
                 pass
         logger.info("OrderbookFeed: stop solicitado")
 
@@ -305,6 +429,9 @@ class OrderbookFeed:
         """Parsea y despacha un mensaje del WebSocket."""
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
+
+        # Dead man's switch: marcar que recibimos un mensaje valido
+        self.mark_message_received()
 
         try:
             data = json.loads(raw)

@@ -618,6 +618,111 @@ class PolymarketClient:
         }
 
     # ------------------------------------------------------------------
+    # Reconciliación on-chain (TODO 1.2)
+    # ------------------------------------------------------------------
+
+    def reconcile_state(
+        self,
+        state_path: str = "data/state.json",
+        alert_delta_threshold: float = 1.0,
+    ) -> dict[str, Any]:
+        """Reconcilia el estado local con el estado real on-chain.
+
+        Compara:
+        - Balance USDC on-chain vs state.json['balance']
+        - Número de órdenes abiertas on-chain vs state.json['open_orders']
+
+        Args:
+            state_path: Ruta al archivo de estado local.
+            alert_delta_threshold: Delta en USDC que activa desync=True.
+
+        Returns:
+            Dict con claves:
+                balance_onchain (float)
+                balance_local (float | None)
+                balance_delta (float)
+                open_orders_onchain (int)
+                open_orders_local (int | None)
+                desync (bool) — True si delta supera threshold
+                state_updated (bool) — True si se actualizó el archivo
+
+        En modo paper retorna valores simulados sin tocar on-chain.
+        """
+        result: dict[str, Any] = {
+            "balance_onchain": 0.0,
+            "balance_local": None,
+            "balance_delta": 0.0,
+            "open_orders_onchain": 0,
+            "open_orders_local": None,
+            "desync": False,
+            "state_updated": False,
+        }
+
+        if self.paper_mode:
+            result["balance_onchain"] = 400.0
+            logger.info("reconcile_state: paper mode — simulado")
+            return result
+
+        # --- 1. Leer estado on-chain ---
+        try:
+            balance_onchain = self.get_balance()
+            result["balance_onchain"] = balance_onchain
+        except Exception:
+            logger.exception("reconcile_state: error obteniendo balance on-chain")
+            return result
+
+        try:
+            orders_onchain = self.get_positions()
+            result["open_orders_onchain"] = len(orders_onchain)
+        except Exception:
+            logger.exception("reconcile_state: error obteniendo órdenes on-chain")
+            orders_onchain = []
+
+        # --- 2. Leer estado local ---
+        state_file = Path(state_path)
+        local_state: dict[str, Any] = {}
+        if state_file.exists():
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    local_state = json.load(f)
+            except Exception:
+                logger.warning("reconcile_state: no se pudo leer %s", state_path)
+
+        balance_local = local_state.get("balance_usdc")
+        orders_local = local_state.get("open_orders_count")
+        result["balance_local"] = balance_local
+        result["open_orders_local"] = orders_local
+
+        # --- 3. Comparar ---
+        if balance_local is not None:
+            delta = abs(balance_onchain - float(balance_local))
+            result["balance_delta"] = delta
+            if delta > alert_delta_threshold:
+                result["desync"] = True
+                logger.warning(
+                    "reconcile_state: DESYNC detectado — on-chain=%.4f local=%.4f delta=%.4f",
+                    balance_onchain, balance_local, delta,
+                )
+
+        # --- 4. Actualizar state.json con ground truth ---
+        try:
+            local_state["balance_usdc"] = balance_onchain
+            local_state["open_orders_count"] = len(orders_onchain)
+            local_state["last_reconcile"] = datetime.now(timezone.utc).isoformat()
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(state_file, "w", encoding="utf-8") as f:
+                json.dump(local_state, f, indent=2, ensure_ascii=False)
+            result["state_updated"] = True
+            logger.info(
+                "reconcile_state: OK — balance=%.4f USDC, órdenes=%d",
+                balance_onchain, len(orders_onchain),
+            )
+        except Exception:
+            logger.exception("reconcile_state: error guardando state.json")
+
+        return result
+
+    # ------------------------------------------------------------------
     # Internos
     # ------------------------------------------------------------------
 
