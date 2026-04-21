@@ -20,6 +20,9 @@ strategies_enabled:
   - rewards_farmer
   # - event_driven   # Activar cuando se configure FRED API key
 
+# Near-resolution gate (Fase 1): MM cancela quotes si el mercado resuelve en < N horas
+near_resolution_hours: 6
+
 # Market Making
 market_maker:
   spread_offset: 0.02          # 2 centavos de offset al mid
@@ -29,6 +32,7 @@ market_maker:
   repositioning_enabled: true  # Despues de un fill, reposicionar en entry+1c
   reposition_offset: 0.01      # 1 centavo de offset para reposicionamiento
   reposition_timeout_min: 90   # Cancelar reposicion si no se ejecuta en 90min
+  near_resolution_hours: 6     # Cancelar quotes si faltan < 6h para resolución
 
 # Arbitraje Multi-Outcome
 multi_arb:
@@ -54,6 +58,25 @@ event_driven:
   max_position: 20.0
   momentum_delay_sec: 120
   pre_event_window_sec: 7200
+
+# Directional Strategy (Fase 3)
+directional:
+  min_edge_bps: 100          # Edge mínimo en bps (1%) para operar
+  min_size_usdc: 5.0         # Tamaño mínimo de orden
+  max_size_usdc: 20.0        # 5% de $400 — regla INQUEBRANTABLE
+  kelly_fraction: 0.25       # Quarter-Kelly
+  expected_hold_seconds: 7200  # 2h de tenencia estimada para cost model
+
+# Blacklist por round-trip win rate (Fase 4)
+blacklist:
+  min_trades: 10       # Mínimo round-trips para evaluar un mercado
+  wr_threshold: 0.30   # WR < 30% → blacklist
+  blacklist_days: 7    # Días de blacklist tras superar el umbral
+
+# Stage Machine (Fase 2)
+stages:
+  promote_threshold: 7   # Reviews positivos necesarios en la ventana de 10
+  review_window: 10      # Últimos N reviews considerados para auto-promoción
 
 # Anti-frontrunning jitter (TODO 1.5)
 anti_frontrun:

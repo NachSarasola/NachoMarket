@@ -52,6 +52,12 @@ class MarketMakerStrategy(BaseStrategy):
         self._jitter_price_prob: float = jitter_cfg.get("price_jitter_prob", 0.30)  # 30%
         self._jitter_timing_sec: float = jitter_cfg.get("timing_jitter_sec", 5.0)  # ±5s
 
+        # Near-resolution gate (Fase 1): cancelar quotes cuando faltan < N horas
+        self._near_resolution_hours: float = mm.get(
+            "near_resolution_hours",
+            config.get("near_resolution_hours", 6.0),
+        )
+
     # ------------------------------------------------------------------
     # BaseStrategy interface
     # ------------------------------------------------------------------
@@ -332,6 +338,18 @@ class MarketMakerStrategy(BaseStrategy):
             except Exception:
                 self._logger.debug(f"Could not cancel expired reposition {order_id[:12]}...")
 
+        # Near-resolution gate: cancelar quotes y salir si el mercado resuelve pronto
+        if self._is_near_resolution(market_data):
+            self._logger.info(
+                "Near-resolution (< %.0fh): cancelando quotes para %s",
+                self._near_resolution_hours, condition_id[:14],
+            )
+            try:
+                self._client.cancel_market_orders(condition_id=condition_id)
+            except Exception:
+                self._logger.debug("No se pudieron cancelar órdenes near-resolution")
+            return []
+
         # Verificar si necesita refresh
         if not self.needs_refresh(condition_id):
             return []
@@ -481,3 +499,15 @@ class MarketMakerStrategy(BaseStrategy):
     def get_paused_sides(self, token_id: str) -> set[str]:
         """Retorna lados pausados para un token."""
         return self._paused_sides.get(token_id, set())
+
+    def _is_near_resolution(self, market_data: dict[str, Any]) -> bool:
+        """True si el mercado resuelve en menos de near_resolution_hours."""
+        end_date_str = market_data.get("end_date_iso", market_data.get("end_date", ""))
+        if not end_date_str:
+            return False
+        try:
+            end_dt = datetime.fromisoformat(str(end_date_str).replace("Z", "+00:00"))
+            hours_left = (end_dt - datetime.now(timezone.utc)).total_seconds() / 3600.0
+            return hours_left < self._near_resolution_hours
+        except (ValueError, TypeError, AttributeError):
+            return False

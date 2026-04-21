@@ -14,13 +14,16 @@ import os
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anthropic
 import yaml
 from dotenv import load_dotenv
 
 from src.analysis.performance_metrics import compute_metrics_from_trades_file
+
+if TYPE_CHECKING:
+    from src.strategy.stages import StageMachine
 
 load_dotenv()
 logger = logging.getLogger("nachomarket.review")
@@ -60,10 +63,12 @@ class SelfReviewer:
         self,
         model: str = _DEFAULT_MODEL,
         telegram_callback: Callable[[str], Any] | None = None,
+        stage_machine: "StageMachine | None" = None,
     ) -> None:
         self._client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
         self._model = model
         self._telegram_callback = telegram_callback
+        self._stage_machine = stage_machine  # Observer hook para Fase 2
         REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -149,6 +154,9 @@ class SelfReviewer:
             review["adjustments_applied"] = adjustments_applied
             self._save_review(review)
             self._notify_telegram(analysis, metrics, adjustments_applied, quant_metrics)
+
+            # Observer: notificar a StageMachine el resultado de este review
+            self._notify_stage_machine(analysis, metrics)
 
             logger.info(
                 "Self-review completed: %d trades analyzed, cost≈$%.5f",
@@ -494,6 +502,46 @@ Devolvé SOLO el JSON, sin texto adicional."""
     # ------------------------------------------------------------------
     # Persistencia y notificaciones
     # ------------------------------------------------------------------
+
+    def _notify_stage_machine(
+        self,
+        analysis: dict | str,
+        metrics: dict[str, Any],
+    ) -> None:
+        """Observer notification — registra el review en la StageMachine por estrategia.
+
+        Un review se considera positivo si:
+        - should_pause=False y risk_level in (LOW, MEDIUM)
+        - winrate >= 0.40 y profit_factor >= 1.0
+
+        Se notifica a todas las estrategias conocidas en la StageMachine.
+        """
+        if self._stage_machine is None:
+            return
+
+        if not isinstance(analysis, dict):
+            return
+
+        should_pause = analysis.get("should_pause", False)
+        risk_level = analysis.get("risk_level", "MEDIUM")
+        winrate = metrics.get("winrate", 0.0)
+        profit_factor = metrics.get("profit_factor", 0.0)
+
+        passed = (
+            not should_pause
+            and risk_level in ("LOW", "MEDIUM")
+            and winrate >= 0.40
+            and profit_factor >= 1.0
+        )
+
+        stages_info = self._stage_machine.get_all_stages()
+        for strategy_name in stages_info:
+            promoted = self._stage_machine.record_review(strategy_name, passed)
+            if promoted:
+                logger.info(
+                    "Stage machine auto-promoted '%s' tras review (passed=%s)",
+                    strategy_name, passed,
+                )
 
     def _load_recent_trades(self, hours: int = 8) -> list[dict]:
         """Carga trades de las ultimas N horas desde trades.jsonl."""

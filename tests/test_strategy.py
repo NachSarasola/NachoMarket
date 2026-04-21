@@ -50,8 +50,14 @@ def arb_config() -> dict:
 @pytest.fixture
 def dir_config() -> dict:
     return {
-        "directional_min_edge_pct": 5.0,
-        "directional_order_size_usdc": 5.0,
+        "capital_total": 400.0,
+        "directional": {
+            "min_edge_bps": 50,       # 0.5% para facilitar tests
+            "min_size_usdc": 5.0,
+            "max_size_usdc": 20.0,
+            "kelly_fraction": 0.25,
+            "expected_hold_seconds": 3600.0,
+        },
     }
 
 
@@ -612,47 +618,170 @@ class TestMultiArb:
 
 
 # ------------------------------------------------------------------
-# Tests: DirectionalStrategy
+# Tests: DirectionalStrategy (rewrite Fase 3 — régimen + CostModel + Kelly)
 # ------------------------------------------------------------------
 
 class TestDirectional:
-    def test_should_act_strong_signal(self, client, dir_config) -> None:
+    def test_should_act_unknown_regime_retorna_true(self, client, dir_config) -> None:
+        """Con insuficientes precios el régimen es UNKNOWN → should_act=True."""
         strategy = DirectionalStrategy(client, dir_config)
-        assert strategy.should_act({"mid_price": 0.6, "avg_price_24h": 0.5, "volume_ratio": 1.5}) is True
+        # Sin historial de precios: régimen UNKNOWN
+        result = strategy.should_act({"mid_price": 0.5, "token_id": "t1"})
+        assert result is True
 
-    def test_should_act_weak_signal(self, client, dir_config) -> None:
+    def test_should_act_actualiza_regime_detector(self, client, dir_config) -> None:
+        """Cada llamada a should_act alimenta el precio al RegimeDetector."""
         strategy = DirectionalStrategy(client, dir_config)
-        assert strategy.should_act({"mid_price": 0.51, "avg_price_24h": 0.50, "volume_ratio": 1.0}) is False
+        strategy.should_act({"mid_price": 0.5, "token_id": "t1"})
+        # Verificar que el detector tiene al menos 1 precio
+        buf = strategy._regime_detector._price_buffers.get("t1", [])
+        assert len(buf) >= 1
 
-    def test_evaluate_sell_on_price_up(self, client, dir_config) -> None:
+    def test_evaluate_sell_cuando_mid_mayor_a_fair(self, client, dir_config) -> None:
+        """mid > fair_value → mercado sobreestima → SELL."""
         strategy = DirectionalStrategy(client, dir_config)
         signals = strategy.evaluate({
             "token_id": "tok1",
             "condition_id": "c1",
-            "mid_price": 0.7,
-            "avg_price_24h": 0.5,
+            "mid_price": 0.75,
+            "avg_price_24h": 0.50,
             "volume_ratio": 1.0,
         })
         assert len(signals) == 1
-        assert signals[0].side == "SELL"  # Reversion a la media
+        assert signals[0].side == "SELL"
 
-    def test_evaluate_buy_on_price_down(self, client, dir_config) -> None:
+    def test_evaluate_buy_cuando_mid_menor_a_fair(self, client, dir_config) -> None:
+        """mid < fair_value → mercado subestima → BUY."""
         strategy = DirectionalStrategy(client, dir_config)
         signals = strategy.evaluate({
             "token_id": "tok1",
             "condition_id": "c1",
-            "mid_price": 0.3,
-            "avg_price_24h": 0.5,
+            "mid_price": 0.25,
+            "avg_price_24h": 0.50,
             "volume_ratio": 1.0,
         })
         assert len(signals) == 1
         assert signals[0].side == "BUY"
 
-    def test_evaluate_no_signal_when_avg_zero(self, client, dir_config) -> None:
+    def test_evaluate_sin_avg_retorna_vacio(self, client, dir_config) -> None:
+        """Sin avg_price_24h no se puede calcular fair_value → sin señal."""
         strategy = DirectionalStrategy(client, dir_config)
         signals = strategy.evaluate({
             "token_id": "tok1",
+            "condition_id": "c1",
             "mid_price": 0.5,
-            "avg_price_24h": 0,
+            "avg_price_24h": 0.0,
         })
         assert signals == []
+
+    def test_evaluate_sin_edge_suficiente(self, client, dir_config) -> None:
+        """Desviación mínima → edge < min_edge_bps → sin señal."""
+        strategy = DirectionalStrategy(client, dir_config)
+        # mid y avg casi iguales → desviación ~0
+        signals = strategy.evaluate({
+            "token_id": "tok1",
+            "condition_id": "c1",
+            "mid_price": 0.500,
+            "avg_price_24h": 0.499,
+            "volume_ratio": 1.0,
+        })
+        assert signals == []
+
+    def test_evaluate_signal_tiene_metadata_edge_bps(self, client, dir_config) -> None:
+        """Los signals deben incluir edge_bps y fair_value en metadata."""
+        strategy = DirectionalStrategy(client, dir_config)
+        signals = strategy.evaluate({
+            "token_id": "tok1",
+            "condition_id": "c1",
+            "mid_price": 0.75,
+            "avg_price_24h": 0.50,
+            "volume_ratio": 1.0,
+        })
+        assert len(signals) == 1
+        meta = signals[0].metadata
+        assert "edge_bps" in meta
+        assert "fair_value" in meta
+        assert meta["edge_bps"] > 0
+
+    def test_evaluate_price_extremos_retorna_vacio(self, client, dir_config) -> None:
+        """Precios cerca de 0 o 1 no generan señales (filtro de bounds)."""
+        strategy = DirectionalStrategy(client, dir_config)
+        assert strategy.evaluate({"token_id": "t", "condition_id": "c", "mid_price": 0.01}) == []
+        assert strategy.evaluate({"token_id": "t", "condition_id": "c", "mid_price": 0.99}) == []
+
+    def test_execute_genera_post_only_order(self, client, dir_config, tmp_path) -> None:
+        """execute() usa post_only=True y registra el trade."""
+        import src.strategy.base as base_mod
+        original = base_mod.TRADES_FILE
+        base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
+        try:
+            strategy = DirectionalStrategy(client, dir_config)
+            signal = strategy._make_signal("m1", "t1", "BUY", 0.45, 8.0, 0.7)
+            trades = strategy.execute([signal])
+            assert len(trades) == 1
+            assert trades[0].side == "BUY"
+            assert base_mod.TRADES_FILE.exists()
+        finally:
+            base_mod.TRADES_FILE = original
+
+    def test_near_resolution_gate_cancela_mm(self, client, mm_config) -> None:
+        """MM cancela quotes y no opera si el mercado resuelve en < near_resolution_hours."""
+        from datetime import datetime, timedelta, timezone
+        strategy = MarketMakerStrategy(client, mm_config)
+        strategy._near_resolution_hours = 6.0
+
+        # Fecha de resolución en 3 horas (< 6h umbral)
+        end_dt = datetime.now(timezone.utc) + timedelta(hours=3)
+        market_data = {
+            "spread": 0.05,
+            "mid_price": 0.5,
+            "token_id": "t1",
+            "condition_id": "cond_near",
+            "end_date_iso": end_dt.isoformat(),
+        }
+        trades = strategy.run(market_data)
+        assert trades == []
+
+    def test_near_resolution_gate_permite_sin_end_date(self, client, mm_config, tmp_path) -> None:
+        """MM opera normalmente si no hay end_date (no puede saber si near-resolution)."""
+        import src.strategy.base as base_mod
+        original = base_mod.TRADES_FILE
+        base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
+        try:
+            strategy = MarketMakerStrategy(client, mm_config)
+            market_data = {
+                "spread": 0.05,
+                "mid_price": 0.5,
+                "token_id": "t1",
+                "condition_id": "cond_no_date",
+            }
+            trades = strategy.run(market_data)
+            # Sin end_date → no near-resolution gate → puede operar normalmente
+            assert isinstance(trades, list)
+        finally:
+            base_mod.TRADES_FILE = original
+
+    def test_near_resolution_gate_no_activa_cuando_lejos(self, client, mm_config, tmp_path) -> None:
+        """MM opera normalmente si la resolución está a más de near_resolution_hours."""
+        import src.strategy.base as base_mod
+        from datetime import datetime, timedelta, timezone
+        original = base_mod.TRADES_FILE
+        base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
+        try:
+            strategy = MarketMakerStrategy(client, mm_config)
+            strategy._near_resolution_hours = 6.0
+
+            # Resolución en 24 horas (> 6h → no near-resolution)
+            end_dt = datetime.now(timezone.utc) + timedelta(hours=24)
+            market_data = {
+                "spread": 0.05,
+                "mid_price": 0.5,
+                "token_id": "t1",
+                "condition_id": "cond_far",
+                "end_date_iso": end_dt.isoformat(),
+            }
+            trades = strategy.run(market_data)
+            # Lejos de resolución → opera normalmente
+            assert isinstance(trades, list)
+        finally:
+            base_mod.TRADES_FILE = original

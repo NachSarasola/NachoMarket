@@ -5,6 +5,10 @@ Cada dia actualiza la posterior Beta(wins, losses) por estrategia.
 Capital asignado ∝ probabilidad de ser la mejor estrategia.
 
 Exploration rate decae de 30% a 5% en 90 dias (epsilon-greedy sobre el sampling).
+
+Integración con StageMachine (Fase 2):
+El allocation base del Bandit se multiplica por el stage multiplier de cada
+estrategia (SHADOW/PAPER=0.0, LIVE_SMALL=0.25, LIVE_FULL=1.0).
 """
 
 import json
@@ -13,7 +17,10 @@ import math
 import random
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.strategy.stages import StageMachine
 
 logger = logging.getLogger("nachomarket.allocator")
 
@@ -56,6 +63,7 @@ class StrategyAllocator:
         # {strategy_name: {"alpha": float, "beta": float, "total_pnl": float}}
         self._state: dict[str, dict[str, float]] = {}
         self._creation_time: float = time.time()
+        self._stage_machine: "StageMachine | None" = None
 
         self._load_state()
         self._ensure_all_strategies()
@@ -63,6 +71,13 @@ class StrategyAllocator:
     # ------------------------------------------------------------------
     # API publica
     # ------------------------------------------------------------------
+
+    def set_stage_machine(self, stage_machine: "StageMachine") -> None:
+        """Inyecta la StageMachine para escalar allocations por stage.
+
+        Dependency Injection: desacopla el Bandit de la lógica de stages.
+        """
+        self._stage_machine = stage_machine
 
     def record_outcome(self, strategy_name: str, pnl: float) -> None:
         """Registra el resultado de un trade de una estrategia.
@@ -103,9 +118,10 @@ class StrategyAllocator:
         epsilon = self._current_epsilon()
 
         if self._rng.random() < epsilon:
-            # Exploración: distribucion uniforme
+            # Exploración: distribucion uniforme con stage multipliers
             alloc_per = total_capital / len(self._strategies)
-            return {s: round(alloc_per, 2) for s in self._strategies}
+            base = {s: round(alloc_per, 2) for s in self._strategies}
+            return self._apply_stage_multipliers(base)
 
         # Thompson Sampling: samplear Beta(alpha, beta) para cada estrategia
         samples = {}
@@ -115,10 +131,11 @@ class StrategyAllocator:
             samples[s] = max(sample, 1e-9)  # Evitar 0
 
         total_sample = sum(samples.values())
-        return {
+        base_allocs = {
             s: round(total_capital * samples[s] / total_sample, 2)
             for s in self._strategies
         }
+        return self._apply_stage_multipliers(base_allocs)
 
     def get_win_probs(self) -> dict[str, float]:
         """Retorna la probabilidad de win estimada (media de Beta) por estrategia."""
@@ -177,6 +194,22 @@ class StrategyAllocator:
             return x / (x + y) if (x + y) > 0 else 0.5
         except (ValueError, ZeroDivisionError):
             return 0.5
+
+    def _apply_stage_multipliers(self, allocs: dict[str, float]) -> dict[str, float]:
+        """Escala cada allocation por el multiplicador de stage de la estrategia.
+
+        SHADOW/PAPER → ×0.0 (no capital real)
+        LIVE_SMALL   → ×0.25
+        LIVE_FULL    → ×1.0
+
+        Si no hay StageMachine inyectada, retorna las allocations sin cambios.
+        """
+        if self._stage_machine is None:
+            return allocs
+        return {
+            s: round(capital * self._stage_machine.get_size_multiplier(s), 2)
+            for s, capital in allocs.items()
+        }
 
     def _ensure_all_strategies(self) -> None:
         """Asegura que todas las estrategias tengan entradas en el estado."""
