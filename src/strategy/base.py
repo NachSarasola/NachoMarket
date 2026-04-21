@@ -3,6 +3,9 @@ Clase abstracta base para todas las estrategias de trading.
 
 Define el contrato Signal → evaluate → execute → Trade → log_trade
 que cada estrategia concreta debe implementar.
+
+Template Method (GoF): run() orquesta el pipeline completo con hooks
+sobreescribibles (should_trade, should_act, evaluate, execute).
 """
 
 import json
@@ -11,9 +14,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.polymarket.client import PolymarketClient
+
+if TYPE_CHECKING:
+    from src.risk.blacklist import MarketBlacklist
 
 TRADES_FILE = Path("data/trades.jsonl")
 
@@ -78,6 +84,7 @@ class BaseStrategy(ABC):
         self._config = config
         self._logger = logger or logging.getLogger(f"nachomarket.strategy.{name}")
         self._active = True
+        self._blacklist: "MarketBlacklist | None" = None
 
         # Asegurar que el directorio de trades existe
         TRADES_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -119,6 +126,33 @@ class BaseStrategy(ABC):
     # Metodos concretos — compartidos por todas las estrategias
     # ------------------------------------------------------------------
 
+    def set_blacklist(self, blacklist: "MarketBlacklist") -> None:
+        """Inyecta la blacklist para filtrado previo al ciclo.
+
+        Dependency Injection: evita acoplamiento directo al módulo de blacklist.
+        """
+        self._blacklist = blacklist
+
+    def should_trade(self, market_data: dict[str, Any]) -> bool:
+        """Gate previo — comprueba blacklist antes de evaluar señales.
+
+        Template Method hook: sobreescribible, pero la lógica de blacklist
+        se aplica siempre si hay una blacklist inyectada.
+
+        Returns:
+            False si el mercado está en blacklist activa; True en caso contrario.
+        """
+        if self._blacklist is None:
+            return True
+        market_id = market_data.get("condition_id", market_data.get("market_id", ""))
+        if market_id and self._blacklist.is_blacklisted(market_id):
+            self._logger.debug(
+                "Mercado %s en blacklist — saltando ciclo de '%s'",
+                market_id[:14], self.name,
+            )
+            return False
+        return True
+
     def should_act(self, market_data: dict[str, Any]) -> bool:
         """Filtro rapido antes de evaluate(). Override en subclases.
 
@@ -138,6 +172,9 @@ class BaseStrategy(ABC):
         """
         if not self._active:
             self._logger.debug(f"Estrategia '{self.name}' pausada, saltando")
+            return []
+
+        if not self.should_trade(market_data):
             return []
 
         if not self.should_act(market_data):

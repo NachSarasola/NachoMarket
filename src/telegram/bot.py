@@ -9,14 +9,18 @@ Uso desde otros modulos:
     send_alert("⚠️ Error: timeout en la API")
 
 Comandos disponibles:
-    /start    — Bienvenida y lista de comandos
-    /status   — Balance, PnL, trades, estrategias, mercados, inventory, proximo review
-    /pause    — Pausa instantanea del trading
-    /resume   — Reanuda el trading
-    /kill     — Para el bot completamente
-    /review   — Fuerza un self-review inmediato
-    /markets  — Lista mercados actuales con inventory
-    /pnl      — Reporte de PnL dia / semana / mes
+    /start       — Bienvenida y lista de comandos
+    /status      — Balance, PnL, trades, estrategias, mercados, inventory, proximo review
+    /pause       — Pausa instantanea del trading
+    /resume      — Reanuda el trading
+    /kill        — Para el bot completamente
+    /review      — Fuerza un self-review inmediato
+    /markets     — Lista mercados actuales con inventory
+    /pnl         — Reporte de PnL dia / semana / mes
+    /promote     — Promover manualmente una estrategia al siguiente stage
+    /demote      — Demotear manualmente una estrategia al stage anterior
+    /stages      — Ver el stage actual de todas las estrategias
+    /blacklist   — Ver mercados en blacklist activa
 """
 
 import asyncio
@@ -143,6 +147,10 @@ class TelegramBot:
             ("drawdown", self._cmd_drawdown),
             ("stats", self._cmd_stats),
             ("attribution", self._cmd_attribution),
+            ("promote", self._cmd_promote),
+            ("demote", self._cmd_demote),
+            ("stages", self._cmd_stages),
+            ("blacklist", self._cmd_blacklist),
         ]
         for name, handler in handlers:
             self._app.add_handler(CommandHandler(name, handler))
@@ -245,8 +253,12 @@ class TelegramBot:
             "/pause — Pausar trading \\(cancela ordenes\\)\n"
             "/resume — Reanudar trading\n"
             "/kill — Parar el bot completamente\n"
-            "/drawdown — Rolling drawdown 7/15/30d y scale-down status\n\n"
-            "_Notificaciones automaticas: trades, errores, circuit breaker, reviews_"
+            "/drawdown — Rolling drawdown 7/15/30d y scale-down status\n"
+            "/stages — Ver stage actual de cada estrategia\n"
+            "/promote \\<estrategia\\> — Promover estrategia al stage siguiente\n"
+            "/demote \\<estrategia\\> — Demotear estrategia al stage anterior\n"
+            "/blacklist — Ver mercados en blacklist activa\n\n"
+            "_Notificaciones automaticas: trades, errores, circuit breaker, reviews, stage changes_"
         )
         if update.message:
             await update.message.reply_text(text, parse_mode="MarkdownV2")
@@ -624,6 +636,167 @@ class TelegramBot:
             text = "❌ Error generando attribution report."
 
         await update.message.reply_text(text or "Sin datos de attribution disponibles.")
+
+    # ------------------------------------------------------------------
+    # Comandos de stage machine (Fase 2)
+    # ------------------------------------------------------------------
+
+    async def _cmd_promote(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/promote <strategy> — Promover manualmente una estrategia al stage siguiente."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        args = context.args or []
+        if not args:
+            await update.message.reply_text(
+                "Uso: `/promote <strategy>`\n"
+                "Estrategias: `market_maker`, `multi_arb`, `stat_arb`, `directional`\n"
+                "Usa /stages para ver los stages actuales."
+            )
+            return
+
+        strategy_name = args[0].lower()
+        stage_machine = self._get_stage_machine()
+        if stage_machine is None:
+            await update.message.reply_text("Stage machine no disponible.")
+            return
+
+        promoted = stage_machine.promote(strategy_name)
+        if promoted:
+            new_stage = stage_machine.get_stage(strategy_name)
+            mult = stage_machine.get_size_multiplier(strategy_name)
+            await update.message.reply_text(
+                f"⬆️ *{strategy_name}* promovida a `{new_stage.value}`\n"
+                f"Multiplicador de capital: `{mult:.0%}`"
+            )
+        else:
+            current = stage_machine.get_stage(strategy_name)
+            await update.message.reply_text(
+                f"No se puede promover *{strategy_name}*: "
+                f"ya está en `{current.value}` o no hay transición válida."
+            )
+        logger.info("Promote command: strategy=%s promoted=%s", strategy_name, promoted)
+
+    async def _cmd_demote(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/demote <strategy> — Demotear manualmente una estrategia al stage anterior."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        args = context.args or []
+        if not args:
+            await update.message.reply_text(
+                "Uso: `/demote <strategy>`\n"
+                "Estrategias: `market_maker`, `multi_arb`, `stat_arb`, `directional`\n"
+                "Usa /stages para ver los stages actuales."
+            )
+            return
+
+        strategy_name = args[0].lower()
+        stage_machine = self._get_stage_machine()
+        if stage_machine is None:
+            await update.message.reply_text("Stage machine no disponible.")
+            return
+
+        demoted = stage_machine.demote(strategy_name)
+        if demoted:
+            new_stage = stage_machine.get_stage(strategy_name)
+            mult = stage_machine.get_size_multiplier(strategy_name)
+            await update.message.reply_text(
+                f"⬇️ *{strategy_name}* demoteada a `{new_stage.value}`\n"
+                f"Multiplicador de capital: `{mult:.0%}`"
+            )
+        else:
+            current = stage_machine.get_stage(strategy_name)
+            await update.message.reply_text(
+                f"No se puede demotear *{strategy_name}*: "
+                f"ya está en `{current.value}` o no hay transición válida."
+            )
+        logger.info("Demote command: strategy=%s demoted=%s", strategy_name, demoted)
+
+    async def _cmd_stages(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/stages — Muestra el stage y multiplicador de cada estrategia."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        stage_machine = self._get_stage_machine()
+        if stage_machine is None:
+            await update.message.reply_text("Stage machine no disponible.")
+            return
+
+        stats = stage_machine.get_stats()
+        if not stats:
+            await update.message.reply_text("Sin estrategias registradas.")
+            return
+
+        _stage_icons = {
+            "SHADOW": "👁",
+            "PAPER": "📄",
+            "LIVE_SMALL": "🔸",
+            "LIVE_FULL": "🟢",
+        }
+        lines = ["*Stage Machine — Estado actual:*\n"]
+        for name, info in stats.items():
+            icon = _stage_icons.get(info["stage"], "❓")
+            lines.append(
+                f"{icon} *{name}*: `{info['stage']}` ({info['multiplier']:.0%})\n"
+                f"   Reviews recientes: `{info['recent_positive']}/{info['review_window']}`"
+                f" | Para promover: `{info['reviews_to_promote']}` más\n"
+                f"   Próximo stage: `{info['next_stage']}`"
+            )
+
+        await update.message.reply_text("\n".join(lines))
+
+    async def _cmd_blacklist(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/blacklist — Muestra mercados en blacklist activa."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        blacklist = self._get_blacklist()
+        if blacklist is None:
+            await update.message.reply_text("Blacklist no disponible.")
+            return
+
+        active = blacklist.get_active()
+        if not active:
+            await update.message.reply_text("✅ Sin mercados en blacklist activa.")
+            return
+
+        now = __import__("time").time()
+        lines = [f"*Blacklist activa ({len(active)} mercados):*\n"]
+        for mid, expire in sorted(active.items(), key=lambda x: x[1]):
+            hours_left = (expire - now) / 3600
+            lines.append(f"  `{mid[:16]}...` — expira en `{hours_left:.1f}h`")
+
+        stats = blacklist.get_stats()
+        lines.append(
+            f"\n_Umbral WR: {stats['wr_threshold']:.0%} | "
+            f"Min round-trips: {stats['min_trades']}_"
+        )
+        await update.message.reply_text("\n".join(lines))
+
+    def _get_stage_machine(self) -> Any:
+        """Accede a la StageMachine via el controller."""
+        if self._controller and hasattr(self._controller, "_stage_machine"):
+            return self._controller._stage_machine
+        return None
+
+    def _get_blacklist(self) -> Any:
+        """Accede a la MarketBlacklist via el controller."""
+        if self._controller and hasattr(self._controller, "_blacklist"):
+            return self._controller._blacklist
+        return None
 
     # ------------------------------------------------------------------
     # Helpers para calculo de PnL desde trades.jsonl
