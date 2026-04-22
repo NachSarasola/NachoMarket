@@ -32,6 +32,7 @@ from src.external.polyscan import WhaleTracker
 from src.polymarket.client import PolymarketClient
 from src.polymarket.markets import MarketAnalyzer
 from src.polymarket.websocket import OrderbookFeed, OrderbookState
+from src.risk.blacklist import MarketBlacklist
 from src.risk.circuit_breaker import CircuitBreaker
 from src.risk.inventory import InventoryManager
 from src.risk.market_profitability import MarketProfiler
@@ -39,6 +40,7 @@ from src.risk.position_sizer import PositionSizer
 from src.risk.strategy_monitor import StrategyMonitor
 from src.review.self_review import SelfReviewer
 from src.strategy.allocator import StrategyAllocator
+from src.strategy.stages import StageMachine
 from src.strategy.copy_trade import CopyTradeStrategy
 from src.strategy.directional import DirectionalStrategy
 from src.strategy.event_driven import EventDrivenStrategy
@@ -161,6 +163,18 @@ class NachoMarketBot:
         # Balance cacheado para no hacer HTTP en cada signal filter
         self._cached_balance: float = 400.0
 
+        # --- f2. Blacklist (WR-based, Fase 4) ---
+        self._blacklist = MarketBlacklist.from_config(self._settings)
+        for strategy in self._strategies:
+            strategy.set_blacklist(self._blacklist)
+
+        # --- f3. Stage machine (Fase 2) ---
+        strategy_names = [s.name for s in self._strategies]
+        self._stage_machine = StageMachine(
+            strategy_names=strategy_names,
+            alert_callback=send_alert,
+        )
+
         # --- g. Scheduler (self-review, market updates) ---
         self._market_analyzer = MarketAnalyzer(self._client, self._markets_config)
         self._active_markets: list[dict[str, Any]] = []
@@ -168,6 +182,7 @@ class NachoMarketBot:
         # --- h. Self-reviewer (Telegram callback resuelto en runtime) ---
         self._reviewer = SelfReviewer(
             model=self._settings.get("review_model", "claude-haiku-4-5-20251001"),
+            stage_machine=self._stage_machine,
         )
 
         # --- i. Hedge-fund-grade: analysis + alpha modules ---
@@ -189,6 +204,7 @@ class NachoMarketBot:
             strategies=[name for name in self._settings.get("strategies_enabled", [])],
             total_capital=self._settings.get("capital_total", 400.0),
         )
+        self._allocator.set_stage_machine(self._stage_machine)
 
         # External data (PolyScan + FRED)
         self._whale_tracker = WhaleTracker()
@@ -236,6 +252,8 @@ class NachoMarketBot:
         schedule.every().day.at("00:00").do(self._circuit_breaker.reset_daily)
         # Reconciliación on-chain cada 6h (TODO 1.2)
         schedule.every(6).hours.do(self._run_reconciliation)
+        # Refresh blacklist WR cada 6h (Fase 4)
+        schedule.every(6).hours.do(self._run_blacklist_refresh)
         # Evaluación del strategy monitor cada hora (kill switch)
         schedule.every(1).hours.do(self._run_strategy_monitor)
         # Poll whale tracker cada 60s
@@ -994,6 +1012,17 @@ class NachoMarketBot:
             self._logger.info("Bandit allocations: %s", allocs)
         except Exception:
             self._logger.exception("Error en allocator evaluation")
+
+    def _run_blacklist_refresh(self) -> None:
+        """Refresca la blacklist por win-rate. Ejecutado cada 6h."""
+        try:
+            newly = self._blacklist.refresh()
+            if newly:
+                names = ", ".join(f"`{m[:12]}...`" for m in newly)
+                self._logger.warning("Blacklist actualizada: %d mercados nuevos — %s", len(newly), newly)
+                send_alert(f"🚫 *Blacklist WR* — {len(newly)} mercado(s) bloqueado(s):\n{names}")
+        except Exception:
+            self._logger.exception("Error en blacklist refresh")
 
     # ------------------------------------------------------------------
     # Circuit breaker → Telegram
