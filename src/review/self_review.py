@@ -64,9 +64,11 @@ class SelfReviewer:
         model: str = _DEFAULT_MODEL,
         telegram_callback: Callable[[str], Any] | None = None,
         stage_machine: "StageMachine | None" = None,
+        capital: float = 300.0,
     ) -> None:
         self._client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
         self._model = model
+        self._capital = capital
         self._telegram_callback = telegram_callback
         self._stage_machine = stage_machine  # Observer hook para Fase 2
         REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
@@ -238,8 +240,8 @@ class SelfReviewer:
         winrate = wins / (wins + losses) if (wins + losses) > 0 else 0.0
         avg_spread = sum(spreads_captured) / len(spreads_captured) if spreads_captured else 0.0
 
-        # Inventory turnover: capital_deployed normalizado por capital total ($400)
-        inventory_turnover = capital_deployed / 400.0
+        # Inventory turnover: capital_deployed normalizado por capital total
+        inventory_turnover = capital_deployed / self._capital if self._capital > 0 else 0.0
 
         max_dd = self._calculate_max_drawdown(trades)
 
@@ -362,7 +364,7 @@ class SelfReviewer:
                 + json.dumps(quant_metrics, indent=2)
             )
 
-        return f"""Sos un analista de trading cuantitativo. Analizá estas métricas de las últimas 8 horas de un market making bot en Polymarket con $400 de capital.
+        return f"""Sos un analista de trading cuantitativo. Analizá estas métricas de las últimas 8 horas de un market making bot en Polymarket con ${self._capital:.0f} de capital.
 
 MÉTRICAS 8H:
 {json.dumps(metrics, indent=2)}

@@ -113,6 +113,7 @@ class NachoMarketBot:
         self._client = PolymarketClient(
             paper_mode=paper_mode,
             signature_type=self._settings.get("signature_type", 1),
+            paper_capital=float(self._settings.get("capital_total", 300.0)),
         )
         self._logger.info("Verificando conexión con Polymarket CLOB...")
         self._client.test_connection()  # lanza excepción si falla
@@ -154,12 +155,14 @@ class NachoMarketBot:
         self._circuit_breaker = CircuitBreaker(
             self._risk_config,
             alert_callback=self._cb_alert_handler,
+            scale_down_callback=self._on_scale_down,
+            pause_strategies_callback=self._on_pause_strategies,
         )
         self._position_sizer = PositionSizer(self._risk_config)
         self._inventory = InventoryManager(self._risk_config)
         self._profiler = MarketProfiler(self._risk_config)
-        # Balance cacheado para no hacer HTTP en cada signal filter
-        self._cached_balance: float = 400.0
+        # Balance cacheado: arranca con capital_total del config, se actualiza cada ciclo
+        self._cached_balance: float = float(self._settings.get("capital_total", 300.0))
 
         # --- g. Scheduler (self-review, market updates) ---
         self._market_analyzer = MarketAnalyzer(self._client, self._markets_config)
@@ -168,13 +171,16 @@ class NachoMarketBot:
         # --- h. Self-reviewer (Telegram callback resuelto en runtime) ---
         self._reviewer = SelfReviewer(
             model=self._settings.get("review_model", "claude-haiku-4-5-20251001"),
+            capital=float(self._settings.get("capital_total", 300.0)),
         )
 
         # --- i. Hedge-fund-grade: analysis + alpha modules ---
         self._regime_detector = MarketRegimeDetector(self._settings)
         self._toxic_flow = ToxicFlowDetector(self._risk_config.get("toxic_flow", {}))
         self._correlation = CorrelationTracker(self._settings)
-        self._var_calc = VaRCalculator()
+        self._var_calc = VaRCalculator(
+            capital=float(self._settings.get("capital_total", 300.0)),
+        )
 
         # Strategy monitor (kill switch) + bandit allocator
         sm_cfg = self._risk_config.get("strategy_monitor", {})
@@ -187,7 +193,7 @@ class NachoMarketBot:
         )
         self._allocator = StrategyAllocator(
             strategies=[name for name in self._settings.get("strategies_enabled", [])],
-            total_capital=self._settings.get("capital_total", 400.0),
+            total_capital=float(self._settings.get("capital_total", 300.0)),
         )
 
         # External data (PolyScan + FRED)
@@ -1002,18 +1008,49 @@ class NachoMarketBot:
     def _cb_alert_handler(self, reason: str, message: str) -> None:
         """Recibe alertas del CircuitBreaker y las envía por Telegram."""
         icons = {
-            "daily_drawdown":     "🛑",
-            "consecutive_losses": "📉",
-            "consecutive_errors": "💥",
-            "single_trade_loss":  "⚠️",
-            "market_hourly_loss": "⏰",
+            "daily_drawdown":      "🛑",
+            "consecutive_losses":  "📉",
+            "consecutive_errors":  "💥",
+            "single_trade_loss":   "⚠️",
+            "market_hourly_loss":  "⏰",
+            "rolling_30d_drawdown": "💀",
+            "rolling_15d_drawdown": "📉",
+            "rolling_7d_drawdown":  "📊",
         }
         icon = icons.get(reason, "🚨")
         send_alert(f"{icon} *Circuit Breaker* [`{reason}`]\n{message}")
 
-        # Si el breaker se disparó por drawdown diario, pausar el bot
-        if reason == "daily_drawdown":
+        # Pausar el bot en cualquier trigger que implique stop total
+        _pause_triggers = {
+            "daily_drawdown",
+            "consecutive_losses",
+            "consecutive_errors",
+            "rolling_30d_drawdown",
+        }
+        if reason in _pause_triggers:
             self.pause()
+
+    def _on_scale_down(self, factor: float) -> None:
+        """Reduce el tamaño de órdenes tras rolling 7d drawdown."""
+        self._logger.warning("Scale-down activado: factor=%.2f — reduciendo order_size", factor)
+        for strategy in self._strategies:
+            if hasattr(strategy, "scale_order_size"):
+                strategy.scale_order_size(factor)
+        send_alert(
+            f"📊 *Scale-down activado* (factor `{factor:.0%}`)\n"
+            "Reduciendo tamaño de órdenes por rolling 7d drawdown."
+        )
+
+    def _on_pause_strategies(self, strategies: list[str]) -> None:
+        """Pausa estrategias específicas por rolling 15d drawdown."""
+        self._logger.warning("Pausando estrategias por 15d drawdown: %s", strategies)
+        for strategy in self._strategies:
+            if strategy.name in strategies:
+                strategy.pause()
+        send_alert(
+            f"📉 *Estrategias pausadas* por rolling 15d drawdown:\n"
+            f"`{'`, `'.join(strategies)}`"
+        )
 
     # ------------------------------------------------------------------
     # Control (interfaz para Telegram y señales del OS)

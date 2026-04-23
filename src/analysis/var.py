@@ -17,7 +17,7 @@ logger = logging.getLogger("nachomarket.var")
 
 _CONFIDENCE_95 = 0.95
 _CONFIDENCE_99 = 0.99
-_VAR_ALERT_THRESHOLD = 40.0   # $40 — alerta si VaR supera esto
+_VAR_ALERT_THRESHOLD = 15.0   # $15 — alerta si VaR supera esto (5% de $300)
 _NORMAL_Z_95 = 1.6449          # z-score para 95% (una cola)
 _NORMAL_Z_99 = 2.3263
 
@@ -56,17 +56,17 @@ class VaRCalculator:
 
     def __init__(
         self,
-        daily_returns: Sequence[float],
-        capital: float = 400.0,
+        daily_returns: Sequence[float] | None = None,
+        capital: float = 300.0,
         var_alert_threshold: float = _VAR_ALERT_THRESHOLD,
     ) -> None:
         """
         Args:
-            daily_returns: Retornos diarios en USDC (negativo = perdida).
+            daily_returns: Retornos diarios en USDC. None o [] = sin datos aún.
             capital: Capital total del bot en USDC.
             var_alert_threshold: Umbral de alerta en USDC.
         """
-        self._returns = sorted(daily_returns)  # Ordenados asc para percentiles
+        self._returns = sorted(daily_returns) if daily_returns else []
         self._capital = capital
         self._alert_threshold = var_alert_threshold
 

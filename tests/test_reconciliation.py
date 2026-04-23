@@ -39,7 +39,7 @@ class TestReconcilePaperMode:
     def test_returns_simulated_balance(self):
         client = make_paper_client()
         result = client.reconcile_state()
-        assert result["balance_onchain"] == 400.0
+        assert result["balance_onchain"] == 300.0  # Default paper_capital
 
     def test_no_desync_in_paper(self):
         client = make_paper_client()

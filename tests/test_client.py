@@ -59,7 +59,12 @@ class TestOrderbook:
 class TestBalance:
     def test_get_balance_paper(self, client: PolymarketClient) -> None:
         balance = client.get_balance()
-        assert balance == 400.0
+        assert balance == 300.0  # Default paper_capital
+
+    def test_get_balance_paper_custom_capital(self, tmp_path: Path) -> None:
+        c = PolymarketClient(paper_mode=True, paper_capital=175.0)
+        c._trades_file = tmp_path / "trades.jsonl"
+        assert c.get_balance() == 175.0
 
     def test_get_positions_paper_empty(self, client: PolymarketClient) -> None:
         positions = client.get_positions()

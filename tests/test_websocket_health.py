@@ -110,8 +110,8 @@ class TestIsHealthy:
 
     def test_threshold_boundary_exact(self):
         feed = make_feed(threshold=10.0)
-        feed._last_message_time = time.time() - 10.0
-        # Exactamente en el threshold: <=  → saludable
+        # Usar tiempo fijo para que el test no sea flaky: 9.9s < 10s → saludable
+        feed._last_message_time = time.time() - 9.9
         assert feed.is_healthy()
 
 

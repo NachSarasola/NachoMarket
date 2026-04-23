@@ -2,18 +2,19 @@
 position_sizing:
   method: fractional_kelly  # fractional_kelly | fixed
   kelly_fraction: 0.25  # Usar 25% del Kelly completo (conservador)
-  max_position_usdc: 20.0  # 5% de $400
+  max_position_usdc: 15.0  # 5% de $300
   min_position_usdc: 1.0
 
 inventory_management:
-  max_inventory_per_market_usdc: 30.0  # Alineado con market_maker.max_inventory_per_market
+  max_inventory_per_market_usdc: 22.0  # Alineado con market_maker.max_inventory_per_market (7.3% cap)
   rebalance_threshold_pct: 30.0  # Rebalancear si inventario se desvia >30%
   merge_threshold: 5  # Merge posiciones si hay mas de 5 en un mercado
 
 circuit_breakers:
-  max_daily_loss_usdc: 20.0  # Parar si pierdes $20 en un dia
+  max_daily_loss_usdc: 15.0  # 5% de $300 — parar si pierdes $15 en un dia
   max_consecutive_losses: 5  # Parar despues de 5 perdidas seguidas
-  max_single_trade_loss_usdc: 10.0  # Alerta si un trade pierde >$10
+  max_single_trade_loss_usdc: 7.5  # Alerta si un trade pierde >$7.5 (2.5% cap)
+  max_market_loss_1h_usdc: 3.75  # Cancelar ordenes si mercado pierde >1.25% cap en 1h
   cooldown_after_break_min: 60  # Esperar 1 hora despues de circuit break
   max_open_orders: 50  # Aumentado: 12 mercados x 2 lados x 2 niveles = 48 ordenes
 
@@ -25,11 +26,11 @@ market_making:
   level_spacing_bps: 50  # Espacio entre niveles
   use_post_only: true  # SIEMPRE Post Only para maker fees
 
-# Rolling drawdown — ventanas 7/15/30 dias (TODO 1.4)
+# Rolling drawdown — ventanas 7/15/30 dias
 rolling_drawdown:
-  threshold_7d_usdc: 40.0     # -$40 en 7d → scale-down 50%
-  threshold_15d_usdc: 80.0    # -$80 en 15d → pausa arb/directional
-  threshold_30d_usdc: 120.0   # -$120 en 30d → kill-switch total
+  threshold_7d_usdc: 30.0     # -$30 en 7d → scale-down 50% (10% de $300)
+  threshold_15d_usdc: 60.0    # -$60 en 15d → pausa arb/directional (20% de $300)
+  threshold_30d_usdc: 90.0    # -$90 en 30d → kill-switch total (30% de $300)
   scale_down_factor: 0.5      # Reducir order_size 50%
 
 # Modelo de costos ocultos (TODO 2.3)

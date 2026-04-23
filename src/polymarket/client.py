@@ -62,9 +62,15 @@ class PolymarketClient:
         Level 2 — private key + ApiCreds (colocar, cancelar, balance)
     """
 
-    def __init__(self, paper_mode: bool = True, signature_type: int = 1) -> None:
+    def __init__(
+        self,
+        paper_mode: bool = True,
+        signature_type: int = 1,
+        paper_capital: float = 300.0,
+    ) -> None:
         self.paper_mode = paper_mode
         self._signature_type = signature_type
+        self._paper_capital = paper_capital
         self._trades_file = Path("data/trades.jsonl")
         self._trades_file.parent.mkdir(parents=True, exist_ok=True)
         self._client: ClobClient | None = None
@@ -78,7 +84,10 @@ class PolymarketClient:
                 f"address={self._client.get_address()})"
             )
         else:
-            logger.info("PolymarketClient inicializado en modo PAPER")
+            logger.info(
+                "PolymarketClient inicializado en modo PAPER "
+                f"(capital simulado=${paper_capital:.2f} USDC)"
+            )
 
     # ------------------------------------------------------------------
     # Inicializacion
@@ -250,13 +259,10 @@ class PolymarketClient:
         if self.paper_mode:
             return 0
 
-        try:
-            return self._client.get_fee_rate_bps(token_id)
-        except Exception:
-            logger.warning(
-                f"No se pudo obtener fee_rate para {token_id[:8]}..., usando 200 bps por defecto"
-            )
-            return 200
+        # Sin try/except aquí: el @retry_with_backoff del decorador maneja reintentos.
+        # Si falla definitivamente, la excepción sube al caller (place_limit_order),
+        # que cancela la orden — más seguro que operar con fee incorrecto.
+        return self._client.get_fee_rate_bps(token_id)
 
     # ------------------------------------------------------------------
     # Balance y posiciones
@@ -271,7 +277,7 @@ class PolymarketClient:
             Balance en USDC como float.
         """
         if self.paper_mode:
-            return 400.0
+            return self._paper_capital
 
         params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
         result = self._client.get_balance_allowance(params)
@@ -659,7 +665,7 @@ class PolymarketClient:
         }
 
         if self.paper_mode:
-            result["balance_onchain"] = 400.0
+            result["balance_onchain"] = self._paper_capital
             logger.info("reconcile_state: paper mode — simulado")
             return result
 
