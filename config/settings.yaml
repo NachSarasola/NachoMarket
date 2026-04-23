@@ -2,9 +2,9 @@
 mode: paper  # paper | live
 
 # Capital y riesgo
-capital_total: 400           # USDC total disponible
+capital_total: 300           # USDC total disponible
 max_risk_per_market: 0.05    # 5% maximo por mercado
-max_daily_drawdown: 20       # $20 maximo de perdida diaria
+max_daily_drawdown: 15       # 5% de $300 — parar si se pierden $15 en un dia
 kelly_fraction: 0.25         # Quarter Kelly (conservador)
 min_market_volume: 1000      # Bajado: mercados chicos con rewards son mas rentables
 
@@ -26,9 +26,9 @@ near_resolution_hours: 6
 # Market Making
 market_maker:
   spread_offset: 0.02          # 2 centavos de offset al mid
-  order_size: 15               # $15 por lado (mas diversificacion en mercados chicos)
+  order_size: 11               # ~$11 por lado (escalado a $300 de capital)
   refresh_seconds: 45          # Refrescar ordenes cada 45s
-  max_inventory_per_market: 30 # Maximo $30 de inventario por mercado (tighter)
+  max_inventory_per_market: 22 # Maximo $22 de inventario por mercado (7.3% cap)
   repositioning_enabled: true  # Despues de un fill, reposicionar en entry+1c
   reposition_offset: 0.01      # 1 centavo de offset para reposicionamiento
   reposition_timeout_min: 90   # Cancelar reposicion si no se ejecuta en 90min
@@ -37,25 +37,25 @@ market_maker:
 # Arbitraje Multi-Outcome
 multi_arb:
   min_edge: 0.03    # 3% minimo para actuar
-  max_position: 30  # Maximo $30 por posicion de arb
+  max_position: 22  # Maximo $22 por posicion de arb (~7% cap)
 
 # Stat-Arb YES/NO Cointegrado (TODO 4.1)
 stat_arb:
   edge_threshold: 0.02    # 2 centavos minimo (- fees)
-  max_position: 30        # $30 max por arb
+  max_position: 22        # $22 max por arb (~7% cap)
   max_markets_simultaneous: 5
   fee_bps: 100            # 1% taker
 
 # LP Rewards Farming (TODO 4.2)
 rewards_farmer:
-  max_capital_per_market: 50.0
+  max_capital_per_market: 37.0   # ~12% cap (rewards farming tolera mas exposure)
   min_rewards_rate: 0.001   # 0.1% diario minimo
   max_markets_simultaneous: 3
   spread_offset: 0.015
 
 # Event-Driven Momentum (TODO 4.3)
 event_driven:
-  max_position: 20.0
+  max_position: 15.0
   momentum_delay_sec: 120
   pre_event_window_sec: 7200
 
@@ -63,7 +63,7 @@ event_driven:
 directional:
   min_edge_bps: 100          # Edge mínimo en bps (1%) para operar
   min_size_usdc: 5.0         # Tamaño mínimo de orden
-  max_size_usdc: 20.0        # 5% de $400 — regla INQUEBRANTABLE
+  max_size_usdc: 15.0        # 5% de $300 — regla INQUEBRANTABLE
   kelly_fraction: 0.25       # Quarter-Kelly
   expected_hold_seconds: 7200  # 2h de tenencia estimada para cost model
 
