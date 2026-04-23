@@ -26,3 +26,10 @@
 {"strategy": "strat1", "killed_at": 1776810180.81606, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
 {"strategy": "strat1", "killed_at": 1776810180.817126, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
 {"strategy": "s1", "killed_at": 1776810180.8182533, "calmar_14d": -26.071, "total_pnl_14d": -500.0, "trade_count": 5}
+{"strategy": "bad_strat", "killed_at": 1776906087.9141757, "calmar_14d": -26.071, "total_pnl_14d": -25.0, "trade_count": 5}
+{"strategy": "bad_strat", "killed_at": 1776906087.914797, "calmar_14d": -26.071, "total_pnl_14d": -25.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1776906087.9155335, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1776906087.9167354, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1776906087.9176028, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1776906087.9186418, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "s1", "killed_at": 1776906087.919612, "calmar_14d": -26.071, "total_pnl_14d": -500.0, "trade_count": 5}
