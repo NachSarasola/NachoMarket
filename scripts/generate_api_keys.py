@@ -65,24 +65,31 @@ try:
     print("Si las pierdes, puedes volver a generarlas con este script.")
     print()
 
-    # Preguntar si quiere actualizar .env automáticamente
     # Actualizar automáticamente (sin preguntar)
     if True:
+        import re
         contenido = env_path.read_text()
-        contenido = contenido.replace(
-            "POLYMARKET_API_KEY=",
+        # Usar regex para reemplazar toda la línea, evitando duplicados
+        contenido = re.sub(
+            r"^POLYMARKET_API_KEY=.*$",
             f"POLYMARKET_API_KEY={creds.api_key}",
-            1,
+            contenido,
+            count=1,
+            flags=re.MULTILINE,
         )
-        contenido = contenido.replace(
-            "POLYMARKET_SECRET=",
+        contenido = re.sub(
+            r"^POLYMARKET_SECRET=.*$",
             f"POLYMARKET_SECRET={creds.api_secret}",
-            1,
+            contenido,
+            count=1,
+            flags=re.MULTILINE,
         )
-        contenido = contenido.replace(
-            "POLYMARKET_PASSPHRASE=",
+        contenido = re.sub(
+            r"^POLYMARKET_PASSPHRASE=.*$",
             f"POLYMARKET_PASSPHRASE={creds.api_passphrase}",
-            1,
+            contenido,
+            count=1,
+            flags=re.MULTILINE,
         )
         env_path.write_text(contenido)
         print()

@@ -2,7 +2,7 @@
 min_daily_volume_usd: 40000  # Tip 1: minimo 40K de volumen diario
 small_market_volume_usd: 5000  # Tip 12: override para mercados chicos si participation_share > 5%
 max_markets_simultaneous: 6  # Tip 7: con $150, 3-7 mercados optimo
-bot_order_size: 7.5          # USDC por lado (escalado a $150), para calcular participation share
+bot_order_size: 8.3          # USDC por lado (escalado a $166), para calcular participation share
 market_refresh_interval_sec: 300  # Re-escanear mercados cada 5 min
 
 # Filtros de mercado

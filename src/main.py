@@ -47,6 +47,7 @@ from src.strategy.multi_arb import MultiArbStrategy
 from src.strategy.rewards_farmer import RewardsFarmerStrategy
 from src.strategy.stat_arb import StatArbStrategy
 from src.telegram.bot import TelegramBot, send_alert
+from src.utils.geo_check import verify_geo_access
 from src.utils.logger import setup_logger
 
 load_dotenv()
@@ -1382,6 +1383,19 @@ def main() -> None:
         except KeyboardInterrupt:
             print("Cancelado.", file=sys.stderr)
             sys.exit(0)
+
+    # Pre-flight: verificar acceso geográfico (Argentina bloqueada)
+    if not args.review_only:
+        try:
+            verify_geo_access()
+        except ConnectionError as geo_err:
+            print(f"\n🚫 GEO-BLOCK: {geo_err}", file=sys.stderr)
+            print(
+                "   El bot debe correr desde un VPS fuera de Argentina.\n"
+                "   Ver: scripts/deploy.sh para desplegar en Oracle Cloud.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     try:
         bot = NachoMarketBot(paper_mode=paper_mode, review_only=args.review_only)

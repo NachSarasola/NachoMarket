@@ -2,9 +2,9 @@
 mode: paper  # paper | live
 
 # Capital y riesgo
-capital_total: 150           # USDC total disponible
+capital_total: 166           # USDC total disponible
 max_risk_per_market: 0.05    # 5% maximo por mercado
-max_daily_drawdown: 7.5      # 5% de $150 — parar si se pierden $7.5 en un dia
+max_daily_drawdown: 8.3      # 5% de $166 — parar si se pierden $8.3 en un dia
 kelly_fraction: 0.25         # Quarter Kelly (conservador)
 min_market_volume: 40000     # Tip 1: volumen minimo 40K; override para mercados chicos con alta participacion
 
@@ -19,6 +19,7 @@ strategies_enabled:
   # multi_arb, stat_arb, directional desactivados: con $150 los tickets son
   # demasiado chicos para que el arb compense fees. Concentrar en MM + rewards.
   # - event_driven   # Activar cuando se configure FRED API key
+  # - directional    # Requiere mas capital
 
 # Near-resolution gate: MM cancela quotes si el mercado resuelve en < N horas
 near_resolution_hours: 336   # Tip 2: 14 dias (336h) minimo para operar
@@ -26,9 +27,9 @@ near_resolution_hours: 336   # Tip 2: 14 dias (336h) minimo para operar
 # Market Making
 market_maker:
   spread_offset: 0.02          # 2 centavos de offset al mid (tip 3: agresivo desde 2c)
-  order_size: 5.5              # ~$5.5 por lado (escalado a $150 de capital)
+  order_size: 6.0              # ~$6 por lado (escalado a $166 de capital)
   refresh_seconds: 90          # Tip 21: paciencia — no reposicionar si mid no cambio >=2c
-  max_inventory_per_market: 22 # 15% cap (tip 15: bot <= 15% por mercado)
+  max_inventory_per_market: 25 # 15% cap (tip 15: bot <= 15% de $166 = $24.9)
   repositioning_enabled: true  # Despues de un fill, reposicionar en entry+1c
   reposition_offset: 0.01      # 1 centavo de offset para reposicionamiento (tip 6)
   reposition_timeout_min: 90   # Cancelar reposicion si no se ejecuta en 90min
@@ -37,25 +38,25 @@ market_maker:
 # Arbitraje Multi-Outcome (desactivado)
 multi_arb:
   min_edge: 0.03
-  max_position: 11  # 7.3% de $150
+  max_position: 12  # 7.3% de $166
 
 # Stat-Arb YES/NO Cointegrado (desactivado)
 stat_arb:
   edge_threshold: 0.02
-  max_position: 11  # 7.3% de $150
+  max_position: 12  # 7.3% de $166
   max_markets_simultaneous: 5
   fee_bps: 100
 
 # LP Rewards Farming
 rewards_farmer:
-  max_capital_per_market: 22.0   # Tip 15: 15% de $150 = $22.5
+  max_capital_per_market: 24.9   # Tip 15: 15% de $166 = $24.9
   min_rewards_rate: 0.001        # 0.1% diario minimo
-  max_markets_simultaneous: 5    # Tip 7: hasta 6 mercados con $150
+  max_markets_simultaneous: 5    # Tip 7: hasta 6 mercados con $166
   spread_offset: 0.015           # Tight para maximizar rewards
 
 # Event-Driven Momentum (desactivado)
 event_driven:
-  max_position: 7.5
+  max_position: 8.3
   momentum_delay_sec: 120
   pre_event_window_sec: 7200
 
@@ -63,7 +64,7 @@ event_driven:
 directional:
   min_edge_bps: 100
   min_size_usdc: 5.0
-  max_size_usdc: 7.5         # 5% de $150 — regla INQUEBRANTABLE
+  max_size_usdc: 8.3         # 5% de $166 — regla INQUEBRANTABLE
   kelly_fraction: 0.25       # Quarter-Kelly
   expected_hold_seconds: 7200
 

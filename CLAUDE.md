@@ -4,7 +4,10 @@
 
 Bot automatizado de market making y trading para Polymarket. 
 
-Opera 24/7 en Oracle Cloud Free Tier. Capital: $400 USDC.
+Opera 24/7 en VPS Oracle Cloud Free Tier (US-Ashburn). Capital: $166 USDC.
+
+Polymarket bloquea Argentina (marzo 2026). El bot DEBE correr desde un VPS
+con IP fuera de Argentina. scripts/check_geo.py verifica acceso antes de arrancar.
 
 PRIORIDAD ABSOLUTA: preservacion de capital. Nunca arriesgar >5% en un solo mercado.
 
@@ -35,6 +38,15 @@ PRIORIDAD ABSOLUTA: preservacion de capital. Nunca arriesgar >5% en un solo merc
 - python src/main.py — Arrancar bot (lee modo de config/settings.yaml)
 - python src/main.py --paper — Modo paper trading (simula sin dinero real)
 - python src/review/self_review.py — Forzar self-review manual
+- python scripts/check_geo.py — Verificar acceso geo antes de arrancar
+
+## Deploy al VPS
+
+- bash scripts/deploy.sh ubuntu@<IP-VPS> — Sync de archivos al VPS
+- bash scripts/deploy.sh ubuntu@<IP-VPS> --setup — Sync + setup completo
+- ssh ubuntu@<IP-VPS> — Conectar al VPS
+- sudo systemctl start polymarket-bot — Arrancar bot en VPS
+- sudo journalctl -u polymarket-bot -f — Ver logs en vivo
 
 ## Reglas INQUEBRANTABLES
 
@@ -45,7 +57,7 @@ PRIORIDAD ABSOLUTA: preservacion de capital. Nunca arriesgar >5% en un solo merc
 - SIEMPRE verificar feeRateBps dinamicamente antes de operar
 - SIEMPRE usar Post Only para market making (evitar pagar taker fees)
 - El bot DEBE poder pausarse instantaneamente via Telegram /pause
-- Si el drawdown diario supera $20 (5% de $400), PARAR todo el trading
+- Si el drawdown diario supera $8.3 (5% de $166), PARAR todo el trading
 - Cada 8 horas, ejecutar self-review con Claude Haiku
 - NUNCA operar en mercados sin liquidity rewards Y con volume < $1,000 diario
 
