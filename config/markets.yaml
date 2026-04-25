@@ -1,42 +1,63 @@
 # NachoMarket - Mercados target y parametros
-min_daily_volume_usd: 1000   # Bajado de 10000: mercados chicos con rewards son mas rentables
-max_markets_simultaneous: 12  # Diversificar en muchos mercados chicos (antes: 5)
-bot_order_size: 15.0          # USDC por lado, usado para calcular participation share
+min_daily_volume_usd: 40000  # Tip 1: minimo 40K de volumen diario
+small_market_volume_usd: 5000  # Tip 12: override para mercados chicos si participation_share > 5%
+max_markets_simultaneous: 6  # Tip 7: con $150, 3-7 mercados optimo
+bot_order_size: 7.5          # USDC por lado (escalado a $150), para calcular participation share
 market_refresh_interval_sec: 300  # Re-escanear mercados cada 5 min
 
 # Filtros de mercado
 filters:
-  min_liquidity_usd: 500     # Bajado: mercados chicos con rewards pueden tener poca liquidez
+  min_liquidity_usd: 500
   max_spread_pct: 5.0
-  min_time_to_resolution_hours: 24  # Evitar mercados que cierran pronto
-  min_market_age_hours: 48    # No operar mercados nuevos (riesgo de book vacio)
-  excluded_categories: []     # Categorias a excluir
+  min_time_to_resolution_hours: 336  # Tip 2: 14 dias minimo (336h)
+  min_market_age_hours: 48
+  excluded_categories:
+    - entertainment  # Tip 10: evitar mercados de entretenimiento para bot
+  excluded_keywords:  # Tip 10: evitar eventos de un solo dia
+    - "release"
+    - "launch"
+    - "opening weekend"
+    - "tomorrow"
+  mid_price_min: 0.40  # Tip 8: zona simetrica 40-60c
+  mid_price_max: 0.60  # Tip 8: a 50c el riesgo es simetrico
 
 # Competition scoring: priorizar mercados donde el bot tiene alta participacion
 competition:
   max_book_depth_per_side: 500  # Skip mercados con >$500/lado de profundidad
   min_participation_share: 0.05  # Necesitar al menos 5% de share para entrar
 
+# Diversificacion por tematica (Tip 13)
+diversification:
+  max_per_category: 2  # No mas de 2 mercados de la misma categoria
+
 # Preferencias de mercado (ordenadas por prioridad)
 preferred_categories:
-  - crypto
   - politics
+  - crypto
   - sports
-  - entertainment
 
 # Ventanas de tiempo: ajustar tamaño de ordenes segun actividad del mercado
 time_windows:
   # Horas UTC de baja actividad: reducir tamaño de ordenes
-  low_activity_hours: [0, 1, 2, 3, 4, 5, 6, 7]
+  low_activity_hours: [5, 6, 7, 8, 9, 10, 11, 12]
   # Horas UTC de alta actividad (US market hours)
   high_activity_hours: [14, 15, 16, 17, 18, 19, 20, 21]
   # Factor de reduccion durante baja actividad (0.5 = mitad del tamaño)
   low_activity_size_factor: 0.5
+  # Tip 19: ventana prime (21hs ARG = 00 UTC) — boost de sizing
+  prime_placement_window_utc: [0, 1, 2, 3]  # 00-04 UTC = prime window
+  prime_size_boost: 1.3                       # +30% en esa ventana
+
+# Tip 21: no cancelar y reposicionar si el mid no se movio suficiente
+min_mid_change_to_reposition: 0.02  # Solo reposicionar si mid cambio >= 2c
+
+# Tip 16: reserva — informativa, consumida por circuit breaker
+loss_reserve_usdc: 20.0
 
 # Banlist de mercados: evitar duplicados y mercados problematicos
 banned_markets:
-  condition_ids: []      # IDs de mercados especificos a bloquear
-  question_patterns: []  # Regex patterns en el titulo del mercado a bloquear
+  condition_ids: []
+  question_patterns: []
 
 # Tokens a escuchar por WebSocket (se actualiza automaticamente al escanear mercados)
 watch_tokens: []

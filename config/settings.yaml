@@ -2,11 +2,11 @@
 mode: paper  # paper | live
 
 # Capital y riesgo
-capital_total: 300           # USDC total disponible
+capital_total: 150           # USDC total disponible
 max_risk_per_market: 0.05    # 5% maximo por mercado
-max_daily_drawdown: 15       # 5% de $300 — parar si se pierden $15 en un dia
+max_daily_drawdown: 7.5      # 5% de $150 — parar si se pierden $7.5 en un dia
 kelly_fraction: 0.25         # Quarter Kelly (conservador)
-min_market_volume: 1000      # Bajado: mercados chicos con rewards son mas rentables
+min_market_volume: 40000     # Tip 1: volumen minimo 40K; override para mercados chicos con alta participacion
 
 # Self-review con Claude Haiku
 review_interval_hours: 8
@@ -15,70 +15,70 @@ review_model: claude-haiku-4-5-20251001
 # Estrategias activas
 strategies_enabled:
   - market_maker
-  - multi_arb
-  - stat_arb
   - rewards_farmer
+  # multi_arb, stat_arb, directional desactivados: con $150 los tickets son
+  # demasiado chicos para que el arb compense fees. Concentrar en MM + rewards.
   # - event_driven   # Activar cuando se configure FRED API key
 
-# Near-resolution gate (Fase 1): MM cancela quotes si el mercado resuelve en < N horas
-near_resolution_hours: 6
+# Near-resolution gate: MM cancela quotes si el mercado resuelve en < N horas
+near_resolution_hours: 336   # Tip 2: 14 dias (336h) minimo para operar
 
 # Market Making
 market_maker:
-  spread_offset: 0.02          # 2 centavos de offset al mid
-  order_size: 11               # ~$11 por lado (escalado a $300 de capital)
-  refresh_seconds: 45          # Refrescar ordenes cada 45s
-  max_inventory_per_market: 22 # Maximo $22 de inventario por mercado (7.3% cap)
+  spread_offset: 0.02          # 2 centavos de offset al mid (tip 3: agresivo desde 2c)
+  order_size: 5.5              # ~$5.5 por lado (escalado a $150 de capital)
+  refresh_seconds: 90          # Tip 21: paciencia — no reposicionar si mid no cambio >=2c
+  max_inventory_per_market: 22 # 15% cap (tip 15: bot <= 15% por mercado)
   repositioning_enabled: true  # Despues de un fill, reposicionar en entry+1c
-  reposition_offset: 0.01      # 1 centavo de offset para reposicionamiento
+  reposition_offset: 0.01      # 1 centavo de offset para reposicionamiento (tip 6)
   reposition_timeout_min: 90   # Cancelar reposicion si no se ejecuta en 90min
-  near_resolution_hours: 6     # Cancelar quotes si faltan < 6h para resolución
+  near_resolution_hours: 336   # Tip 2: cancelar quotes si faltan < 14 dias para resolucion
 
-# Arbitraje Multi-Outcome
+# Arbitraje Multi-Outcome (desactivado)
 multi_arb:
-  min_edge: 0.03    # 3% minimo para actuar
-  max_position: 22  # Maximo $22 por posicion de arb (~7% cap)
+  min_edge: 0.03
+  max_position: 11  # 7.3% de $150
 
-# Stat-Arb YES/NO Cointegrado (TODO 4.1)
+# Stat-Arb YES/NO Cointegrado (desactivado)
 stat_arb:
-  edge_threshold: 0.02    # 2 centavos minimo (- fees)
-  max_position: 22        # $22 max por arb (~7% cap)
+  edge_threshold: 0.02
+  max_position: 11  # 7.3% de $150
   max_markets_simultaneous: 5
-  fee_bps: 100            # 1% taker
+  fee_bps: 100
 
-# LP Rewards Farming (TODO 4.2)
+# LP Rewards Farming
 rewards_farmer:
-  max_capital_per_market: 37.0   # ~12% cap (rewards farming tolera mas exposure)
-  min_rewards_rate: 0.001   # 0.1% diario minimo
-  max_markets_simultaneous: 3
-  spread_offset: 0.015
+  max_capital_per_market: 22.0   # Tip 15: 15% de $150 = $22.5
+  min_rewards_rate: 0.001        # 0.1% diario minimo
+  max_markets_simultaneous: 5    # Tip 7: hasta 6 mercados con $150
+  spread_offset: 0.015           # Tight para maximizar rewards
 
-# Event-Driven Momentum (TODO 4.3)
+# Event-Driven Momentum (desactivado)
 event_driven:
-  max_position: 15.0
+  max_position: 7.5
   momentum_delay_sec: 120
   pre_event_window_sec: 7200
 
-# Directional Strategy (Fase 3)
+# Directional Strategy (desactivado)
 directional:
-  min_edge_bps: 100          # Edge mínimo en bps (1%) para operar
-  min_size_usdc: 5.0         # Tamaño mínimo de orden
-  max_size_usdc: 15.0        # 5% de $300 — regla INQUEBRANTABLE
+  min_edge_bps: 100
+  min_size_usdc: 5.0
+  max_size_usdc: 7.5         # 5% de $150 — regla INQUEBRANTABLE
   kelly_fraction: 0.25       # Quarter-Kelly
-  expected_hold_seconds: 7200  # 2h de tenencia estimada para cost model
+  expected_hold_seconds: 7200
 
-# Blacklist por round-trip win rate (Fase 4)
+# Blacklist por round-trip win rate
 blacklist:
-  min_trades: 10       # Mínimo round-trips para evaluar un mercado
-  wr_threshold: 0.30   # WR < 30% → blacklist
-  blacklist_days: 7    # Días de blacklist tras superar el umbral
+  min_trades: 10
+  wr_threshold: 0.30
+  blacklist_days: 7
 
-# Stage Machine (Fase 2)
+# Stage Machine
 stages:
-  promote_threshold: 7   # Reviews positivos necesarios en la ventana de 10
-  review_window: 10      # Últimos N reviews considerados para auto-promoción
+  promote_threshold: 7
+  review_window: 10
 
-# Anti-frontrunning jitter (TODO 1.5)
+# Anti-frontrunning jitter
 anti_frontrun:
   enabled: true
   size_jitter_pct: 0.15
