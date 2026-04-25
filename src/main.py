@@ -1083,6 +1083,47 @@ class NachoMarketBot:
         """Retorna posiciones de inventario por mercado."""
         return self._inventory.get_positions()
 
+    def get_positions_detail(self) -> list[dict[str, Any]]:
+        """Retorna posiciones enriquecidas para /positions de Telegram (tip 11).
+
+        Para cada mercado activo incluye: mid actual, participation share,
+        inventory en USDC y horas desde la ultima orden.
+        """
+        import time as _time
+        result = []
+        positions = self._inventory.get_positions()
+
+        for market in self._active_markets:
+            cid = market.get("condition_id", "")
+            if not cid:
+                continue
+
+            inv = positions.get(cid, {})
+            yes_inv = inv.get("yes", 0.0)
+            no_inv = inv.get("no", 0.0)
+            total_inv = abs(yes_inv) + abs(no_inv)
+
+            # Horas desde ultimo refresh del MM
+            mm = next(
+                (s for s in self._strategies if s.name == "market_maker"), None
+            )
+            last_ts = mm._last_refresh.get(cid, 0.0) if mm else 0.0
+            hours_since = (_time.time() - last_ts) / 3600.0 if last_ts > 0 else None
+
+            result.append({
+                "condition_id": cid,
+                "question": market.get("question", "")[:45],
+                "mid_price": market.get("mid_price", 0.0),
+                "participation_share": market.get("_participation_share", 0.0),
+                "yes_inventory": yes_inv,
+                "no_inventory": no_inv,
+                "total_inventory_usdc": total_inv,
+                "hours_since_last_order": hours_since,
+                "rewards_active": market.get("rewards_active", False),
+            })
+
+        return result
+
     def pause(self) -> None:
         """Pausa el trading instantáneamente. Llamado por Telegram /pause o CB."""
         if self._state == "paused":
