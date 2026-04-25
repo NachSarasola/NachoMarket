@@ -202,8 +202,9 @@ class NachoMarketBot:
             alert_callback=send_alert,
         )
         self._allocator = StrategyAllocator(
-            strategies=[name for name in self._settings.get("strategies_enabled", [])],
-            total_capital=float(self._settings.get("capital_total", 300.0)),
+            strategy_names=[
+                name for name in self._settings.get("strategies_enabled", [])
+            ],
         )
 
         # External data (PolyScan + FRED)
@@ -1241,6 +1242,11 @@ class NachoMarketBot:
         if self._state == "paused":
             return
         self._state = "paused"
+        try:
+            self._client.cancel_all_orders()
+            self._logger.info("Bot PAUSADO - órdenes abiertas canceladas")
+        except Exception:
+            self._logger.exception("Bot PAUSADO - error cancelando órdenes abiertas")
         for strategy in self._strategies:
             strategy.pause()
         self._logger.info("Bot PAUSADO")
@@ -1392,7 +1398,7 @@ def main() -> None:
             print(f"\n🚫 GEO-BLOCK: {geo_err}", file=sys.stderr)
             print(
                 "   El bot debe correr desde un VPS fuera de Argentina.\n"
-                "   Ver: scripts/deploy.sh para desplegar en Oracle Cloud.",
+                "   Ver: scripts/deploy.sh para desplegar en Hetzner Cloud.",
                 file=sys.stderr,
             )
             sys.exit(1)
