@@ -17,7 +17,7 @@ class TestKellyFraction:
     def test_positive_edge(self) -> None:
         # p=0.65, q=0.55: f = 0.25 * (0.65 - 0.55) / (1 - 0.55) = 0.0556
         kf = kelly_fraction(estimated_prob=0.65, market_price=0.55)
-        assert 0 < kf <= 0.10
+        assert 0 < kf <= 0.05  # clamp a 5% (alineado con regla INQUEBRANTABLE)
 
     def test_no_edge_returns_zero(self) -> None:
         assert kelly_fraction(0.5, 0.5) == 0.0
@@ -25,10 +25,10 @@ class TestKellyFraction:
     def test_negative_edge_returns_zero(self) -> None:
         assert kelly_fraction(0.4, 0.6) == 0.0
 
-    def test_clamped_at_10_pct(self) -> None:
-        # Edge enorme — debe clampearse a 0.10
+    def test_clamped_at_5_pct(self) -> None:
+        # Edge enorme — debe clampearse a 0.05 (5%/mercado regla INQUEBRANTABLE)
         kf = kelly_fraction(estimated_prob=0.99, market_price=0.01)
-        assert kf == 0.10
+        assert kf == 0.05
 
     def test_default_kelly_multiplier_is_quarter(self) -> None:
         # Use small edge so neither hits the 0.10 cap

@@ -151,6 +151,7 @@ class TelegramBot:
             ("demote", self._cmd_demote),
             ("stages", self._cmd_stages),
             ("blacklist", self._cmd_blacklist),
+            ("positions", self._cmd_positions),
         ]
         for name, handler in handlers:
             self._app.add_handler(CommandHandler(name, handler))
@@ -249,6 +250,7 @@ class TelegramBot:
             "/stats — Sharpe/Sortino/Calmar 30d\n"
             "/attribution — Top/bottom estrategias y mercados\n"
             "/markets — Mercados activos con inventory\n"
+            "/positions — Posiciones detalladas: mid, share, PnL, horas activo\n"
             "/review — Forzar self\\-review inmediato\n"
             "/pause — Pausar trading \\(cancela ordenes\\)\n"
             "/resume — Reanudar trading\n"
@@ -447,6 +449,50 @@ class TelegramBot:
             )
 
         await update.message.reply_text("\n".join(lines))
+
+    async def _cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/positions — Posiciones detalladas: mid, participation share, inventory, horas activo."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("Bot controller no conectado.")
+            return
+
+        if not hasattr(self._controller, "get_positions_detail"):
+            await update.message.reply_text("Comando no disponible en esta version.")
+            return
+
+        details = self._controller.get_positions_detail()
+        if not details:
+            await update.message.reply_text("Sin posiciones activas en este momento.")
+            return
+
+        lines = ["*Posiciones activas (tip 11)*\n"]
+        for i, pos in enumerate(details, 1):
+            share_pct = pos.get("participation_share", 0.0) * 100
+            mid = pos.get("mid_price", 0.0)
+            yes_inv = pos.get("yes_inventory", 0.0)
+            no_inv = pos.get("no_inventory", 0.0)
+            total = pos.get("total_inventory_usdc", 0.0)
+            hours = pos.get("hours_since_last_order")
+            rewards_icon = "💰" if pos.get("rewards_active") else ""
+            question = pos.get("question", "?")[:40]
+
+            hours_str = f"{hours:.1f}h" if hours is not None else "n/a"
+            share_warn = " ⚠️" if share_pct < 0.5 else ""
+
+            lines.append(
+                f"*{i}. {question}* {rewards_icon}\n"
+                f"   Mid: `{mid:.3f}` | Share: `{share_pct:.1f}%`{share_warn}\n"
+                f"   YES: `{yes_inv:.1f}` NO: `{no_inv:.1f}` Total: `${total:.1f}`\n"
+                f"   Ultima orden: hace `{hours_str}`\n"
+            )
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def _cmd_pnl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """/pnl — Reporte detallado de PnL dia / semana / mes."""

@@ -51,6 +51,10 @@ class CircuitBreaker:
         self._max_open_orders = cb.get("max_open_orders", 20)
         self._max_market_loss_1h = cb.get("max_market_loss_1h_usdc", 5.0)
 
+        # Tip 16: piso absoluto de balance — si bankroll cae debajo de este nivel,
+        # parar todo (modo no-reanudable salvo intervencion manual).
+        self._loss_reserve_usdc = float(config.get("loss_reserve_usdc", 0.0))
+
         # Thresholds de rolling drawdown (configurables en risk.yaml)
         rd = config.get("rolling_drawdown", {})
         self._drawdown_7d_threshold = rd.get("threshold_7d_usdc", 40.0)
@@ -218,6 +222,29 @@ class CircuitBreaker:
         if self.is_triggered():
             return False
         return self._open_orders < self._max_open_orders
+
+    def check_balance_floor(self, current_balance: float) -> bool:
+        """Tip 16: trigger CB si el balance cae debajo del piso loss_reserve_usdc.
+
+        Args:
+            current_balance: Balance actual en USDC del bot.
+
+        Returns:
+            True si se acaba de triggear (caller puede alertar); False si OK
+            o si ya estaba triggered.
+        """
+        if self._loss_reserve_usdc <= 0:
+            return False
+        if self._triggered:
+            return False
+        if current_balance < self._loss_reserve_usdc:
+            logger.critical(
+                "Balance %.2f < loss_reserve %.2f — kill switch (tip 16)",
+                current_balance, self._loss_reserve_usdc,
+            )
+            self._trigger("balance_floor_breach")
+            return True
+        return False
 
     def order_placed(self) -> None:
         """Incrementa contador de ordenes abiertas."""

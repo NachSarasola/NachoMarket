@@ -45,7 +45,7 @@ def kelly_fraction(
         return 0.0  # Sin edge
 
     raw = kelly_multiplier * (p - q) / (1.0 - q)
-    return max(0.0, min(raw, 0.10))
+    return max(0.0, min(raw, 0.05))
 
 
 def calculate_size(

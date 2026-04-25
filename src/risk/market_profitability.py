@@ -40,6 +40,8 @@ class MarketStats:
     buy_prices: list[float] = field(default_factory=list)
     sell_prices: list[float] = field(default_factory=list)
     last_updated: str = ""
+    # Tip 18/20: timestamp desde cuando el share esta por debajo del threshold
+    share_below_since: float = 0.0
 
     @property
     def roi(self) -> float:
@@ -93,7 +95,15 @@ class MarketProfiler:
         price = trade.price if hasattr(trade, "price") else trade.get("price", 0.0)
         size = trade.size if hasattr(trade, "size") else trade.get("size", 0.0)
         fee = trade.fee_paid if hasattr(trade, "fee_paid") else trade.get("fee_paid", 0.0)
-        rewards = getattr(trade, "rewards", trade.get("rewards", 0.0) if isinstance(trade, dict) else 0.0)
+        # Nuevo nombre canonico: rewards_earned (Tip 17). Backcompat con 'rewards'.
+        if hasattr(trade, "rewards_earned"):
+            rewards = trade.rewards_earned
+        elif hasattr(trade, "rewards"):
+            rewards = trade.rewards
+        elif isinstance(trade, dict):
+            rewards = trade.get("rewards_earned", trade.get("rewards", 0.0))
+        else:
+            rewards = 0.0
         status = trade.status if hasattr(trade, "status") else trade.get("status", "")
 
         stats.order_count += 1
@@ -178,6 +188,57 @@ class MarketProfiler:
             }
             for s in evaluated[:top_n]
         ]
+
+    def should_exit_by_share(
+        self,
+        market_id: str,
+        current_share: float,
+        threshold: float = 0.005,
+        persistence_hours: float = 12.0,
+    ) -> bool:
+        """Evalua si hay que salir de un mercado por baja participacion prolongada.
+
+        Tips 18, 20: si la participation_share lleva >= persistence_hours por
+        debajo del threshold (0.5%), el mercado ya no vale el riesgo y hay que
+        mover el capital a uno con menos competencia.
+
+        Args:
+            market_id: condition_id del mercado.
+            current_share: Participacion actual del bot en el mercado (0.0 a 1.0).
+            threshold: Share minimo aceptable (default 0.5%).
+            persistence_hours: Horas que debe mantenerse bajo antes de salir.
+
+        Returns:
+            True si hay que salir del mercado.
+        """
+        import time as _time
+
+        if market_id not in self._stats:
+            self._stats[market_id] = MarketStats(market_id=market_id)
+
+        stats = self._stats[market_id]
+        now = _time.time()
+
+        if current_share < threshold:
+            if stats.share_below_since <= 0:
+                stats.share_below_since = now
+                self._save()
+            hours_below = (now - stats.share_below_since) / 3600.0
+            if hours_below >= persistence_hours:
+                logger.warning(
+                    "Mercado %s share=%.1f%% por debajo de %.1f%% durante %.1fh — "
+                    "candidato a salida",
+                    market_id[:14], current_share * 100,
+                    threshold * 100, hours_below,
+                )
+                return True
+        else:
+            # Share recupero — resetear timer
+            if stats.share_below_since > 0:
+                stats.share_below_since = 0.0
+                self._save()
+
+        return False
 
     def get_market_roi(self, market_id: str) -> float | None:
         """ROI de un mercado especifico, o None si no hay datos."""

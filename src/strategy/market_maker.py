@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from src.analysis.wall_detector import is_large_wall
 from src.strategy.base import BaseStrategy, Signal, Trade
 from src.strategy.repositioner import FillRepositioner
 
@@ -40,10 +41,13 @@ class MarketMakerStrategy(BaseStrategy):
         # Reposicionador post-fill
         self._repositioner = FillRepositioner(config)
 
-        # Time-based sizing: reducir tamaño en horas de baja actividad
+        # Time-based sizing: reducir en horas bajas, boost en ventana prime
         tw = config.get("time_windows", {})
         self._low_activity_hours: set[int] = set(tw.get("low_activity_hours", range(0, 8)))
         self._low_activity_factor: float = tw.get("low_activity_size_factor", 0.5)
+        # Tip 19: prime placement window (00-04 UTC) — boost de +30%
+        self._prime_hours: set[int] = set(tw.get("prime_placement_window_utc", [0, 1, 2, 3]))
+        self._prime_boost: float = tw.get("prime_size_boost", 1.3)
 
         # Anti-frontrunning jitter (TODO 1.5)
         jitter_cfg = config.get("anti_frontrun", {})
@@ -52,11 +56,16 @@ class MarketMakerStrategy(BaseStrategy):
         self._jitter_price_prob: float = jitter_cfg.get("price_jitter_prob", 0.30)  # 30%
         self._jitter_timing_sec: float = jitter_cfg.get("timing_jitter_sec", 5.0)  # ±5s
 
-        # Near-resolution gate (Fase 1): cancelar quotes cuando faltan < N horas
+        # Near-resolution gate: cancelar quotes cuando faltan < N horas
         self._near_resolution_hours: float = mm.get(
             "near_resolution_hours",
-            config.get("near_resolution_hours", 6.0),
+            config.get("near_resolution_hours", 336.0),
         )
+
+        # Tip 21: no reposicionar si el mid no se movio suficiente
+        self._min_mid_change: float = config.get("min_mid_change_to_reposition", 0.02)
+        # Cache de ultimo mid conocido por condition_id
+        self._last_mid: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # BaseStrategy interface
@@ -106,6 +115,21 @@ class MarketMakerStrategy(BaseStrategy):
             )
             return []
 
+        # Tip 9: detectar walls grandes en el book (>= 10x min_share del mercado)
+        # Si hay wall, el MM se posiciona en el mismo precio (junto a la wall)
+        rewards_min = market_data.get("rewards_min_size", 0.0) or 5.0
+        bids_book = self._extract_book_side(market_data, "bids")
+        asks_book = self._extract_book_side(market_data, "asks")
+        bid_wall_found, bid_wall_price = is_large_wall(bids_book, rewards_min)
+        ask_wall_found, ask_wall_price = is_large_wall(asks_book, rewards_min)
+
+        # Tip 17: metadata para enriquecer Trade (categoria, share, mid)
+        signal_metadata: dict[str, Any] = {
+            "mid_at_entry": float(mid_price),
+            "participation_share_at_entry": float(market_data.get("_participation_share", 0.0)),
+            "category": str(market_data.get("category", "")),
+        }
+
         # --- Inventario y skew ---
         current_inv = self._inventory.get(token_id, 0.0)
         inv_ratio = abs(current_inv) / self._max_inventory if self._max_inventory > 0 else 0.0
@@ -133,6 +157,9 @@ class MarketMakerStrategy(BaseStrategy):
                 # Si estamos long (skew > 0), alejar el bid (wider)
                 bid_offset = level_offset + max(skew, 0)
                 bid_price = self._round_to_tick(mid_price - bid_offset, tick_size)
+                # Tip 9: nivel 0 + wall detectada → posicionar junto a la wall
+                if level == 0 and bid_wall_found and 0 < bid_wall_price < mid_price:
+                    bid_price = self._round_to_tick(bid_wall_price, tick_size)
 
                 if 0 < bid_price < mid_price:
                     # Verificar que no excedemos inventario
@@ -145,6 +172,7 @@ class MarketMakerStrategy(BaseStrategy):
                             price=bid_price,
                             size=effective_size,
                             confidence=confidence,
+                            metadata=signal_metadata,
                         ))
 
             # --- ASK (SELL) ---
@@ -152,6 +180,9 @@ class MarketMakerStrategy(BaseStrategy):
                 # Si estamos short (skew < 0), alejar el ask (wider)
                 ask_offset = level_offset + max(-skew, 0)
                 ask_price = self._round_to_tick(mid_price + ask_offset, tick_size)
+                # Tip 9: nivel 0 + wall detectada → posicionar junto a la wall
+                if level == 0 and ask_wall_found and mid_price < ask_wall_price < 1.0:
+                    ask_price = self._round_to_tick(ask_wall_price, tick_size)
 
                 if mid_price < ask_price < 1.0:
                     # Verificar que no excedemos inventario
@@ -164,6 +195,7 @@ class MarketMakerStrategy(BaseStrategy):
                             price=ask_price,
                             size=effective_size,
                             confidence=confidence,
+                            metadata=signal_metadata,
                         ))
 
         self._logger.info(
@@ -305,18 +337,32 @@ class MarketMakerStrategy(BaseStrategy):
                     self._logger.info(f"Unpausing sides for {token_id[:8]}...")
                     paused.clear()
 
-    def needs_refresh(self, condition_id: str) -> bool:
-        """Verifica si paso suficiente tiempo desde el ultimo refresh.
+    def needs_refresh(self, condition_id: str, current_mid: float = 0.0) -> bool:
+        """Verifica si hay que refrescar quotes.
 
-        Usa un intervalo jittered para evitar patrones de timing predecibles.
+        Tip 21: solo refresca si paso el tiempo Y el mid cambio >= min_mid_change.
+        Preservar la orden quieta en el book acumula mas rewards por minuto.
         """
         last = self._last_refresh.get(condition_id, 0.0)
         interval = self._jittered_refresh_seconds()
-        return (time.time() - last) >= interval
+        if (time.time() - last) < interval:
+            return False
+        # Timer paso: verificar si el mid se movio lo suficiente
+        if current_mid > 0 and self._min_mid_change > 0:
+            last_mid = self._last_mid.get(condition_id, 0.0)
+            if last_mid > 0 and abs(current_mid - last_mid) < self._min_mid_change:
+                self._logger.debug(
+                    "mid cambio %.4f (< %.4f) — no reposicionar %s",
+                    abs(current_mid - last_mid), self._min_mid_change, condition_id[:12],
+                )
+                return False
+        return True
 
-    def mark_refreshed(self, condition_id: str) -> None:
-        """Marca el mercado como recien refresheado."""
+    def mark_refreshed(self, condition_id: str, current_mid: float = 0.0) -> None:
+        """Marca el mercado como recien refresheado y guarda el mid actual."""
         self._last_refresh[condition_id] = time.time()
+        if current_mid > 0:
+            self._last_mid[condition_id] = current_mid
 
     # ------------------------------------------------------------------
     # Override run() para incluir manage_inventory y refresh timing
@@ -350,8 +396,9 @@ class MarketMakerStrategy(BaseStrategy):
                 self._logger.debug("No se pudieron cancelar órdenes near-resolution")
             return []
 
-        # Verificar si necesita refresh
-        if not self.needs_refresh(condition_id):
+        # Verificar si necesita refresh (tip 21: solo si mid cambio >= 2c)
+        current_mid = market_data.get("mid_price", 0.0)
+        if not self.needs_refresh(condition_id, current_mid):
             return []
 
         # Gestionar inventario antes de evaluar
@@ -367,8 +414,8 @@ class MarketMakerStrategy(BaseStrategy):
         trades = self.execute(signals)
         all_trades.extend(trades)
 
-        # Marcar como refresheado
-        self.mark_refreshed(condition_id)
+        # Marcar como refresheado (guarda mid para proxima comparacion)
+        self.mark_refreshed(condition_id, current_mid)
 
         return all_trades
 
@@ -420,16 +467,22 @@ class MarketMakerStrategy(BaseStrategy):
     def _get_effective_order_size(self) -> float:
         """Retorna el tamaño de orden ajustado por hora del dia y jitter.
 
+        Tip 19: boost +30% en ventana prime (00-04 UTC) para acumular rewards.
         Anti-frontrunning: aplica ±15% de variacion aleatoria al tamaño.
-        Esto evita que otros bots detecten patrones de tamaño fijo.
         """
         current_hour = datetime.now(timezone.utc).hour
         base_size = self._order_size
         if current_hour in self._low_activity_hours:
             base_size = self._order_size * self._low_activity_factor
             self._logger.debug(
-                f"Baja actividad (hora {current_hour} UTC): "
-                f"order_size base reducido a {base_size:.1f}"
+                "Baja actividad (hora %d UTC): order_size reducido a %.1f",
+                current_hour, base_size,
+            )
+        elif current_hour in self._prime_hours:
+            base_size = self._order_size * self._prime_boost
+            self._logger.debug(
+                "Ventana prime (hora %d UTC): order_size boost a %.1f",
+                current_hour, base_size,
             )
 
         if self._jitter_enabled and self._jitter_size_pct > 0:
@@ -491,6 +544,28 @@ class MarketMakerStrategy(BaseStrategy):
         if tick_size <= 0:
             return round(price, 4)
         return round(round(price / tick_size) * tick_size, 4)
+
+    @staticmethod
+    def _extract_book_side(
+        market_data: dict[str, Any], side: str
+    ) -> list[tuple[float, float]]:
+        """Extrae un lado del orderbook como lista de (price, size) ordenada.
+
+        side: "bids" (mejor primero, precio desc) | "asks" (mejor primero, precio asc).
+        Retorna [] si no hay book disponible.
+        """
+        book = market_data.get("orderbook", {})
+        levels = book.get(side, [])
+        result: list[tuple[float, float]] = []
+        for lvl in levels:
+            try:
+                price = float(lvl.get("price", lvl.get("p", 0)))
+                size = float(lvl.get("size", lvl.get("s", 0)))
+                if price > 0 and size > 0:
+                    result.append((price, size))
+            except (TypeError, ValueError):
+                continue
+        return result
 
     def get_inventory(self, token_id: str) -> float:
         """Retorna inventario neto para un token."""

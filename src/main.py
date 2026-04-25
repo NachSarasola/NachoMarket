@@ -131,15 +131,24 @@ class NachoMarketBot:
 
         # --- e. Strategies habilitadas en settings ---
         enabled = self._settings.get("strategies_enabled", ["market_maker", "multi_arb"])
+        # Merged config: las estrategias necesitan acceso a markets.yaml
+        # (time_windows, min_mid_change_to_reposition, bot_order_size, competition,
+        # loss_reserve_usdc) y a risk.yaml (cost_model, position_sizing).
+        # Orden: settings (base) ← markets ← risk → keys de risk pisan, settings es default.
+        merged_strategy_config = {
+            **self._settings,
+            **self._markets_config,
+            **self._risk_config,
+        }
         _strategy_factories = {
-            "market_maker":   lambda: MarketMakerStrategy(self._client, self._settings),
-            "multi_arb":      lambda: MultiArbStrategy(self._client, self._settings),
-            "directional":    lambda: DirectionalStrategy(self._client, self._settings),
-            "stat_arb":       lambda: StatArbStrategy(self._client, self._settings),
-            "rewards_farmer": lambda: RewardsFarmerStrategy(self._client, self._settings),
-            "event_driven":   lambda: EventDrivenStrategy(self._client, self._settings),
+            "market_maker":   lambda: MarketMakerStrategy(self._client, merged_strategy_config),
+            "multi_arb":      lambda: MultiArbStrategy(self._client, merged_strategy_config),
+            "directional":    lambda: DirectionalStrategy(self._client, merged_strategy_config),
+            "stat_arb":       lambda: StatArbStrategy(self._client, merged_strategy_config),
+            "rewards_farmer": lambda: RewardsFarmerStrategy(self._client, merged_strategy_config),
+            "event_driven":   lambda: EventDrivenStrategy(self._client, merged_strategy_config),
             "copy_trade":     lambda: CopyTradeStrategy(
-                self._client, self._settings, whale_tracker=None  # wired post-init
+                self._client, merged_strategy_config, whale_tracker=None  # wired post-init
             ),
         }
         self._strategies = [
@@ -328,6 +337,16 @@ class NachoMarketBot:
                 "No se pudo actualizar balance; usando valor cacheado $%.2f",
                 self._cached_balance,
             )
+
+        # Tip 16: piso absoluto de balance
+        if self._circuit_breaker.check_balance_floor(self._cached_balance):
+            send_alert(
+                f"🛑 *Loss reserve breach* (tip 16)\n"
+                f"Balance: `${self._cached_balance:.2f}` < piso reservado\n"
+                f"Trading detenido — requiere intervencion manual."
+            )
+            self.pause()
+            return
 
         # Circuit breaker: si está activo, skip del ciclo
         if self._circuit_breaker.is_triggered():
@@ -690,6 +709,55 @@ class NachoMarketBot:
                     "No se pudo verificar fill de orden %s...", orig_order_id[:12]
                 )
 
+        # Tip 17: detectar fills de ordenes de reposicionamiento (round-trip cerrado)
+        # y registrar el trade con time_to_exit_sec.
+        repo_ids = list(mm._repositioner._by_reposition_id.keys())
+        for repo_id in repo_ids:
+            try:
+                status = self._client.get_order_status(repo_id)
+                if status.get("status") != "MATCHED":
+                    continue
+                fill_px = float(status.get("price", 0.0)) or None
+                result = mm._repositioner.on_reposition_filled(repo_id, fill_px)
+                if result is None:
+                    continue
+                round_trip_pnl, time_to_exit = result
+                # Loguear el trade SELL con time_to_exit_sec
+                from src.strategy.base import Trade
+                from datetime import datetime, timezone
+                exit_trade = Trade(
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    market_id="",  # ya no tenemos pending; sin market_id detallado
+                    token_id="",
+                    side="EXIT",
+                    price=float(fill_px or 0.0),
+                    size=0.0,
+                    order_id=repo_id,
+                    status="MATCHED",
+                    strategy_name="repositioner",
+                    fee_paid=0.0,
+                    time_to_exit_sec=float(time_to_exit),
+                )
+                # Persistir directamente al log; no pasar por _handle_trade (no hay PnL chain)
+                from src.strategy.base import TRADES_FILE
+                import json
+                from dataclasses import asdict
+                try:
+                    with open(TRADES_FILE, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(asdict(exit_trade), ensure_ascii=False) + "\n")
+                except OSError:
+                    self._logger.debug("No se pudo escribir exit_trade a trades.jsonl")
+                # Registrar PnL en circuit breaker
+                self._circuit_breaker.record_trade(round_trip_pnl)
+                self._logger.info(
+                    "Round-trip cerrado: pnl=%.4f time=%.0fs (repo_id=%s)",
+                    round_trip_pnl, time_to_exit, repo_id[:12],
+                )
+            except Exception:
+                self._logger.debug(
+                    "No se pudo verificar fill de reposicion %s...", repo_id[:12]
+                )
+
     # ------------------------------------------------------------------
     # Merges de inventario YES+NO → USDC
     # ------------------------------------------------------------------
@@ -899,8 +967,14 @@ class NachoMarketBot:
 
         Llamado al arranque y cada _MARKET_UPDATE_INTERVAL_MIN minutos.
         Actualiza self._active_markets y suscribe nuevos tokens al WS.
+
+        Tips 18, 20: antes de elegir nuevos mercados, evalua si hay que salir
+        de los actuales por baja participation share prolongada.
         """
         try:
+            # Tip 18/20: revisar mercados activos por share bajo
+            self._purge_low_share_markets()
+
             self._market_analyzer.invalidate_cache()
             markets = self._market_analyzer.scan_markets()
             self._active_markets = markets
@@ -912,6 +986,37 @@ class NachoMarketBot:
             )
         except Exception:
             self._logger.exception("Error actualizando mercados")
+
+    def _purge_low_share_markets(self) -> None:
+        """Cancela ordenes y bloquea temporalmente mercados con share bajo prolongado.
+
+        Tip 18: si participation_share < 0.5% por >= 12h, sacar el capital.
+        Tip 20: no casarse con un mercado.
+        """
+        if not self._active_markets:
+            return
+
+        for market in self._active_markets:
+            cid = market.get("condition_id", "")
+            current_share = market.get("_participation_share", 0.0)
+            if not cid:
+                continue
+            if self._profiler.should_exit_by_share(cid, current_share):
+                self._logger.warning(
+                    "Saliendo de %s por share bajo prolongado (share=%.2f%%)",
+                    cid[:14], current_share * 100,
+                )
+                try:
+                    self._client.cancel_market_orders(condition_id=cid)
+                except Exception:
+                    self._logger.exception(
+                        "No se pudo cancelar ordenes de %s al purgar", cid[:14]
+                    )
+                # Bloquear el mercado por 12h para no re-elegirlo de inmediato
+                try:
+                    self._market_analyzer.market_filter.block_market_until(cid, hours=12.0)
+                except Exception:
+                    self._logger.debug("No se pudo bloquear %s temporalmente", cid[:14])
 
     # ------------------------------------------------------------------
     # Self-review programado
@@ -1082,6 +1187,47 @@ class NachoMarketBot:
     def get_positions(self) -> dict[str, dict[str, float]]:
         """Retorna posiciones de inventario por mercado."""
         return self._inventory.get_positions()
+
+    def get_positions_detail(self) -> list[dict[str, Any]]:
+        """Retorna posiciones enriquecidas para /positions de Telegram (tip 11).
+
+        Para cada mercado activo incluye: mid actual, participation share,
+        inventory en USDC y horas desde la ultima orden.
+        """
+        import time as _time
+        result = []
+        positions = self._inventory.get_positions()
+
+        for market in self._active_markets:
+            cid = market.get("condition_id", "")
+            if not cid:
+                continue
+
+            inv = positions.get(cid, {})
+            yes_inv = inv.get("yes", 0.0)
+            no_inv = inv.get("no", 0.0)
+            total_inv = abs(yes_inv) + abs(no_inv)
+
+            # Horas desde ultimo refresh del MM
+            mm = next(
+                (s for s in self._strategies if s.name == "market_maker"), None
+            )
+            last_ts = mm._last_refresh.get(cid, 0.0) if mm else 0.0
+            hours_since = (_time.time() - last_ts) / 3600.0 if last_ts > 0 else None
+
+            result.append({
+                "condition_id": cid,
+                "question": market.get("question", "")[:45],
+                "mid_price": market.get("mid_price", 0.0),
+                "participation_share": market.get("_participation_share", 0.0),
+                "yes_inventory": yes_inv,
+                "no_inventory": no_inv,
+                "total_inventory_usdc": total_inv,
+                "hours_since_last_order": hours_since,
+                "rewards_active": market.get("rewards_active", False),
+            })
+
+        return result
 
     def pause(self) -> None:
         """Pausa el trading instantáneamente. Llamado por Telegram /pause o CB."""

@@ -84,22 +84,33 @@ class MarketAnalyzer:
         self._cache = _Cache(ttl_sec=CACHE_TTL_SEC)
 
         # Config de filtros
-        self._min_volume = config.get("min_daily_volume_usd", 1000)
-        self._max_markets = config.get("max_markets_simultaneous", 12)
+        self._min_volume = config.get("min_daily_volume_usd", 40000)
+        self._small_market_volume = config.get("small_market_volume_usd", 5000)
+        self._max_markets = config.get("max_markets_simultaneous", 6)
         filters = config.get("filters", {})
-        self._min_liquidity = filters.get("min_liquidity_usd", 5000)
+        self._min_liquidity = filters.get("min_liquidity_usd", 500)
         self._max_spread_pct = filters.get("max_spread_pct", 5.0)
         self._min_days_to_resolution = filters.get(
             "min_time_to_resolution_hours", MIN_DAYS_TO_RESOLUTION * 24
         ) / 24
         self._excluded_categories = filters.get("excluded_categories", [])
+        self._excluded_keywords: list[str] = [
+            kw.lower() for kw in filters.get("excluded_keywords", [])
+        ]
+        # Tip 8: zona simetrica de mid-price 40-60c
+        self._mid_price_min: float = filters.get("mid_price_min", 0.0)
+        self._mid_price_max: float = filters.get("mid_price_max", 1.0)
         self._preferred_categories = config.get("preferred_categories", [])
+
+        # Tip 13: diversificacion por categoria
+        diversification = config.get("diversification", {})
+        self._max_per_category: int = diversification.get("max_per_category", 0)
 
         # Competition config
         competition = config.get("competition", {})
         self._max_book_depth_per_side = competition.get("max_book_depth_per_side", 500.0)
         self._min_participation_share = competition.get("min_participation_share", 0.05)
-        self._bot_order_size = config.get("bot_order_size", 15.0)
+        self._bot_order_size = config.get("bot_order_size", 7.5)
 
         # Market filter (ban, dedup, news-risk)
         self._filter = MarketFilter(config)
@@ -193,10 +204,32 @@ class MarketAnalyzer:
         if not market.get("acceptingOrders", market.get("accepting_orders", False)):
             return False
 
-        # Volume minimo
+        # Tip 10: keywords de eventos de un solo dia
+        if self._excluded_keywords:
+            question_lower = market.get("question", "").lower()
+            if any(kw in question_lower for kw in self._excluded_keywords):
+                return False
+
+        # Categorias excluidas (tip 10)
+        category = market.get("category", "").lower()
+        if category in [c.lower() for c in self._excluded_categories]:
+            return False
+
+        # Volume: tip 1 (40K) con override para mercados chicos si share > 5%
         volume = _safe_float(market.get("volume24hr", market.get("volume", 0)))
         if volume < self._min_volume:
-            return False
+            # Override (tip 12): mercado chico pero con alta participacion esperada
+            if volume < self._small_market_volume:
+                return False
+            # Entre small_market_volume y min_volume: calcular share estimado
+            liquidity = _safe_float(market.get("liquidity", 0))
+            if liquidity > 0:
+                est_share = self._bot_order_size / (liquidity + self._bot_order_size)
+                if est_share < self._min_participation_share:
+                    return False
+            # Si no hay datos de liquidity, rechazar
+            elif volume < self._min_volume:
+                return False
 
         # Fecha de resolucion
         end_date_str = market.get("endDate", market.get("end_date_iso", ""))
@@ -207,11 +240,6 @@ class MarketAnalyzer:
                     return False
             except (ValueError, TypeError):
                 pass  # Si no se puede parsear, no filtrar por fecha
-
-        # Categorias excluidas
-        category = market.get("category", "").lower()
-        if category in [c.lower() for c in self._excluded_categories]:
-            return False
 
         return True
 
@@ -328,6 +356,12 @@ class MarketAnalyzer:
         """
         scores: dict[str, float] = {}
 
+        # Tip 8: filtrar mercados fuera de la zona simetrica mid 40-60c
+        mid_price_rep = self._get_representative_price(market)
+        if self._mid_price_min > 0 and self._mid_price_max < 1.0 and mid_price_rep > 0:
+            if not (self._mid_price_min <= mid_price_rep <= self._mid_price_max):
+                return 0.0
+
         # --- Competition (30%): baja profundidad = menos competencia ---
         participation = self._estimate_participation_share(market)
         market["_participation_share"] = participation
@@ -411,9 +445,9 @@ class MarketAnalyzer:
         for market in markets:
             market["_score"] = self.score_market(market)
 
-        # 5. Ordenar y seleccionar
+        # 5. Ordenar, aplicar cap por categoria (tip 13) y seleccionar
         markets.sort(key=lambda m: m["_score"], reverse=True)
-        selected = markets[:n]
+        selected = self._apply_category_cap(markets, n)
 
         if selected:
             score_strs = [f"{m['_score']:.3f}" for m in selected]
@@ -447,6 +481,30 @@ class MarketAnalyzer:
         multi = [m for m in markets if len(m.get("tokens", [])) > 2]
         logger.info(f"get_multi_outcome_markets: {len(multi)} encontrados")
         return multi
+
+    def _apply_category_cap(
+        self, markets_sorted: list[dict[str, Any]], n: int
+    ) -> list[dict[str, Any]]:
+        """Selecciona los N mejores respetando el cap de diversificacion por categoria.
+
+        Tip 13: no mas de max_per_category mercados de la misma tematica.
+        Si max_per_category == 0, deshabilitado (toma los primeros N sin filtro).
+        """
+        if self._max_per_category <= 0:
+            return markets_sorted[:n]
+
+        selected: list[dict[str, Any]] = []
+        category_counts: dict[str, int] = {}
+
+        for market in markets_sorted:
+            if len(selected) >= n:
+                break
+            cat = market.get("category", "").lower() or "unknown"
+            if category_counts.get(cat, 0) < self._max_per_category:
+                selected.append(market)
+                category_counts[cat] = category_counts.get(cat, 0) + 1
+
+        return selected
 
     # ------------------------------------------------------------------
     # Cache control
