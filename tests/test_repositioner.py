@@ -139,9 +139,11 @@ class TestRepositionFilled:
         self.repo.on_fill(trade)
         self.repo.register_reposition_order("orig_1", "repo_1")
 
-        pnl = self.repo.on_reposition_filled("repo_1", fill_price=0.51)
-        assert pnl is not None
+        result = self.repo.on_reposition_filled("repo_1", fill_price=0.51)
+        assert result is not None
+        pnl, time_to_exit = result
         assert abs(pnl - 0.15) < 0.001  # (0.51 - 0.50) * 15 = 0.15
+        assert time_to_exit >= 0.0      # tiempo en segundos
 
     def test_round_trip_profit_sell_side(self) -> None:
         """Vendi a 0.60, reposicione compra a 0.59 → ganancia $0.15 en $15."""
@@ -149,13 +151,15 @@ class TestRepositionFilled:
         self.repo.on_fill(trade)
         self.repo.register_reposition_order("orig_2", "repo_2")
 
-        pnl = self.repo.on_reposition_filled("repo_2", fill_price=0.59)
-        assert pnl is not None
+        result = self.repo.on_reposition_filled("repo_2", fill_price=0.59)
+        assert result is not None
+        pnl, time_to_exit = result
         assert abs(pnl - 0.15) < 0.001  # (0.60 - 0.59) * 15 = 0.15
+        assert time_to_exit >= 0.0
 
     def test_unknown_reposition_id_returns_none(self) -> None:
-        pnl = self.repo.on_reposition_filled("nonexistent_id")
-        assert pnl is None
+        result = self.repo.on_reposition_filled("nonexistent_id")
+        assert result is None
 
     def test_pending_cleared_after_fill(self) -> None:
         trade = make_trade(side="BUY", price=0.50, order_id="orig_3")

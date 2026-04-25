@@ -140,11 +140,11 @@ class FillRepositioner:
 
     def on_reposition_filled(
         self, reposition_order_id: str, fill_price: float | None = None
-    ) -> float | None:
+    ) -> tuple[float, float] | None:
         """Procesa el fill de una orden de reposicionamiento.
 
         Returns:
-            PnL del round-trip (positivo = ganancia), o None si no encontrado.
+            (round_trip_pnl, time_to_exit_sec) o None si no encontrado.
         """
         orig_id = self._by_reposition_id.pop(reposition_order_id, None)
         if orig_id is None:
@@ -165,12 +165,15 @@ class FillRepositioner:
         else:
             round_trip_pnl = (pending.fill_price - actual_fill) * pending.fill_size
 
+        # Tip 17: tiempo total del round-trip en segundos
+        time_to_exit_sec = time.time() - pending.placed_at
+
         logger.info(
             f"Reposition filled: round-trip PnL = ${round_trip_pnl:.4f} "
             f"(bought @ {pending.fill_price:.4f}, sold @ {actual_fill:.4f}, "
-            f"size={pending.fill_size})"
+            f"size={pending.fill_size}, time_to_exit={time_to_exit_sec:.0f}s)"
         )
-        return round_trip_pnl
+        return round_trip_pnl, time_to_exit_sec
 
     def check_expirations(self) -> list[str]:
         """Retorna IDs de ordenes de reposicionamiento que expiraron.

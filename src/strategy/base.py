@@ -58,6 +58,12 @@ class Trade:
     status: str               # "submitted" | "filled_paper" | "error" | ...
     strategy_name: str        # Estrategia que origino el trade
     fee_paid: float = 0.0     # Fee pagado en USDC (0 si post_only maker)
+    # Tip 17: campos de analisis de patrones (default 0/empty para no romper logs viejos)
+    mid_at_entry: float = 0.0                   # Mid price del mercado al colocar la orden
+    participation_share_at_entry: float = 0.0   # % de share estimado al entrar
+    category: str = ""                          # Categoria del mercado
+    time_to_exit_sec: float = 0.0              # Segundos hasta que se filleo el exit (round-trip)
+    rewards_earned: float = 0.0                # Rewards LP acumulados en este trade
 
 
 class BaseStrategy(ABC):
