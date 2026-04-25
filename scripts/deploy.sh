@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy NachoMarket al VPS Hetzner Cloud (o cualquier servidor Linux)
+# Deploy NachoMarket al VPS (Contabo, Lightsail, OVH o cualquier servidor Linux)
 #
 # Uso:
 #   ./scripts/deploy.sh ubuntu@<IP-del-VPS>
@@ -18,8 +18,9 @@ if [ -z "$VPS" ]; then
     echo "❌ Uso: $0 usuario@ip-del-vps [--setup]"
     echo ""
     echo "Ejemplos:"
-    echo "  $0 ubuntu@<HETZNER-IP>             # Solo sync de archivos"
-    echo "  $0 ubuntu@<HETZNER-IP> --setup    # Sync + setup completo + arrancar bot"
+    echo "  $0 root@<VPS-IP>                  # Primera vez (Contabo arranca como root)"
+    echo "  $0 ubuntu@<VPS-IP>                # Solo sync de archivos"
+    echo "  $0 ubuntu@<VPS-IP> --setup        # Sync + setup completo + arrancar bot"
     exit 1
 fi
 

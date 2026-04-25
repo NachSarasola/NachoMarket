@@ -4,7 +4,7 @@
 
 Bot automatizado de market making y trading para Polymarket. 
 
-Opera 24/7 en VPS Hetzner Cloud CPX11 (Ashburn, US). Capital: $166 USDC.
+Opera 24/7 en VPS Contabo VPS S (US-Central, St. Louis MO). Capital: $166 USDC.
 
 Polymarket bloquea Argentina (marzo 2026). El bot DEBE correr desde un VPS
 con IP fuera de Argentina. scripts/check_geo.py verifica acceso antes de arrancar.

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Setup del VPS Hetzner Cloud CPX11 para NachoMarket
-# Compatible con cualquier VPS Ubuntu 22.04+
+# Setup del VPS Contabo VPS S para NachoMarket
+# Compatible con cualquier VPS Ubuntu 22.04+ (Contabo, Lightsail, OVH, etc.)
 set -e
 
-# Crear usuario 'ubuntu' si corremos como root (Hetzner default)
+# Crear usuario 'ubuntu' si corremos como root (Contabo / Hetzner / OVH default)
 if [ "$(id -u)" = "0" ]; then
     if ! id ubuntu &>/dev/null; then
         echo "👤 Creando usuario 'ubuntu' con sudo..."

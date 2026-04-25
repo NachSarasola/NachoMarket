@@ -1398,7 +1398,7 @@ def main() -> None:
             print(f"\n🚫 GEO-BLOCK: {geo_err}", file=sys.stderr)
             print(
                 "   El bot debe correr desde un VPS fuera de Argentina.\n"
-                "   Ver: scripts/deploy.sh para desplegar en Hetzner Cloud.",
+                "   Ver: scripts/deploy.sh para desplegar en un VPS fuera de Argentina.",
                 file=sys.stderr,
             )
             sys.exit(1)

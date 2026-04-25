@@ -62,7 +62,7 @@ def main() -> None:
         print("🚫 GEOBLOQUEADO: Polymarket bloquea esta IP.")
         print("   Esta IP está en una jurisdicción restringida.")
         print("   El bot NO puede operar desde esta ubicación.")
-        print("   → Usá un VPS en una región permitida (ej: US-Ashburn, Ireland).")
+        print("   → Usá un VPS en una región permitida (ej: US, UK, Ireland).")
         sys.exit(1)
 
     print("✅ Geo-check OK — esta IP puede acceder a Polymarket.")

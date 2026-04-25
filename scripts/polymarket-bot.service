@@ -24,8 +24,8 @@ RestartSec=30
 StartLimitInterval=300
 StartLimitBurst=5
 
-# Resource limits (Hetzner CPX11: 2GB RAM, dejamos margen para OS)
-MemoryMax=1500M
+# Resource limits (Contabo VPS S: 8GB RAM, ceiling generoso para evitar OOM)
+MemoryMax=3000M
 
 # Logging
 StandardOutput=journal
