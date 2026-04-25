@@ -54,3 +54,17 @@
 {"strategy": "strat1", "killed_at": 1776964888.5083935, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
 {"strategy": "strat1", "killed_at": 1776964888.5095441, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
 {"strategy": "s1", "killed_at": 1776964888.5107503, "calmar_14d": -26.071, "total_pnl_14d": -500.0, "trade_count": 5}
+{"strategy": "bad_strat", "killed_at": 1777079419.3384376, "calmar_14d": -26.071, "total_pnl_14d": -25.0, "trade_count": 5}
+{"strategy": "bad_strat", "killed_at": 1777079419.339058, "calmar_14d": -26.071, "total_pnl_14d": -25.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1777079419.339869, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1777079419.3410065, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1777079419.3419502, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1777079419.3430357, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "s1", "killed_at": 1777079419.344241, "calmar_14d": -26.071, "total_pnl_14d": -500.0, "trade_count": 5}
+{"strategy": "bad_strat", "killed_at": 1777079447.2570598, "calmar_14d": -26.071, "total_pnl_14d": -25.0, "trade_count": 5}
+{"strategy": "bad_strat", "killed_at": 1777079447.257828, "calmar_14d": -26.071, "total_pnl_14d": -25.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1777079447.2586527, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1777079447.259962, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1777079447.2610044, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "strat1", "killed_at": 1777079447.2622082, "calmar_14d": -26.071, "total_pnl_14d": -50.0, "trade_count": 5}
+{"strategy": "s1", "killed_at": 1777079447.2635732, "calmar_14d": -26.071, "total_pnl_14d": -500.0, "trade_count": 5}
