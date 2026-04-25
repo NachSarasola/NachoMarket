@@ -95,7 +95,15 @@ class MarketProfiler:
         price = trade.price if hasattr(trade, "price") else trade.get("price", 0.0)
         size = trade.size if hasattr(trade, "size") else trade.get("size", 0.0)
         fee = trade.fee_paid if hasattr(trade, "fee_paid") else trade.get("fee_paid", 0.0)
-        rewards = getattr(trade, "rewards", trade.get("rewards", 0.0) if isinstance(trade, dict) else 0.0)
+        # Nuevo nombre canonico: rewards_earned (Tip 17). Backcompat con 'rewards'.
+        if hasattr(trade, "rewards_earned"):
+            rewards = trade.rewards_earned
+        elif hasattr(trade, "rewards"):
+            rewards = trade.rewards
+        elif isinstance(trade, dict):
+            rewards = trade.get("rewards_earned", trade.get("rewards", 0.0))
+        else:
+            rewards = 0.0
         status = trade.status if hasattr(trade, "status") else trade.get("status", "")
 
         stats.order_count += 1

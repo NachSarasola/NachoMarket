@@ -240,8 +240,13 @@ class BaseStrategy(ABC):
         price: float,
         size: float,
         confidence: float = 0.5,
+        metadata: dict[str, Any] | None = None,
     ) -> Signal:
-        """Factory de Signal con strategy_name pre-rellenado."""
+        """Factory de Signal con strategy_name pre-rellenado.
+
+        metadata propaga campos analiticos a _make_trade (mid_at_entry,
+        participation_share_at_entry, category, etc. — tip 17).
+        """
         return Signal(
             market_id=market_id,
             token_id=token_id,
@@ -250,6 +255,7 @@ class BaseStrategy(ABC):
             size=size,
             confidence=confidence,
             strategy_name=self.name,
+            metadata=metadata or {},
         )
 
     def _make_trade(
@@ -259,7 +265,13 @@ class BaseStrategy(ABC):
         status: str,
         fee_paid: float = 0.0,
     ) -> Trade:
-        """Factory de Trade a partir de un Signal y resultado de ejecucion."""
+        """Factory de Trade a partir de un Signal y resultado de ejecucion.
+
+        Tip 17: extrae campos de analisis del Signal.metadata si estan presentes:
+        mid_at_entry, participation_share_at_entry, category, time_to_exit_sec,
+        rewards_earned. Quedan en defaults (0.0/"") si no se proveen.
+        """
+        meta = signal.metadata or {}
         return Trade(
             timestamp=datetime.now(timezone.utc).isoformat(),
             market_id=signal.market_id,
@@ -271,4 +283,9 @@ class BaseStrategy(ABC):
             status=status,
             strategy_name=signal.strategy_name,
             fee_paid=fee_paid,
+            mid_at_entry=float(meta.get("mid_at_entry", 0.0)),
+            participation_share_at_entry=float(meta.get("participation_share_at_entry", 0.0)),
+            category=str(meta.get("category", "")),
+            time_to_exit_sec=float(meta.get("time_to_exit_sec", 0.0)),
+            rewards_earned=float(meta.get("rewards_earned", 0.0)),
         )

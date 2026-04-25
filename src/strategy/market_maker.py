@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from src.analysis.wall_detector import is_large_wall
 from src.strategy.base import BaseStrategy, Signal, Trade
 from src.strategy.repositioner import FillRepositioner
 
@@ -114,6 +115,21 @@ class MarketMakerStrategy(BaseStrategy):
             )
             return []
 
+        # Tip 9: detectar walls grandes en el book (>= 10x min_share del mercado)
+        # Si hay wall, el MM se posiciona en el mismo precio (junto a la wall)
+        rewards_min = market_data.get("rewards_min_size", 0.0) or 5.0
+        bids_book = self._extract_book_side(market_data, "bids")
+        asks_book = self._extract_book_side(market_data, "asks")
+        bid_wall_found, bid_wall_price = is_large_wall(bids_book, rewards_min)
+        ask_wall_found, ask_wall_price = is_large_wall(asks_book, rewards_min)
+
+        # Tip 17: metadata para enriquecer Trade (categoria, share, mid)
+        signal_metadata: dict[str, Any] = {
+            "mid_at_entry": float(mid_price),
+            "participation_share_at_entry": float(market_data.get("_participation_share", 0.0)),
+            "category": str(market_data.get("category", "")),
+        }
+
         # --- Inventario y skew ---
         current_inv = self._inventory.get(token_id, 0.0)
         inv_ratio = abs(current_inv) / self._max_inventory if self._max_inventory > 0 else 0.0
@@ -141,6 +157,9 @@ class MarketMakerStrategy(BaseStrategy):
                 # Si estamos long (skew > 0), alejar el bid (wider)
                 bid_offset = level_offset + max(skew, 0)
                 bid_price = self._round_to_tick(mid_price - bid_offset, tick_size)
+                # Tip 9: nivel 0 + wall detectada → posicionar junto a la wall
+                if level == 0 and bid_wall_found and 0 < bid_wall_price < mid_price:
+                    bid_price = self._round_to_tick(bid_wall_price, tick_size)
 
                 if 0 < bid_price < mid_price:
                     # Verificar que no excedemos inventario
@@ -153,6 +172,7 @@ class MarketMakerStrategy(BaseStrategy):
                             price=bid_price,
                             size=effective_size,
                             confidence=confidence,
+                            metadata=signal_metadata,
                         ))
 
             # --- ASK (SELL) ---
@@ -160,6 +180,9 @@ class MarketMakerStrategy(BaseStrategy):
                 # Si estamos short (skew < 0), alejar el ask (wider)
                 ask_offset = level_offset + max(-skew, 0)
                 ask_price = self._round_to_tick(mid_price + ask_offset, tick_size)
+                # Tip 9: nivel 0 + wall detectada → posicionar junto a la wall
+                if level == 0 and ask_wall_found and mid_price < ask_wall_price < 1.0:
+                    ask_price = self._round_to_tick(ask_wall_price, tick_size)
 
                 if mid_price < ask_price < 1.0:
                     # Verificar que no excedemos inventario
@@ -172,6 +195,7 @@ class MarketMakerStrategy(BaseStrategy):
                             price=ask_price,
                             size=effective_size,
                             confidence=confidence,
+                            metadata=signal_metadata,
                         ))
 
         self._logger.info(
@@ -520,6 +544,28 @@ class MarketMakerStrategy(BaseStrategy):
         if tick_size <= 0:
             return round(price, 4)
         return round(round(price / tick_size) * tick_size, 4)
+
+    @staticmethod
+    def _extract_book_side(
+        market_data: dict[str, Any], side: str
+    ) -> list[tuple[float, float]]:
+        """Extrae un lado del orderbook como lista de (price, size) ordenada.
+
+        side: "bids" (mejor primero, precio desc) | "asks" (mejor primero, precio asc).
+        Retorna [] si no hay book disponible.
+        """
+        book = market_data.get("orderbook", {})
+        levels = book.get(side, [])
+        result: list[tuple[float, float]] = []
+        for lvl in levels:
+            try:
+                price = float(lvl.get("price", lvl.get("p", 0)))
+                size = float(lvl.get("size", lvl.get("s", 0)))
+                if price > 0 and size > 0:
+                    result.append((price, size))
+            except (TypeError, ValueError):
+                continue
+        return result
 
     def get_inventory(self, token_id: str) -> float:
         """Retorna inventario neto para un token."""
