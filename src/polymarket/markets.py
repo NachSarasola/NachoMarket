@@ -445,6 +445,11 @@ class MarketAnalyzer:
         for market in markets:
             market["_score"] = self.score_market(market)
 
+        # Filtrar mercados rechazados (score 0 = fuera de banda 40-60c, tip 8).
+        # Sin esto, si hay menos de N mercados válidos, los rechazados entran
+        # al top por slicing posicional.
+        markets = [m for m in markets if m.get("_score", 0.0) > 0]
+
         # 5. Ordenar, aplicar cap por categoria (tip 13) y seleccionar
         markets.sort(key=lambda m: m["_score"], reverse=True)
         selected = self._apply_category_cap(markets, n)

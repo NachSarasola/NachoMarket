@@ -338,6 +338,15 @@ class NachoMarketBot:
                 self._cached_balance,
             )
 
+        # Circuit breaker: si está activo, skip del ciclo.
+        # IMPORTANTE: este check va PRIMERO porque is_triggered() resetea el
+        # breaker cuando expira el cooldown. Si check_balance_floor() corre
+        # antes, hace early-return mientras _triggered sigue True y el piso
+        # no se evalúa en el ciclo del reset.
+        if self._circuit_breaker.is_triggered():
+            self._logger.warning("Circuit breaker activo — ciclo salteado")
+            return
+
         # Tip 16: piso absoluto de balance
         if self._circuit_breaker.check_balance_floor(self._cached_balance):
             send_alert(
@@ -346,11 +355,6 @@ class NachoMarketBot:
                 f"Trading detenido — requiere intervencion manual."
             )
             self.pause()
-            return
-
-        # Circuit breaker: si está activo, skip del ciclo
-        if self._circuit_breaker.is_triggered():
-            self._logger.warning("Circuit breaker activo — ciclo salteado")
             return
 
         # Cancelar órdenes en mercados que superaron la pérdida horaria
@@ -451,10 +455,12 @@ class NachoMarketBot:
             Lista de Trade ejecutados (vacía si no hay señales o pasan el filtro).
         """
         condition_id = market_data.get("condition_id", "")
+        current_mid = float(market_data.get("mid_price", 0.0) or 0.0)
 
-        # [MM-específico] Respetar refresh_seconds para no sobre-solicitar la API
+        # [MM-específico] Respetar refresh_seconds para no sobre-solicitar la API.
+        # Pasar mid para que la regla min_mid_change_to_reposition (tip 21) actúe.
         needs_refresh_fn = getattr(strategy, "needs_refresh", None)
-        if needs_refresh_fn is not None and not needs_refresh_fn(condition_id):
+        if needs_refresh_fn is not None and not needs_refresh_fn(condition_id, current_mid):
             return []
 
         # [MM-específico] Gestionar inventario antes de evaluar señales
@@ -479,10 +485,10 @@ class NachoMarketBot:
         # Ejecutar: colocar órdenes en el CLOB
         trades = strategy.execute(filtered)
 
-        # [MM-específico] Registrar timestamp del refresh
+        # [MM-específico] Registrar timestamp del refresh y mid actual
         mark_refreshed_fn = getattr(strategy, "mark_refreshed", None)
         if mark_refreshed_fn is not None:
-            mark_refreshed_fn(condition_id)
+            mark_refreshed_fn(condition_id, current_mid)
 
         return trades
 
