@@ -8,12 +8,15 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/nachomarket
 Environment=PYTHONPATH=/home/ubuntu/nachomarket
+Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/home/ubuntu/nachomarket/.env
 
+# Pre-flight: verificar que el entorno LIVE está completo
+ExecStartPre=/home/ubuntu/nachomarket/venv/bin/python scripts/check_env.py
 # Pre-flight: verificar que la IP no está geobloqueada
 ExecStartPre=/home/ubuntu/nachomarket/venv/bin/python scripts/check_geo.py
 
-ExecStart=/home/ubuntu/nachomarket/venv/bin/python -m src.main
+ExecStart=/home/ubuntu/nachomarket/venv/bin/python -m src.main --live
 Restart=on-failure
 RestartSec=30
 
@@ -21,8 +24,8 @@ RestartSec=30
 StartLimitInterval=300
 StartLimitBurst=5
 
-# Resource limits (2GB VPS plan)
-MemoryMax=1600M
+# Resource limits (Contabo VPS S: 8GB RAM, ceiling generoso para evitar OOM)
+MemoryMax=3000M
 
 # Logging
 StandardOutput=journal
