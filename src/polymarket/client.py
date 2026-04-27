@@ -208,7 +208,14 @@ class PolymarketClient:
         if self.paper_mode:
             return {"bids": [], "asks": [], "token_id": token_id}
 
-        obs = self._client.get_order_book(token_id)
+        try:
+            obs = self._client.get_order_book(token_id)
+        except Exception as e:
+            if "404" in str(e) or "No orderbook exists" in str(e):
+                logger.debug(f"get_orderbook: token sin orderbook, ignorando ({token_id[:12]}...)")
+                return {"bids": [], "asks": [], "token_id": token_id}
+            raise
+
         # OrderBookSummary tiene atributos bids y asks (lista de OrderSummary)
         return {
             "token_id": token_id,
@@ -227,7 +234,14 @@ class PolymarketClient:
         if self.paper_mode:
             return 0.5
 
-        result = self._client.get_midpoint(token_id)
+        try:
+            result = self._client.get_midpoint(token_id)
+        except Exception as e:
+            if "404" in str(e) or "No orderbook exists" in str(e):
+                logger.debug(f"get_midpoint: token sin orderbook, ignorando ({token_id[:12]}...)")
+                return 0.0
+            raise
+
         # La API retorna {"mid": "0.52"} o similar
         if isinstance(result, dict):
             return float(result.get("mid", 0.0))
