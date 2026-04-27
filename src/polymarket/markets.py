@@ -280,6 +280,9 @@ class MarketAnalyzer:
     def get_reward_markets(self) -> dict[str, dict[str, Any]]:
         """Consulta mercados con liquidity rewards activos en la CLOB API.
 
+        Usa el endpoint /sampling-simplified-markets que devuelve solo
+        mercados elegibles para sampling rewards, paginado vía next_cursor.
+
         Returns:
             Dict de condition_id → info de rewards.
         """
@@ -289,29 +292,42 @@ class MarketAnalyzer:
             return cached
 
         logger.info("Consultando CLOB API para mercados con rewards activos...")
-        try:
-            resp = requests.get(
-                f"{CLOB_API_URL}/rewards/markets",
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.RequestException:
-            logger.warning("No se pudo obtener rewards de CLOB API")
-            raise
-
-        # Indexar por condition_id
         rewards_map: dict[str, dict[str, Any]] = {}
+        next_cursor: str = ""
 
-        reward_list = data if isinstance(data, list) else data.get("data", [])
-        for entry in reward_list:
-            cid = entry.get("conditionId", entry.get("condition_id", ""))
-            if cid:
+        while True:
+            params = {"next_cursor": next_cursor} if next_cursor else {}
+            try:
+                resp = requests.get(
+                    f"{CLOB_API_URL}/sampling-simplified-markets",
+                    params=params,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+            except requests.RequestException:
+                logger.warning("No se pudo obtener rewards de CLOB API")
+                raise
+
+            entries = payload.get("data", []) if isinstance(payload, dict) else payload
+            for entry in entries:
+                cid = entry.get("condition_id") or entry.get("conditionId", "")
+                if not cid:
+                    continue
+                rewards = entry.get("rewards") or {}
+                rates = rewards.get("rates") or []
+                # rates es una lista; sumamos todos los daily rates por si hay múltiples
+                daily_rate = sum(_safe_float(r.get("rewards_daily_rate", 0)) for r in rates)
                 rewards_map[cid] = {
-                    "rewards_daily_rate": _safe_float(entry.get("rewardsDailyRate", entry.get("rewards_daily_rate", 0))),
-                    "min_size": _safe_float(entry.get("minSize", entry.get("min_size", 0))),
-                    "max_spread": _safe_float(entry.get("maxSpread", entry.get("max_spread", 0))),
+                    "rewards_daily_rate": daily_rate,
+                    "min_size": _safe_float(rewards.get("min_size", 0)),
+                    "max_spread": _safe_float(rewards.get("max_spread", 0)),
                 }
+
+            next_cursor = payload.get("next_cursor", "") if isinstance(payload, dict) else ""
+            # "LTE=" es el sentinel "no hay más páginas" en la CLOB API
+            if not next_cursor or next_cursor == "LTE=":
+                break
 
         self._cache.set("reward_markets", rewards_map)
         logger.info(f"get_reward_markets: {len(rewards_map)} mercados con rewards")
