@@ -13,7 +13,7 @@ EnvironmentFile=-/home/ubuntu/nachomarket/.env
 # Pre-flight: verificar que la IP no está geobloqueada
 ExecStartPre=/home/ubuntu/nachomarket/venv/bin/python scripts/check_geo.py
 
-ExecStart=/home/ubuntu/nachomarket/venv/bin/python src/main.py
+ExecStart=/home/ubuntu/nachomarket/venv/bin/python -m src.main
 Restart=on-failure
 RestartSec=30
 
@@ -21,8 +21,8 @@ RestartSec=30
 StartLimitInterval=300
 StartLimitBurst=5
 
-# Resource limits (Free Tier: 1GB RAM)
-MemoryMax=800M
+# Resource limits (2GB VPS plan)
+MemoryMax=1600M
 
 # Logging
 StandardOutput=journal

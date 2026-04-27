@@ -4,10 +4,11 @@
 
 Bot automatizado de market making y trading para Polymarket. 
 
-Opera 24/7 en VPS Oracle Cloud Free Tier (US-Ashburn). Capital: $166 USDC.
+Opera 24/7 en VPS AWS Lightsail (Dublin, IE - 3.252.244.181). Capital: $166 USDC.
 
-Polymarket bloquea Argentina (marzo 2026). El bot DEBE correr desde un VPS
-con IP fuera de Argentina. scripts/check_geo.py verifica acceso antes de arrancar.
+El CLOB de Polymarket corre en AWS eu-west-2 (London). Esta VPS esta en
+eu-west-1 (Dublin), garantizando baja latencia (~2-5ms).
+scripts/check_geo.py verifica acceso via /api/geoblock antes de arrancar.
 
 PRIORIDAD ABSOLUTA: preservacion de capital. Nunca arriesgar >5% en un solo mercado.
 
@@ -42,9 +43,9 @@ PRIORIDAD ABSOLUTA: preservacion de capital. Nunca arriesgar >5% en un solo merc
 
 ## Deploy al VPS
 
-- bash scripts/deploy.sh ubuntu@<IP-VPS> — Sync de archivos al VPS
-- bash scripts/deploy.sh ubuntu@<IP-VPS> --setup — Sync + setup completo
-- ssh ubuntu@<IP-VPS> — Conectar al VPS
+- bash scripts/deploy.sh ubuntu@3.252.244.181 — Sync de archivos al VPS
+- bash scripts/deploy.sh ubuntu@3.252.244.181 --setup — Sync + setup completo
+- ssh -i <tu-llave.pem> ubuntu@3.252.244.181 — Conectar al VPS
 - sudo systemctl start polymarket-bot — Arrancar bot en VPS
 - sudo journalctl -u polymarket-bot -f — Ver logs en vivo
 

@@ -202,8 +202,7 @@ class NachoMarketBot:
             alert_callback=send_alert,
         )
         self._allocator = StrategyAllocator(
-            strategies=[name for name in self._settings.get("strategies_enabled", [])],
-            total_capital=float(self._settings.get("capital_total", 300.0)),
+            strategy_names=[name for name in self._settings.get("strategies_enabled", [])]
         )
 
         # External data (PolyScan + FRED)

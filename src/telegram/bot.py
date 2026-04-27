@@ -10,17 +10,25 @@ Uso desde otros modulos:
 
 Comandos disponibles:
     /start       — Bienvenida y lista de comandos
-    /status      — Balance, PnL, trades, estrategias, mercados, inventory, proximo review
+    /status      — Estado completo del bot (resumido)
+    /balance     — Balance USDC, exposure, PnL diario
+    /positions   — Posiciones detalladas con mid, share, PnL
+    /pnl         — Repo rte de PnL dia / semana / mes
+    /markets     — Mercados activos con inventory
+    /stats       — Sharpe/Sortino/Calmar 30d
+    /attribution — Top/bottom estrategias y mercados
+    /drawdown    — Rolling drawdown 7/15/30d
+    /stages      — Stage actual de cada estrategia
+    /promote     — Promover estrategia al siguiente stage
+    /demote      — Demotear estrategia al stage anterior
+    /blacklist   — Mercados en blacklist activa
+    /block       — Bloquear mercado temporalmente
+    /health      — Estado del WebSocket y sistema
+    /errors      — Ultimos errores consecutivos
+    /review      — Forzar self-review inmediato
     /pause       — Pausa instantanea del trading
     /resume      — Reanuda el trading
     /kill        — Para el bot completamente
-    /review      — Fuerza un self-review inmediato
-    /markets     — Lista mercados actuales con inventory
-    /pnl         — Reporte de PnL dia / semana / mes
-    /promote     — Promover manualmente una estrategia al siguiente stage
-    /demote      — Demotear manualmente una estrategia al stage anterior
-    /stages      — Ver el stage actual de todas las estrategias
-    /blacklist   — Ver mercados en blacklist activa
 """
 
 import asyncio
@@ -40,6 +48,7 @@ load_dotenv()
 logger = logging.getLogger("nachomarket.telegram")
 
 TRADES_FILE = Path("data/trades.jsonl")
+LOG_FILE = Path("data/nachomarket.log")
 
 # ------------------------------------------------------------------
 # Estado global del modulo — usado por send_alert() para comunicacion
@@ -137,6 +146,7 @@ class TelegramBot:
         handlers = [
             ("start", self._cmd_start),
             ("status", self._cmd_status),
+            ("balance", self._cmd_balance),
             ("pause", self._cmd_pause),
             ("resume", self._cmd_resume),
             ("kill", self._cmd_kill),
@@ -152,6 +162,8 @@ class TelegramBot:
             ("stages", self._cmd_stages),
             ("blacklist", self._cmd_blacklist),
             ("positions", self._cmd_positions),
+            ("health", self._cmd_health),
+            ("errors", self._cmd_errors),
         ]
         for name, handler in handlers:
             self._app.add_handler(CommandHandler(name, handler))
@@ -232,6 +244,27 @@ class TelegramBot:
             await update.message.reply_text("Acceso no autorizado.")
 
     # ------------------------------------------------------------------
+    # Helpers de formato
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fmt_money(val: float, decimals: int = 2) -> str:
+        """Formatea valor monetario con signo y color implícito."""
+        sign = "+" if val > 0 else ""
+        return f"`${sign}{val:,.{decimals}f}`"
+
+    @staticmethod
+    def _fmt_pct(val: float, decimals: int = 1) -> str:
+        """Formatea porcentaje."""
+        sign = "+" if val > 0 else ""
+        return f"`{sign}{val:.{decimals}f}%`"
+
+    @staticmethod
+    def _section_header(title: str, emoji: str = "📊") -> str:
+        """Header de seccion con linea separadora."""
+        return f"\n*{emoji} {title}*\n{'─' * 22}"
+
+    # ------------------------------------------------------------------
     # Comandos
     # ------------------------------------------------------------------
 
@@ -242,31 +275,45 @@ class TelegramBot:
             return
 
         text = (
-            "*NachoMarket — Bot de Trading Polymarket* 🤖\n"
-            "Capital: $400 USDC | Modo: market making + arbitraje\n\n"
-            "*Comandos disponibles:*\n"
-            "/status — Estado actual del bot\n"
-            "/pnl — PnL dia / semana / mes\n"
-            "/stats — Sharpe/Sortino/Calmar 30d\n"
-            "/attribution — Top/bottom estrategias y mercados\n"
-            "/markets — Mercados activos con inventory\n"
-            "/positions — Posiciones detalladas: mid, share, PnL, horas activo\n"
-            "/review — Forzar self\\-review inmediato\n"
-            "/pause — Pausar trading \\(cancela ordenes\\)\n"
-            "/resume — Reanudar trading\n"
-            "/kill — Parar el bot completamente\n"
-            "/drawdown — Rolling drawdown 7/15/30d y scale-down status\n"
-            "/stages — Ver stage actual de cada estrategia\n"
-            "/promote \\<estrategia\\> — Promover estrategia al stage siguiente\n"
-            "/demote \\<estrategia\\> — Demotear estrategia al stage anterior\n"
-            "/blacklist — Ver mercados en blacklist activa\n\n"
-            "_Notificaciones automaticas: trades, errores, circuit breaker, reviews, stage changes_"
+            "🤖 *NachoMarket — Bot de Trading*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "\n"
+            "*📡 Monitoreo*\n"
+            "  /status    → Estado resumido del bot\n"
+            "  /balance   → Balance, exposure, PnL diario\n"
+            "  /positions → Posiciones detalladas (mid, share, PnL)\n"
+            "  /markets   → Mercados activos con inventory\n"
+            "  /health    → Estado WebSocket y sistema\n"
+            "\n"
+            "*📈 Rendimiento*\n"
+            "  /pnl          → PnL día / semana / mes\n"
+            "  /stats        → Sharpe / Sortino / Calmar 30d\n"
+            "  /attribution  → Top/bottom estrategias y mercados\n"
+            "  /drawdown     → Rolling drawdown 7/15/30d\n"
+            "\n"
+            "*⚙️ Control*\n"
+            "  /pause   → Pausar trading (cancela órdenes)\n"
+            "  /resume  → Reanudar trading\n"
+            "  /kill    → Parar el bot completamente\n"
+            "  /review  → Forzar self-review inmediato\n"
+            "\n"
+            "*🔧 Estrategias*\n"
+            "  /stages              → Stage actual de cada estrategia\n"
+            "  /promote <estrategia> → Promover al siguiente stage\n"
+            "  /demote  <estrategia> → Demotear al stage anterior\n"
+            "\n"
+            "*🛡️ Seguridad*\n"
+            "  /blacklist              → Mercados en blacklist activa\n"
+            "  /block <id> <horas>     → Bloquear mercado temporalmente\n"
+            "  /errors                 → Últimos errores consecutivos\n"
+            "\n"
+            "_Notificaciones automáticas: trades, errores, circuit breaker, reviews, stage changes_"
         )
         if update.message:
-            await update.message.reply_text(text, parse_mode="MarkdownV2")
+            await update.message.reply_text(text, parse_mode="Markdown")
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/status — Balance, PnL, trades ejecutados, estrategias, inventory, proximo review."""
+        """Estado resumido del bot — una pantalla rápida."""
         if not self._is_authorized(update):
             await self._reject(update)
             return
@@ -274,184 +321,102 @@ class TelegramBot:
             return
 
         if not self._controller:
-            await update.message.reply_text("Bot controller no conectado.")
+            await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        status = self._controller.get_status()
+        positions = self._controller.get_positions()
+        today_trades = self._count_today_trades()
+
+        # Estado del bot
+        state = status.get("state", "?")
+        state_icon = {"running": "🟢", "paused": "🟡", "stopped": "🔴"}.get(state, "⚪")
+        cb_active = status.get("circuit_breaker", False)
+        cb_icon = "🔴" if cb_active else "🟢"
+
+        # Estrategias
+        strategies = getattr(self._controller, "_strategies", [])
+        active_strats = [s.name for s in strategies if getattr(s, "is_active", True)]
+        inactive_strats = [s.name for s in strategies if not getattr(s, "is_active", True)]
+
+        lines = [
+            f"{state_icon} *Estado:* `{state.upper()}`",
+            f"💰 *Exposure:* `{status.get('total_exposure', 0):.2f}` USDC",
+            f"📈 *PnL hoy:* `{status.get('daily_pnl', 0):+.4f}` USDC",
+            f"📊 *Trades hoy:* `{today_trades}`",
+            f"📋 *Órdenes abiertas:* `{status.get('open_orders', 0)}`",
+            f"🏪 *Mercados activos:* `{len(positions)}`",
+            f"⚡ *Estrategias:* {', '.join(active_strats) or 'ninguna'}",
+        ]
+        if inactive_strats:
+            lines.append(f"   ⏸️ Pausadas: {', '.join(inactive_strats)}")
+
+        lines.extend([
+            f"🔁 *Errores:* `{status.get('consecutive_errors', 0)}`",
+            f"⛔ *Circuit breaker:* {cb_icon} {'ACTIVO' if cb_active else 'OK'}",
+        ])
+
+        if status.get("trigger_reason"):
+            lines.append(f"   _Razón: {status['trigger_reason']}_")
+
+        # Resumen rápido de inventory (máx 3)
+        if positions:
+            lines.append("\n*Inventory (top 3):*")
+            for i, (mid, pos) in enumerate(list(positions.items())[:3]):
+                yes = pos.get("yes", 0)
+                no = pos.get("no", 0)
+                name = self._get_market_name(mid)
+                lines.append(f"  `{name}` YES:`{yes:.1f}` NO:`{no:.1f}`")
+            if len(positions) > 3:
+                lines.append(f"  _...y {len(positions) - 3} más (ver /markets)_")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Balance detallado: USDC disponible, exposure, PnL, capital desplegado."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("❌ Bot controller no conectado.")
             return
 
         status = self._controller.get_status()
         positions = self._controller.get_positions()
 
-        # Contar trades de hoy
-        today_trades = self._count_today_trades()
+        # Calcular capital total desplegado
+        total_deployed = 0.0
+        for pos in positions.values():
+            total_deployed += abs(pos.get("yes", 0)) + abs(pos.get("no", 0))
 
-        # Estrategias activas
-        strategies = getattr(self._controller, "_strategies", [])
-        active_strats = [s.name for s in strategies if getattr(s, "is_active", True)]
+        balance = status.get("balance", 0.0)
+        exposure = status.get("total_exposure", 0.0)
+        daily_pnl = status.get("daily_pnl", 0.0)
+        open_orders = status.get("open_orders", 0)
 
-        # Mercados con posicion abierta
-        markets_open = len(positions)
-
-        # Circuit breaker
-        cb_status = "🔴 ACTIVO" if status.get("circuit_breaker") else "🟢 OK"
-        cb_reason = status.get("trigger_reason", "")
-
-        state_icon = {"running": "▶️", "paused": "⏸️", "stopped": "🛑"}.get(
-            status.get("state", ""), "❓"
-        )
+        # Colores según PnL
+        pnl_icon = "🟢" if daily_pnl >= 0 else "🔴"
 
         lines = [
-            f"*Estado NachoMarket* {state_icon} `{status.get('state', '?').upper()}`",
-            "",
-            f"💰 Exposure total: `${status.get('total_exposure', 0):.2f}` USDC",
-            f"📈 PnL diario: `${status.get('daily_pnl', 0):.4f}` USDC",
-            f"📊 Trades hoy: `{today_trades}`",
-            f"📋 Ordenes abiertas: `{status.get('open_orders', 0)}`",
-            f"🏪 Mercados con posicion: `{markets_open}`",
-            f"⚡ Estrategias activas: `{', '.join(active_strats) or 'ninguna'}`",
-            f"🔁 Errores consecutivos: `{status.get('consecutive_errors', 0)}`",
-            f"⛔ Circuit breaker: {cb_status}",
+            "💰 *Balance Detail*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"",
+            f"🏦 *Balance USDC:* `{balance:.2f}`",
+            f"📊 *Exposure total:* `{exposure:.2f}`",
+            f"💵 *Capital desplegado:* `{total_deployed:.2f}`",
+            f"📈 *PnL diario:* {pnl_icon} `{daily_pnl:+.4f}`",
+            f"📋 *Órdenes abiertas:* `{open_orders}`",
+            f"",
+            f"*Utilización:* `{((exposure / balance) * 100):.1f}%`" if balance > 0 else "",
         ]
 
-        if cb_reason:
-            lines.append(f"   Razon: `{cb_reason}`")
-
-        if positions:
-            lines.append("\n*Inventory:*")
-            for mid, pos in list(positions.items())[:5]:
-                yes = pos.get("yes", 0)
-                no = pos.get("no", 0)
-                lines.append(f"  `{mid[:10]}...` YES:`{yes:.1f}` NO:`{no:.1f}`")
-            if len(positions) > 5:
-                lines.append(f"  _(y {len(positions) - 5} mercados más)_")
-
-        await update.message.reply_text("\n".join(lines))
-
-    async def _cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/pause — Pausa instantanea del trading."""
-        if not self._is_authorized(update):
-            await self._reject(update)
-            return
-        if not update.message:
-            return
-
-        if not self._controller:
-            await update.message.reply_text("Bot controller no conectado.")
-            return
-
-        self._controller.pause()
-        await update.message.reply_text(
-            "⏸️ *Trading PAUSADO.*\nUsá /resume para reanudar.",
-        )
-        logger.info("Bot paused via Telegram")
-
-    async def _cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/resume — Reanuda el trading."""
-        if not self._is_authorized(update):
-            await self._reject(update)
-            return
-        if not update.message:
-            return
-
-        if not self._controller:
-            await update.message.reply_text("Bot controller no conectado.")
-            return
-
-        self._controller.resume()
-        await update.message.reply_text("▶️ *Trading REANUDADO.*")
-        logger.info("Bot resumed via Telegram")
-
-    async def _cmd_kill(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/kill — Cancela todas las ordenes y detiene el bot."""
-        if not self._is_authorized(update):
-            await self._reject(update)
-            return
-        if not update.message:
-            return
-
-        if not self._controller:
-            await update.message.reply_text("Bot controller no conectado.")
-            return
-
-        await update.message.reply_text(
-            "🛑 *Deteniendo el bot...*\nCancelando todas las ordenes abiertas.",
-        )
-        self._controller.kill()
-        logger.critical("Bot killed via Telegram")
-
-    async def _cmd_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/review — Fuerza un self-review inmediato con Claude Haiku."""
-        if not self._is_authorized(update):
-            await self._reject(update)
-            return
-        if not update.message:
-            return
-
-        await update.message.reply_text("🔍 Ejecutando self-review... (puede tardar ~10s)")
-
-        reviewer = getattr(self._controller, "_reviewer", None) if self._controller else None
-        if not reviewer:
-            await update.message.reply_text("Reviewer no disponible.")
-            return
-
-        # Ejecutar en executor para no bloquear el event loop del bot
-        loop = asyncio.get_event_loop()
-        state = self._controller.get_status() if self._controller else None
-        try:
-            result = await loop.run_in_executor(None, reviewer.run_review, state)
-            status = result.get("status", "ok")
-            if status == "no_trades":
-                await update.message.reply_text("Sin trades en las ultimas 8h para revisar.")
-            elif status == "error":
-                await update.message.reply_text("❌ Error ejecutando el review.")
-            else:
-                analysis = result.get("analysis", {})
-                if isinstance(analysis, dict):
-                    risk = analysis.get("risk_level", "?")
-                    summary = analysis.get("summary", "Sin resumen")
-                    cost = result.get("estimated_cost_usd", 0)
-                    await update.message.reply_text(
-                        f"✅ *Review completado*\n"
-                        f"Risk: `{risk}` | Costo: `${cost:.5f}`\n"
-                        f"_{summary}_",
-                    )
-                else:
-                    await update.message.reply_text(f"✅ Review completado: {result.get('trade_count', 0)} trades analizados.")
-        except Exception:
-            logger.exception("Error in /review command")
-            await update.message.reply_text("❌ Error inesperado durante el review.")
-
-    async def _cmd_markets(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/markets — Lista mercados activos con inventory actual."""
-        if not self._is_authorized(update):
-            await self._reject(update)
-            return
-        if not update.message:
-            return
-
-        if not self._controller:
-            await update.message.reply_text("Bot controller no conectado.")
-            return
-
-        positions = self._controller.get_positions()
-        if not positions:
-            await update.message.reply_text("Sin mercados con posicion abierta.")
-            return
-
-        lines = ["*Mercados activos (inventory):*"]
-        for i, (mid, pos) in enumerate(positions.items()):
-            yes = pos.get("yes", 0.0)
-            no = pos.get("no", 0.0)
-            total = abs(yes) + abs(no)
-            skew = (yes - no) / total if total > 0 else 0.0
-            skew_icon = "🔼" if skew > 0.3 else ("🔽" if skew < -0.3 else "➡️")
-            lines.append(
-                f"{i+1}. `{mid[:14]}...`\n"
-                f"   YES:`{yes:.1f}` NO:`{no:.1f}` Total:`${total:.1f}` {skew_icon}"
-            )
-
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def _cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/positions — Posiciones detalladas: mid, participation share, inventory, horas activo."""
+        """Posiciones detalladas con mid, participation share, inventory y horas activo."""
         if not self._is_authorized(update):
             await self._reject(update)
             return
@@ -459,19 +424,20 @@ class TelegramBot:
             return
 
         if not self._controller:
-            await update.message.reply_text("Bot controller no conectado.")
+            await update.message.reply_text("❌ Bot controller no conectado.")
             return
 
         if not hasattr(self._controller, "get_positions_detail"):
-            await update.message.reply_text("Comando no disponible en esta version.")
+            await update.message.reply_text("❌ Comando no disponible en esta versión.")
             return
 
         details = self._controller.get_positions_detail()
         if not details:
-            await update.message.reply_text("Sin posiciones activas en este momento.")
+            await update.message.reply_text("📭 Sin posiciones activas.")
             return
 
-        lines = ["*Posiciones activas (tip 11)*\n"]
+        lines = ["📍 *Posiciones Activas*\n" + "━" * 22]
+
         for i, pos in enumerate(details, 1):
             share_pct = pos.get("participation_share", 0.0) * 100
             mid = pos.get("mid_price", 0.0)
@@ -480,103 +446,24 @@ class TelegramBot:
             total = pos.get("total_inventory_usdc", 0.0)
             hours = pos.get("hours_since_last_order")
             rewards_icon = "💰" if pos.get("rewards_active") else ""
-            question = pos.get("question", "?")[:40]
+            question = pos.get("question", "?")[:35]
 
             hours_str = f"{hours:.1f}h" if hours is not None else "n/a"
-            share_warn = " ⚠️" if share_pct < 0.5 else ""
+            share_warn = " ⚠️ baja" if share_pct < 0.5 else ""
 
             lines.append(
-                f"*{i}. {question}* {rewards_icon}\n"
-                f"   Mid: `{mid:.3f}` | Share: `{share_pct:.1f}%`{share_warn}\n"
-                f"   YES: `{yes_inv:.1f}` NO: `{no_inv:.1f}` Total: `${total:.1f}`\n"
-                f"   Ultima orden: hace `{hours_str}`\n"
+                f"\n*{i}. {question}* {rewards_icon}\n"
+                f"   ├ Mid: `{mid:.3f}`\n"
+                f"   ├ Share: `{share_pct:.1f}%`{share_warn}\n"
+                f"   ├ YES: `{yes_inv:.1f}` | NO: `{no_inv:.1f}`\n"
+                f"   ├ Total: `${total:.1f}`\n"
+                f"   └ Última orden: `{hours_str}`"
             )
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
-    async def _cmd_pnl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/pnl — Reporte detallado de PnL dia / semana / mes."""
-        if not self._is_authorized(update):
-            await self._reject(update)
-            return
-        if not update.message:
-            return
-
-        now = datetime.now(timezone.utc)
-        periods = {
-            "Hoy": now - timedelta(hours=24),
-            "Semana": now - timedelta(days=7),
-            "Mes": now - timedelta(days=30),
-        }
-
-        lines = ["*Reporte de PnL*"]
-
-        for label, cutoff in periods.items():
-            stats = self._compute_pnl_since(cutoff)
-            lines.append(
-                f"\n*{label}:*\n"
-                f"  Trades: `{stats['count']}` | Errores: `{stats['errors']}`\n"
-                f"  Capital desplegado: `${stats['deployed']:.2f}`\n"
-                f"  PnL estimado: `${stats['pnl']:.4f}`\n"
-                f"  Fees pagados: `${stats['fees']:.4f}`\n"
-                f"  Rewards: `${stats['rewards']:.4f}`"
-            )
-
-        # PnL del circuit breaker (sesion actual)
-        if self._controller:
-            cb_pnl = self._controller.get_status().get("daily_pnl", 0)
-            lines.append(f"\n*PnL intradiario (circuit breaker):* `${cb_pnl:.4f}`")
-
-        # Top mercados por rentabilidad
-        if self._controller and hasattr(self._controller, "_profiler"):
-            report = self._controller._profiler.get_report(top_n=5)
-            if report:
-                lines.append("\n*Top mercados (ROI):*")
-                for entry in report:
-                    roi_pct = entry["roi"] * 100
-                    icon = "🟢" if roi_pct >= 0 else "🔴"
-                    lines.append(
-                        f"  {icon} `{entry['question'][:25]}` "
-                        f"ROI:`{roi_pct:.1f}%` PnL:`${entry['total_pnl']:.2f}`"
-                    )
-
-        await update.message.reply_text("\n".join(lines))
-
-    async def _cmd_block(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/block <market_id> <hours> — Bloquea un mercado temporalmente."""
-        if not self._is_authorized(update):
-            await self._reject(update)
-            return
-        if not update.message:
-            return
-
-        args = context.args or []
-        if len(args) < 2:
-            await update.message.reply_text(
-                "Uso: `/block <condition_id> <hours>`\n"
-                "Ejemplo: `/block 0xabc123 24`"
-            )
-            return
-
-        market_id = args[0]
-        try:
-            hours = float(args[1])
-        except ValueError:
-            await update.message.reply_text("Horas debe ser un numero")
-            return
-
-        if self._controller and hasattr(self._controller, "_market_analyzer"):
-            self._controller._market_analyzer.market_filter.block_market_until(
-                market_id, hours
-            )
-            await update.message.reply_text(
-                f"Mercado `{market_id[:12]}...` bloqueado por {hours}h"
-            )
-        else:
-            await update.message.reply_text("Bot no tiene market analyzer activo")
-
-    async def _cmd_drawdown(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/drawdown — Muestra drawdown rolling 7/15/30d y estado de scale-down."""
+    async def _cmd_markets(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Lista mercados activos con inventory y skew."""
         if not self._is_authorized(update):
             await self._reject(update)
             return
@@ -584,44 +471,92 @@ class TelegramBot:
             return
 
         if not self._controller:
-            await update.message.reply_text("Bot controller no conectado.")
+            await update.message.reply_text("❌ Bot controller no conectado.")
             return
 
-        cb = getattr(self._controller, "_circuit_breaker", None)
-        if cb is None:
-            await update.message.reply_text("Circuit breaker no disponible.")
+        positions = self._controller.get_positions()
+        if not positions:
+            await update.message.reply_text("📭 Sin mercados con posición abierta.")
             return
 
-        report = cb.get_drawdown_report()
-        dd7 = report["drawdown_7d"]
-        dd15 = report["drawdown_15d"]
-        dd30 = report["drawdown_30d"]
+        lines = ["🏪 *Mercados Activos*\n" + "━" * 22]
 
-        def fmt(val: float) -> str:
-            icon = "🟢" if val >= 0 else "🔴"
-            return f"{icon} `${val:+.2f}`"
+        for i, (mid, pos) in enumerate(positions.items(), 1):
+            yes = pos.get("yes", 0.0)
+            no = pos.get("no", 0.0)
+            total = abs(yes) + abs(no)
+            skew = (yes - no) / total if total > 0 else 0.0
+            name = self._get_market_name(mid)
 
-        thresholds = {
-            "7d": getattr(cb, "_drawdown_7d_threshold", 40.0),
-            "15d": getattr(cb, "_drawdown_15d_threshold", 80.0),
-            "30d": getattr(cb, "_drawdown_30d_threshold", 120.0),
-        }
+            if skew > 0.3:
+                skew_icon, skew_text = "🔼", "long YES"
+            elif skew < -0.3:
+                skew_icon, skew_text = "🔽", "long NO"
+            else:
+                skew_icon, skew_text = "➡️", "neutral"
 
-        scale_status = "🔴 ACTIVO (size -50%)" if getattr(cb, "_scale_down_active", False) else "🟢 normal"
-        arb_status = "🔴 PAUSADO" if getattr(cb, "_arb_paused", False) else "🟢 activo"
+            lines.append(
+                f"\n*{i}. {name}* (`{mid[:10]}...`)\n"
+                f"   ├ YES: `{yes:.1f}` | NO: `{no:.1f}`\n"
+                f"   ├ Total: `${total:.1f}`\n"
+                f"   └ Skew: {skew_icon} `{skew_text}`"
+            )
 
-        text = (
-            "*Rolling Drawdown Report*\n\n"
-            f"📅 7d: {fmt(dd7)} (límite: `${thresholds['7d']:.0f}`)\n"
-            f"📅 15d: {fmt(dd15)} (límite: `${thresholds['15d']:.0f}`)\n"
-            f"📅 30d: {fmt(dd30)} (límite: `${thresholds['30d']:.0f}`)\n\n"
-            f"⚖️ Scale-down 7d: {scale_status}\n"
-            f"🛑 Arb/Directional 15d: {arb_status}"
-        )
-        await update.message.reply_text(text)
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _cmd_pnl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Reporte de PnL por períodos con formato claro."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        now = datetime.now(timezone.utc)
+        periods = [
+            ("📅 HOY", now - timedelta(hours=24)),
+            ("📅 SEMANA", now - timedelta(days=7)),
+            ("📅 MES", now - timedelta(days=30)),
+        ]
+
+        lines = ["📈 *Reporte de PnL*\n" + "━" * 22]
+
+        for label, cutoff in periods:
+            stats = self._compute_pnl_since(cutoff)
+            pnl = stats['pnl']
+            pnl_icon = "🟢" if pnl >= 0 else "🔴"
+
+            lines.append(
+                f"\n*{label}*\n"
+                f"   ├ Trades: `{stats['count']}` | Errores: `{stats['errors']}`\n"
+                f"   ├ Capital desplegado: `${stats['deployed']:.2f}`\n"
+                f"   ├ PnL: {pnl_icon} `${pnl:+.4f}`\n"
+                f"   ├ Fees: `${stats['fees']:.4f}`\n"
+                f"   └ Rewards: `${stats['rewards']:.4f}`"
+            )
+
+        # PnL intradiario del circuit breaker
+        if self._controller:
+            cb_pnl = self._controller.get_status().get("daily_pnl", 0)
+            lines.append(f"\n⚡ *PnL intradiario (CB):* `${cb_pnl:+.4f}`")
+
+        # Top mercados por ROI
+        if self._controller and hasattr(self._controller, "_profiler"):
+            report = self._controller._profiler.get_report(top_n=3)
+            if report:
+                lines.append("\n🏆 *Top Mercados (ROI):*")
+                for entry in report:
+                    roi_pct = entry["roi"] * 100
+                    icon = "🟢" if roi_pct >= 0 else "🔴"
+                    lines.append(
+                        f"   {icon} `{entry['question'][:25]}` "
+                        f"ROI:`{roi_pct:.1f}%` PnL:`${entry['total_pnl']:.2f}`"
+                    )
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def _cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/stats — Muestra Sharpe/Sortino/Calmar ratios de los últimos 30 días."""
+        """Métricas cuantitativas: Sharpe, Sortino, Calmar, max drawdown."""
         if not self._is_authorized(update):
             await self._reject(update)
             return
@@ -640,7 +575,7 @@ class TelegramBot:
             return
 
         if metrics.get("trade_count_30d", 0) == 0:
-            await update.message.reply_text("Sin trades suficientes en los últimos 30 días.")
+            await update.message.reply_text("📭 Sin trades suficientes en los últimos 30 días.")
             return
 
         sharpe = metrics.get("sharpe_ratio", 0.0)
@@ -650,24 +585,31 @@ class TelegramBot:
         total_return = metrics.get("total_return", 0.0)
         count = metrics.get("trade_count_30d", 0)
 
-        sharpe_icon = "🟢" if sharpe > 1.5 else ("🟡" if sharpe > 0.5 else "🔴")
-        calmar_icon = "🟢" if calmar > 2.0 else ("🟡" if calmar > 0.5 else "🔴")
-        dd_icon = "🟢" if max_dd < 20 else ("🟡" if max_dd < 50 else "🔴")
+        # Benchmark icons
+        def _grade(val: float, good: float, bad: float) -> str:
+            if val >= good:
+                return "🟢"
+            if val >= bad:
+                return "🟡"
+            return "🔴"
 
-        text = (
-            "*Métricas Cuantitativas — 30 días*\n\n"
-            f"📊 Sharpe Ratio: {sharpe_icon} `{sharpe:.3f}`\n"
-            f"📉 Sortino Ratio: `{sortino:.3f}`\n"
-            f"{calmar_icon} Calmar Ratio: `{calmar:.3f}`\n"
-            f"{dd_icon} Max Drawdown: `${max_dd:.4f}`\n"
-            f"💰 Return total 30d: `${total_return:.4f}`\n"
-            f"🔢 Trades analizados: `{count}`\n\n"
-            "_Benchmark: Sharpe>1.5 = 🟢, >0.5 = 🟡, <0.5 = 🔴_"
-        )
-        await update.message.reply_text(text)
+        lines = [
+            "📊 *Métricas Cuantitativas — 30 días*\n" + "━" * 22,
+            f"",
+            f"{_grade(sharpe, 1.5, 0.5)} Sharpe Ratio: `{sharpe:.3f}`",
+            f"🟡 Sortino Ratio: `{sortino:.3f}`",
+            f"{_grade(calmar, 2.0, 0.5)} Calmar Ratio: `{calmar:.3f}`",
+            f"{_grade(-max_dd, -20, -50)} Max Drawdown: `${max_dd:.4f}`",
+            f"💰 Return total: `${total_return:+.4f}`",
+            f"🔢 Trades analizados: `{count}`",
+            f"",
+            "_Benchmark: Sharpe>1.5 🟢, >0.5 🟡, <0.5 🔴_",
+        ]
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def _cmd_attribution(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/attribution — Top y bottom estrategias/mercados por PnL."""
+        """Top y bottom estrategias/mercados por PnL."""
         if not self._is_authorized(update):
             await self._reject(update)
             return
@@ -681,14 +623,296 @@ class TelegramBot:
         except Exception:
             text = "❌ Error generando attribution report."
 
-        await update.message.reply_text(text or "Sin datos de attribution disponibles.")
+        await update.message.reply_text(text or "📭 Sin datos de attribution disponibles.")
 
-    # ------------------------------------------------------------------
-    # Comandos de stage machine (Fase 2)
-    # ------------------------------------------------------------------
+    async def _cmd_drawdown(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Rolling drawdown 7/15/30d y estado de scale-down."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        cb = getattr(self._controller, "_circuit_breaker", None)
+        if cb is None:
+            await update.message.reply_text("❌ Circuit breaker no disponible.")
+            return
+
+        report = cb.get_drawdown_report()
+
+        def _fmt_dd(val: float) -> str:
+            icon = "🟢" if val >= 0 else "🔴"
+            return f"{icon} `${val:+.2f}`"
+
+        thresholds = {
+            "7d": getattr(cb, "_drawdown_7d_threshold", 40.0),
+            "15d": getattr(cb, "_drawdown_15d_threshold", 80.0),
+            "30d": getattr(cb, "_drawdown_30d_threshold", 120.0),
+        }
+
+        scale_active = getattr(cb, "_scale_down_active", False)
+        arb_paused = getattr(cb, "_arb_paused", False)
+
+        lines = [
+            "📉 *Rolling Drawdown*\n" + "━" * 22,
+            f"",
+            f"📅 7d:  {_fmt_dd(report['drawdown_7d'])}  (límite: `${thresholds['7d']:.0f}`)",
+            f"📅 15d: {_fmt_dd(report['drawdown_15d'])}  (límite: `${thresholds['15d']:.0f}`)",
+            f"📅 30d: {_fmt_dd(report['drawdown_30d'])}  (límite: `${thresholds['30d']:.0f}`)",
+            f"",
+            f"⚖️ Scale-down 7d: {'🔴 ACTIVO (size -50%)' if scale_active else '🟢 Normal'}",
+            f"🛑 Arb/Directional 15d: {'🔴 PAUSADO' if arb_paused else '🟢 Activo'}",
+        ]
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _cmd_health(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Estado de salud del sistema: WebSocket, API, último ciclo."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        # WebSocket status
+        feed = getattr(self._controller, "_feed", None)
+        ws_connected = feed.is_connected() if feed else False
+        ws_icon = "🟢" if ws_connected else "🔴"
+
+        # API status
+        client = getattr(self._controller, "_client", None)
+        api_ok = False
+        if client:
+            try:
+                client.test_connection()
+                api_ok = True
+            except Exception:
+                api_ok = False
+        api_icon = "🟢" if api_ok else "🔴"
+
+        # Tiempo desde último trade
+        last_trade_time = self._get_last_trade_time()
+        last_trade_str = f"{last_trade_time:.0f}m atrás" if last_trade_time is not None else "n/a"
+
+        # Uptime (aproximado desde inicio del proceso)
+        import time as time_module
+        uptime_sec = time_module.time() % 86400  # Aproximado
+        uptime_h = int(uptime_sec // 3600)
+        uptime_m = int((uptime_sec % 3600) // 60)
+
+        lines = [
+            "🏥 *Health Check*\n" + "━" * 22,
+            f"",
+            f"{ws_icon} WebSocket: {'Conectado' if ws_connected else 'DESCONECTADO'}",
+            f"{api_icon} Polymarket API: {'OK' if api_ok else 'ERROR'}",
+            f"🕐 Último trade: `{last_trade_str}`",
+            f"⏱️ Uptime: `{uptime_h}h {uptime_m}m`",
+            f"",
+            f"📊 Loop interval: `{getattr(self._controller, '_loop_interval', '?')}s`",
+            f"🔄 Mercados activos: `{len(getattr(self._controller, '_active_markets', []))}`",
+        ]
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _cmd_errors(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Muestra últimos errores consecutivos y errores recientes del log."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        status = self._controller.get_status()
+        consecutive = status.get("consecutive_errors", 0)
+
+        lines = [
+            "⚠️ *Errores Recientes*\n" + "━" * 22,
+            f"",
+            f"🔁 Errores consecutivos: `{consecutive}`",
+        ]
+
+        if consecutive >= 5:
+            lines.append(f"   🔴 *ALERTA: {consecutive} errores consecutivos*")
+        elif consecutive >= 1:
+            lines.append(f"   🟡 Precaución: errores acumulándose")
+        else:
+            lines.append(f"   🟢 Sin errores recientes")
+
+        # Últimas líneas de error del log
+        recent_errors = self._get_recent_log_errors(n=5)
+        if recent_errors:
+            lines.append(f"\n*Últimos errores del log:*")
+            for i, err_line in enumerate(recent_errors, 1):
+                # Truncar líneas largas
+                err_trunc = err_line[:60] + "..." if len(err_line) > 60 else err_line
+                lines.append(f"   `{i}. {err_trunc}`")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Pausa instantanea del trading."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        self._controller.pause()
+        await update.message.reply_text(
+            "⏸️ *Trading PAUSADO*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Usá `/resume` para reanudar.",
+            parse_mode="Markdown",
+        )
+        logger.info("Bot paused via Telegram")
+
+    async def _cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Reanuda el trading."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        self._controller.resume()
+        await update.message.reply_text(
+            "▶️ *Trading REANUDADO*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Bot operando normalmente.",
+            parse_mode="Markdown",
+        )
+        logger.info("Bot resumed via Telegram")
+
+    async def _cmd_kill(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Para el bot completamente."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        await update.message.reply_text(
+            "🛑 *Deteniendo NachoMarket...*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Cancelando todas las órdenes abiertas.",
+            parse_mode="Markdown",
+        )
+        self._controller.kill()
+        logger.critical("Bot killed via Telegram")
+
+    async def _cmd_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Fuerza un self-review inmediato con Claude Haiku."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        await update.message.reply_text("🔍 Ejecutando self-review... (~10s)")
+
+        reviewer = getattr(self._controller, "_reviewer", None) if self._controller else None
+        if not reviewer:
+            await update.message.reply_text("❌ Reviewer no disponible.")
+            return
+
+        loop = asyncio.get_event_loop()
+        state = self._controller.get_status() if self._controller else None
+        try:
+            result = await loop.run_in_executor(None, reviewer.run_review, state)
+            status = result.get("status", "ok")
+            if status == "no_trades":
+                await update.message.reply_text("📭 Sin trades en las últimas 8h para revisar.")
+            elif status == "error":
+                await update.message.reply_text("❌ Error ejecutando el review.")
+            else:
+                analysis = result.get("analysis", {})
+                if isinstance(analysis, dict):
+                    risk = analysis.get("risk_level", "?")
+                    summary = analysis.get("summary", "Sin resumen")
+                    cost = result.get("estimated_cost_usd", 0)
+                    risk_icon = "🟢" if risk in ("low", "bajo") else ("🟡" if risk in ("medium", "medio") else "🔴")
+                    await update.message.reply_text(
+                        f"✅ *Review Completado*\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"{risk_icon} Risk: `{risk}`\n"
+                        f"💰 Costo: `${cost:.5f}`\n"
+                        f"📝 _{summary}_",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"✅ Review completado: `{result.get('trade_count', 0)}` trades analizados."
+                    )
+        except Exception:
+            logger.exception("Error in /review command")
+            await update.message.reply_text("❌ Error inesperado durante el review.")
+
+    async def _cmd_block(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Bloquea un mercado temporalmente."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        if not update.message:
+            return
+
+        args = context.args or []
+        if len(args) < 2:
+            await update.message.reply_text(
+                "🛡️ *Uso: /block*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "`/block <condition_id> <horas>`\n"
+                "Ejemplo: `/block 0xabc123 24`",
+                parse_mode="Markdown",
+            )
+            return
+
+        market_id = args[0]
+        try:
+            hours = float(args[1])
+        except ValueError:
+            await update.message.reply_text("❌ Horas debe ser un número.")
+            return
+
+        if self._controller and hasattr(self._controller, "_market_analyzer"):
+            self._controller._market_analyzer.market_filter.block_market_until(
+                market_id, hours
+            )
+            await update.message.reply_text(
+                f"🚫 *Mercado bloqueado*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"ID: `{market_id[:16]}...`\n"
+                f"Duración: `{hours}h`",
+                parse_mode="Markdown",
+            )
+        else:
+            await update.message.reply_text("❌ Bot no tiene market analyzer activo.")
 
     async def _cmd_promote(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/promote <strategy> — Promover manualmente una estrategia al stage siguiente."""
+        """Promover estrategia al siguiente stage."""
         if not self._is_authorized(update):
             await self._reject(update)
             return
@@ -698,16 +922,19 @@ class TelegramBot:
         args = context.args or []
         if not args:
             await update.message.reply_text(
-                "Uso: `/promote <strategy>`\n"
+                "⬆️ *Uso: /promote*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "`/promote <estrategia>`\n"
                 "Estrategias: `market_maker`, `multi_arb`, `stat_arb`, `directional`\n"
-                "Usa /stages para ver los stages actuales."
+                "Ver stages actuales: `/stages`",
+                parse_mode="Markdown",
             )
             return
 
         strategy_name = args[0].lower()
         stage_machine = self._get_stage_machine()
         if stage_machine is None:
-            await update.message.reply_text("Stage machine no disponible.")
+            await update.message.reply_text("❌ Stage machine no disponible.")
             return
 
         promoted = stage_machine.promote(strategy_name)
@@ -715,19 +942,25 @@ class TelegramBot:
             new_stage = stage_machine.get_stage(strategy_name)
             mult = stage_machine.get_size_multiplier(strategy_name)
             await update.message.reply_text(
-                f"⬆️ *{strategy_name}* promovida a `{new_stage.value}`\n"
-                f"Multiplicador de capital: `{mult:.0%}`"
+                f"⬆️ *{strategy_name} Promovida*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Nuevo stage: `{new_stage.value}`\n"
+                f"Multiplicador: `{mult:.0%}`",
+                parse_mode="Markdown",
             )
         else:
             current = stage_machine.get_stage(strategy_name)
             await update.message.reply_text(
-                f"No se puede promover *{strategy_name}*: "
-                f"ya está en `{current.value}` o no hay transición válida."
+                f"⛔ No se puede promover *{strategy_name}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Stage actual: `{current.value}`\n"
+                f"_No hay transición válida disponible._",
+                parse_mode="Markdown",
             )
         logger.info("Promote command: strategy=%s promoted=%s", strategy_name, promoted)
 
     async def _cmd_demote(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/demote <strategy> — Demotear manualmente una estrategia al stage anterior."""
+        """Demotear estrategia al stage anterior."""
         if not self._is_authorized(update):
             await self._reject(update)
             return
@@ -737,16 +970,19 @@ class TelegramBot:
         args = context.args or []
         if not args:
             await update.message.reply_text(
-                "Uso: `/demote <strategy>`\n"
+                "⬇️ *Uso: /demote*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "`/demote <estrategia>`\n"
                 "Estrategias: `market_maker`, `multi_arb`, `stat_arb`, `directional`\n"
-                "Usa /stages para ver los stages actuales."
+                "Ver stages actuales: `/stages`",
+                parse_mode="Markdown",
             )
             return
 
         strategy_name = args[0].lower()
         stage_machine = self._get_stage_machine()
         if stage_machine is None:
-            await update.message.reply_text("Stage machine no disponible.")
+            await update.message.reply_text("❌ Stage machine no disponible.")
             return
 
         demoted = stage_machine.demote(strategy_name)
@@ -754,19 +990,25 @@ class TelegramBot:
             new_stage = stage_machine.get_stage(strategy_name)
             mult = stage_machine.get_size_multiplier(strategy_name)
             await update.message.reply_text(
-                f"⬇️ *{strategy_name}* demoteada a `{new_stage.value}`\n"
-                f"Multiplicador de capital: `{mult:.0%}`"
+                f"⬇️ *{strategy_name} Demoteada*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Nuevo stage: `{new_stage.value}`\n"
+                f"Multiplicador: `{mult:.0%}`",
+                parse_mode="Markdown",
             )
         else:
             current = stage_machine.get_stage(strategy_name)
             await update.message.reply_text(
-                f"No se puede demotear *{strategy_name}*: "
-                f"ya está en `{current.value}` o no hay transición válida."
+                f"⛔ No se puede demotear *{strategy_name}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Stage actual: `{current.value}`\n"
+                f"_No hay transición válida disponible._",
+                parse_mode="Markdown",
             )
         logger.info("Demote command: strategy=%s demoted=%s", strategy_name, demoted)
 
     async def _cmd_stages(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/stages — Muestra el stage y multiplicador de cada estrategia."""
+        """Ver stage actual de cada estrategia."""
         if not self._is_authorized(update):
             await self._reject(update)
             return
@@ -775,12 +1017,12 @@ class TelegramBot:
 
         stage_machine = self._get_stage_machine()
         if stage_machine is None:
-            await update.message.reply_text("Stage machine no disponible.")
+            await update.message.reply_text("❌ Stage machine no disponible.")
             return
 
         stats = stage_machine.get_stats()
         if not stats:
-            await update.message.reply_text("Sin estrategias registradas.")
+            await update.message.reply_text("📭 Sin estrategias registradas.")
             return
 
         _stage_icons = {
@@ -789,20 +1031,23 @@ class TelegramBot:
             "LIVE_SMALL": "🔸",
             "LIVE_FULL": "🟢",
         }
-        lines = ["*Stage Machine — Estado actual:*\n"]
+
+        lines = ["🎚️ *Stage Machine*\n" + "━" * 22]
+
         for name, info in stats.items():
             icon = _stage_icons.get(info["stage"], "❓")
             lines.append(
-                f"{icon} *{name}*: `{info['stage']}` ({info['multiplier']:.0%})\n"
-                f"   Reviews recientes: `{info['recent_positive']}/{info['review_window']}`"
-                f" | Para promover: `{info['reviews_to_promote']}` más\n"
-                f"   Próximo stage: `{info['next_stage']}`"
+                f"\n*{icon} {name}*\n"
+                f"   ├ Stage: `{info['stage']}` ({info['multiplier']:.0%})\n"
+                f"   ├ Reviews: `{info['recent_positive']}/{info['review_window']}`\n"
+                f"   ├ Para promover: `{info['reviews_to_promote']}` más\n"
+                f"   └ Próximo: `{info['next_stage']}`"
             )
 
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def _cmd_blacklist(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """/blacklist — Muestra mercados en blacklist activa."""
+        """Ver mercados en blacklist activa."""
         if not self._is_authorized(update):
             await self._reject(update)
             return
@@ -811,7 +1056,7 @@ class TelegramBot:
 
         blacklist = self._get_blacklist()
         if blacklist is None:
-            await update.message.reply_text("Blacklist no disponible.")
+            await update.message.reply_text("❌ Blacklist no disponible.")
             return
 
         active = blacklist.get_active()
@@ -820,17 +1065,23 @@ class TelegramBot:
             return
 
         now = __import__("time").time()
-        lines = [f"*Blacklist activa ({len(active)} mercados):*\n"]
+        lines = [f"🚫 *Blacklist ({len(active)} mercados)*\n" + "━" * 22]
+
         for mid, expire in sorted(active.items(), key=lambda x: x[1]):
             hours_left = (expire - now) / 3600
-            lines.append(f"  `{mid[:16]}...` — expira en `{hours_left:.1f}h`")
+            lines.append(f"   `{mid[:16]}...` — expira en `{hours_left:.1f}h`")
 
         stats = blacklist.get_stats()
         lines.append(
             f"\n_Umbral WR: {stats['wr_threshold']:.0%} | "
             f"Min round-trips: {stats['min_trades']}_"
         )
-        await update.message.reply_text("\n".join(lines))
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    # ------------------------------------------------------------------
+    # Accesores a componentes
+    # ------------------------------------------------------------------
 
     def _get_stage_machine(self) -> Any:
         """Accede a la StageMachine via el controller."""
@@ -843,6 +1094,19 @@ class TelegramBot:
         if self._controller and hasattr(self._controller, "_blacklist"):
             return self._controller._blacklist
         return None
+
+    def _get_market_name(self, condition_id: str) -> str:
+        """Busca el nombre (question) de un mercado por condition_id.
+
+        Revisa self._controller._active_markets y retorna la pregunta truncada.
+        Si no lo encuentra, retorna el condition_id truncado.
+        """
+        markets = getattr(self._controller, "_active_markets", []) if self._controller else []
+        for market in markets:
+            if market.get("condition_id") == condition_id:
+                question = market.get("question", "")
+                return question[:30] if question else condition_id[:12]
+        return condition_id[:12]
 
     # ------------------------------------------------------------------
     # Helpers para calculo de PnL desde trades.jsonl
@@ -934,6 +1198,50 @@ class TelegramBot:
                 except (json.JSONDecodeError, ValueError):
                     continue
         return count
+
+    def _get_last_trade_time(self) -> float | None:
+        """Retorna minutos desde el último trade exitoso."""
+        if not TRADES_FILE.exists():
+            return None
+        last_ts = None
+        with open(TRADES_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    t = json.loads(line)
+                    if t.get("status") != "error":
+                        ts_str = t.get("timestamp", "")
+                        if ts_str:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                            if last_ts is None or ts > last_ts:
+                                last_ts = ts
+                except (json.JSONDecodeError, ValueError):
+                    continue
+        if last_ts:
+            return (datetime.now(timezone.utc) - last_ts).total_seconds() / 60
+        return None
+
+    def _get_recent_log_errors(self, n: int = 5) -> list[str]:
+        """Retorna las últimas N líneas de error del log."""
+        if not LOG_FILE.exists():
+            return []
+        errors = []
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+                for line in reversed(lines):
+                    if "ERROR" in line or "CRITICAL" in line or "exception" in line.lower():
+                        # Limpiar timestamp y nivel para mostrar solo mensaje
+                        cleaned = line.strip()
+                        if len(cleaned) > 10:
+                            errors.append(cleaned)
+                        if len(errors) >= n:
+                            break
+        except OSError:
+            pass
+        return list(reversed(errors))  # Orden cronológico
 
     # ------------------------------------------------------------------
     # Compatibilidad con main.py (API publica sync anterior)
