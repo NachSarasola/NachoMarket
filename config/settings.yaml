@@ -4,7 +4,6 @@ mode: live  # paper | live
 # Auth Polymarket
 # signature_type=1 → EOA (private key directo, sin proxy)
 # signature_type=2 → Browser wallet / Magic Link (proxy address en POLYMARKET_PROXY_ADDRESS)
-# La gran mayoría de cuentas creadas vía Polymarket.com usan proxy → 2
 signature_type: 2
 
 # Capital y riesgo
