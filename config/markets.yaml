@@ -1,5 +1,5 @@
 # NachoMarket - Mercados target y parametros
-min_daily_volume_usd: 40000  # Tip 1: minimo 40K de volumen diario
+min_daily_volume_usd: 30000  # Tip 1: minimo 40K de volumen diario
 small_market_volume_usd: 5000  # Tip 12: override para mercados chicos si participation_share > 5%
 max_markets_simultaneous: 6  # Tip 7: con $150, 3-7 mercados optimo
 bot_order_size: 8.3          # USDC por lado (escalado a $166), para calcular participation share
@@ -9,7 +9,7 @@ market_refresh_interval_sec: 300  # Re-escanear mercados cada 5 min
 filters:
   min_liquidity_usd: 500
   max_spread_pct: 5.0
-  min_time_to_resolution_hours: 336  # Tip 2: 14 dias minimo (336h)
+  min_time_to_resolution_hours: 300  # Sincronizado con settings.yaml (300h)
   min_market_age_hours: 48
   excluded_categories:
     - entertainment  # Tip 10: evitar mercados de entretenimiento para bot

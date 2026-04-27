@@ -1,12 +1,12 @@
 # NachoMarket - Configuracion general
-mode: paper  # paper | live
+mode: live  # paper | live
 
 # Capital y riesgo
 capital_total: 166           # USDC total disponible
 max_risk_per_market: 0.05    # 5% maximo por mercado
 max_daily_drawdown: 8.3      # 5% de $166 — parar si se pierden $8.3 en un dia
 kelly_fraction: 0.25         # Quarter Kelly (conservador)
-min_market_volume: 40000     # Tip 1: volumen minimo 40K; override para mercados chicos con alta participacion
+min_market_volume: 30000     # Tip 1: volumen minimo 40K; override para mercados chicos con alta participacion
 
 # Self-review con Claude Haiku
 review_interval_hours: 8
@@ -26,14 +26,14 @@ near_resolution_hours: 336   # Tip 2: 14 dias (336h) minimo para operar
 
 # Market Making
 market_maker:
-  spread_offset: 0.02          # 2 centavos de offset al mid (tip 3: agresivo desde 2c)
-  order_size: 6.0              # ~$6 por lado (escalado a $166 de capital)
-  refresh_seconds: 90          # Tip 21: paciencia — no reposicionar si mid no cambio >=2c
-  max_inventory_per_market: 25 # 15% cap (tip 15: bot <= 15% de $166 = $24.9)
+  spread_offset: 0.015          # 2 centavos de offset al mid (tip 3: agresivo desde 2c)
+  order_size: 10.0             # ~$6 por lado (escalado a $166 de capital)
+  refresh_seconds: 45          # Tip 21: paciencia — no reposicionar si mid no cambio >=2c
+  max_inventory_per_market: 30 # 15% cap (tip 15: bot <= 15% de $166 = $24.9)
   repositioning_enabled: true  # Despues de un fill, reposicionar en entry+1c
   reposition_offset: 0.01      # 1 centavo de offset para reposicionamiento (tip 6)
-  reposition_timeout_min: 90   # Cancelar reposicion si no se ejecuta en 90min
-  near_resolution_hours: 336   # Tip 2: cancelar quotes si faltan < 14 dias para resolucion
+  reposition_timeout_min: 60   # Cancelar reposicion si no se ejecuta en 90min
+  near_resolution_hours: 300   # Tip 2: cancelar quotes si faltan < 14 dias para resolucion
 
 # Arbitraje Multi-Outcome (desactivado)
 multi_arb:

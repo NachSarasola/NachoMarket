@@ -24,8 +24,9 @@ RestartSec=30
 StartLimitInterval=300
 StartLimitBurst=5
 
-# Resource limits (Contabo VPS S: 8GB RAM, ceiling generoso para evitar OOM)
-MemoryMax=3000M
+# Resource limits (AWS Lightsail: 1GB RAM, 2 vCPUs, 40GB SSD)
+# Dejar ~100MB para el sistema
+MemoryMax=900M
 
 # Logging
 StandardOutput=journal
