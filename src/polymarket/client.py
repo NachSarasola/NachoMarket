@@ -78,10 +78,12 @@ class PolymarketClient:
 
         if not paper_mode:
             self._client = self._build_client(signature_type)
+            funder = os.environ.get("POLYMARKET_PROXY_ADDRESS", "") if signature_type == 2 else None
             logger.info(
                 f"PolymarketClient inicializado en modo LIVE "
                 f"(signature_type={signature_type}, "
-                f"address={self._client.get_address()})"
+                f"signer={self._client.get_address()}, "
+                f"funder={funder or 'N/A (EOA mode)'})"
             )
         else:
             logger.info(
@@ -297,7 +299,17 @@ class PolymarketClient:
         result = self._client.get_balance_allowance(params)
         # Retorna {"balance": "123456789", ...} en unidades de 6 decimales (USDC)
         raw_balance = result.get("balance", "0")
-        return float(raw_balance) / 1_000_000
+        balance = float(raw_balance) / 1_000_000
+
+        if balance == 0.0 and self._signature_type == 1:
+            logger.warning(
+                "Balance=0 con signature_type=1 (EOA mode). "
+                "Si depositaste vía Polymarket.com, tu USDC está en el PROXY address, "
+                "no en la EOA. Cambiá signature_type=2 en config/settings.yaml y "
+                "definí POLYMARKET_PROXY_ADDRESS en .env."
+            )
+
+        return balance
 
     @_log_api_call
     @retry_with_backoff(max_attempts=3)
