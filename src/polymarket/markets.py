@@ -581,7 +581,10 @@ class MarketAnalyzer:
             total = bid_depth + ask_depth
             self._cache.set(cache_key, total)
             return total
-        except Exception:
+        except Exception as e:
+            # Si es error 404, marcar este token como invalido en cache para no volver a consultar
+            if hasattr(e, 'status_code') and e.status_code == 404:
+                self._cache.set(cache_key, 0.0)
             logger.debug(f"No se pudo obtener depth para {token_id[:8]}...")
             return 0.0
 
@@ -622,7 +625,10 @@ class MarketAnalyzer:
             spread_pct = ((best_ask - best_bid) / best_bid) * 100
             self._cache.set(cache_key, spread_pct)
             return spread_pct
-        except Exception:
+        except Exception as e:
+            # Si es error 404, marcar este token como invalido en cache
+            if hasattr(e, 'status_code') and e.status_code == 404:
+                self._cache.set(cache_key, None)
             logger.debug(f"No se pudo obtener spread para {token_id[:8]}...")
             return None
 
