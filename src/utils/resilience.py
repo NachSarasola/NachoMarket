@@ -14,15 +14,25 @@ logger = logging.getLogger("nachomarket.resilience")
 
 
 def _is_permanent_error(exc: Exception) -> bool:
-    """Retorna True si el error esience. permanente y no vale la pena reintentar."""
+    """Retorna True si el error es permanente y no vale la pena reintentar."""
+    # Requests HTTPError
     if isinstance(exc, HTTPError):
-        # No reintentar errores 4xx (cliente) excepto 429 Rate Limit
         if 400 <= exc.response.status_code < 500 and exc.response.status_code != 429:
             return True
-    # Chequear Polymarket API 404
+    
+    # PolyApiException oficial de py-clob-client
     if hasattr(exc, 'status_code'):
-        if exc.status_code == 404:
+        status = getattr(exc, 'status_code')
+        if status in (404, 405, 400, 401, 403):
             return True
+    
+    # Buscar status code dentro del mensaje de error
+    err_str = str(exc).lower()
+    if 'status_code=404' in err_str or '404 client error' in err_str:
+        return True
+    if 'status_code=405' in err_str or '405 client error' in err_str:
+        return True
+        
     return False
 
 

@@ -398,10 +398,10 @@ class NachoMarketBot:
                 regime_state = self._regime_detector.get_state(token_id)
                 market_data["regime"] = regime_state.regime.value if regime_state else "unknown"
                 market_data["spread_multiplier"] = (
-                    getattr(regime_state, "spread_multiplier", 1.0) if regime_state else 1.0
+                    regime_state.spread_multiplier if regime_state else 1.0
                 )
                 market_data["pause_mm"] = (
-                    getattr(regime_state, "pause_mm", False) if regime_state else False
+                    regime_state.pause_mm if regime_state else False
                 )
                 # Marcar mercados con toxic flow como evitables
                 market_data["toxic_flow"] = self._toxic_flow.is_toxic(token_id)

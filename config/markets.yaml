@@ -9,7 +9,7 @@ market_refresh_interval_sec: 300  # Re-escanear mercados cada 5 min
 filters:
   min_liquidity_usd: 500
   max_spread_pct: 5.0
-  min_time_to_resolution_hours: 300  # Sincronizado con settings.yaml (300h)
+  min_time_to_resolution_hours: 336  # Tip 2: 14 dias minimo (336h)
   min_market_age_hours: 48
   excluded_categories:
     - entertainment  # Tip 10: evitar mercados de entretenimiento para bot

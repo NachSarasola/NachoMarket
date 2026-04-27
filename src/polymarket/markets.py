@@ -276,7 +276,7 @@ class MarketAnalyzer:
     # 2. Rewards: CLOB API
     # ------------------------------------------------------------------
 
-    @retry_with_backoff(max_attempts=3, exceptions=(requests.RequestException,))
+    @retry_with_backoff(max_attempts=2, exceptions=(requests.RequestException,))
     def get_reward_markets(self) -> dict[str, dict[str, Any]]:
         """Consulta mercados con liquidity rewards activos en la CLOB API.
 
@@ -291,7 +291,8 @@ class MarketAnalyzer:
         logger.info("Consultando CLOB API para mercados con rewards activos...")
         try:
             resp = requests.get(
-                f"{CLOB_API_URL}/rewards/markets",
+                f"{CLOB_API_URL}/v1/rewards/markets",
+                headers={"Accept": "application/json"},
                 timeout=15,
             )
             resp.raise_for_status()
