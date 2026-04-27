@@ -165,7 +165,7 @@ class MarketAnalyzer:
             resp = requests.get(
                 f"{GAMMA_API_URL}/markets",
                 params=params,
-                timeout=15,
+                timeout=(10, 60),
             )
             resp.raise_for_status()
             batch = resp.json()
