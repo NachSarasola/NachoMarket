@@ -31,16 +31,17 @@ logger = logging.getLogger("nachomarket.strategy.rewards_farmer")
 # --- Constantes oficiales de Polymarket ---
 SINGLE_SIDED_DIVISOR = 3.0  # c en Q_min
 MIN_SHARES_FALLBACK = 20    # minimo practico si la API no reporta rewards_min_size
-TICK_MOVE_THRESHOLD = 2     # recolocar solo si el precio cambio >= N ticks
+TICK_MOVE_THRESHOLD = 5     # recolocar si el precio cambio >= 5 ticks ($0.05)
 SIZE_CHANGE_PCT = 0.10      # recolocar si el size cambio >= 10%
-MIN_SCORE_TO_KEEP = 0.10    # S minimo para mantener una orden abierta
+MIN_SCORE_TO_KEEP = 0.05    # S minimo para mantener una orden abierta (bajado de 0.10)
 
 
 class RewardsFarmerStrategy(BaseStrategy):
     """Farming de rewards multi-outcome con Q_min real y gestion inteligente de ordenes."""
 
-    def __init__(self, client: Any, config: dict[str, Any], **kwargs: Any) -> None:
+    def __init__(self, client: Any, config: dict[str, Any], circuit_breaker: Any = None, **kwargs: Any) -> None:
         super().__init__("rewards_farmer", client, config, **kwargs)
+        self._circuit_breaker = circuit_breaker
         rf_cfg = config.get("rewards_farmer", {})
         markets_cfg = config.get("markets", config)
 
@@ -227,10 +228,18 @@ class RewardsFarmerStrategy(BaseStrategy):
                 continue
 
             td = token_data.get(tid, {})
+            bids_book = td.get("orderbook", {}).get("bids", [])
             asks_book = td.get("orderbook", {}).get("asks", [])
+            best_bid = float(bids_book[0].get("price", bids_book[0].get("p", 0.0))) if bids_book else td.get("best_bid", 0.0)
             best_ask = float(asks_book[0].get("price", asks_book[0].get("p", 1.0))) if asks_book else td.get("best_ask", 1.0)
-
-            bid_price = self._calc_bid_price(t_mid, optimal_distance, best_ask, max_spread_usd, tick_size)
+            
+            # Usar best_bid real si está disponible (colocar 1 tick debajo)
+            if best_bid > 0 and best_bid < t_mid:
+                bid_price = round(best_bid - tick_size, 4)
+            else:
+                # Fallback: distancia optima desde mid
+                bid_price = self._calc_bid_price(t_mid, optimal_distance, best_ask, max_spread_usd, tick_size)
+            
             if bid_price <= 0 or bid_price >= t_mid:
                 continue
 
@@ -244,32 +253,47 @@ class RewardsFarmerStrategy(BaseStrategy):
                 bid_price = self._calc_bid_price(t_mid, tick_size, best_ask, max_spread_usd, tick_size)
                 if bid_price <= 0 or bid_price >= t_mid:
                     continue
-                s_usd = t_mid - bid_price
-                score = ((v_usd - s_usd) / v_usd) ** 2 if v_usd > 0 else 0.0
-                if score < MIN_SCORE_TO_KEEP:
-                    continue
 
-            # Size en USD: shares balanceadas * mid del token
-            size_usd = base_shares * t_mid
+            # Calcular SIZE en SHARES para alcanzar min_shares (20)
+            # base_shares es en SHARES, t_mid es price → size_usd es USD
+            # Pero la API espera size en SHARES, no USD
+            
+            # min_shares: mínimo de shares para rewards (20)
+            min_shares = max(MIN_SHARES_FALLBACK, rewards_min_size)
+            
+            # SHARES que queremos comprar (target)
+            target_shares = min_shares
+            
+            # Verificar que el costo USD no exceda el capital disponible
+            cost_usd = target_shares * bid_price
+            
+            # Calcular capital disponible para este lado
             side_capital = max_total_usd * t_mid / sum_mids
-            size_usd = round(min(size_usd, side_capital), 2)
-            if size_usd < min_shares * t_mid * 0.9:
-                continue
-
+            
+            if cost_usd > side_capital:
+                # Reducir shares para que quepa en capital
+                target_shares = int(side_capital / bid_price)
+                if target_shares < 1:
+                    continue
+            
+            if target_shares < min_shares * 0.9:
+                continue  # No alcanza el mínimo de rewards
+            
             per_token_scores.append(score)
+            # UNA señal con tamaño en SHARES
             signals.append(Signal(
                 strategy_name=self.name,
                 market_id=condition_id,
                 token_id=tid,
                 side="BUY",
                 price=bid_price,
-                size=size_usd,
+                size=target_shares,  # SHARES, no USD
                 confidence=0.7,
                 metadata={
                     "reason": f"rf_v3q: rate={rewards_rate:.2f}/day dist={optimal_distance:.4f}",
                     "phase": self._detect_market_phase(market_data),
                     "score": round(score, 4),
-                    "shares": round(base_shares * boost, 2),
+                    "shares": round(target_shares, 2),
                 },
             ))
 
@@ -338,15 +362,22 @@ class RewardsFarmerStrategy(BaseStrategy):
                 to_place.append(sig)
                 continue
 
+            # Solo procesar el primer orden (deberiamos tener maximo uno)
             oo = existing[0]
             oo_price = float(oo.get("price", 0.0))
             oo_size = float(oo.get("original_size", oo.get("size", 0.0)))
-            tick_size = 0.01  # se podria obtener del market_data
+
+            tick_size = 0.01  # Default tick size
 
             price_diff_ticks = abs(round((sig.price - oo_price) / tick_size))
             size_diff_pct = abs(sig.size - oo_size) / max(oo_size, 1e-9)
 
             if price_diff_ticks >= TICK_MOVE_THRESHOLD or size_diff_pct >= SIZE_CHANGE_PCT:
+                self._logger.info(
+                    "RF: cancelando %s %s %.4f (diff=%d ticks, size %.1f%%)",
+                    sig.token_id[:8], sig.side, oo_price,
+                    price_diff_ticks, size_diff_pct * 100,
+                )
                 oid = str(oo.get("id", oo.get("order_id", "")))
                 if oid:
                     to_cancel.append(oid)
@@ -357,20 +388,132 @@ class RewardsFarmerStrategy(BaseStrategy):
                     str(oo.get("id", ""))[:12], sig.token_id[:8], oo_price,
                     price_diff_ticks, size_diff_pct * 100,
                 )
+                # Mantener orden existente, NO hacer nada
 
-        # Cancelar ordenes propias de tokens que ya no estan en signals
+        # 3. Cancelar ordenes propias de tokens que YA NO estan en signals
+        for tid, oos in open_by_token.items():
+            if tid not in signal_tokens:
+                for oo in oos:
+                    oid = str(oo.get("id", oo.get("order_id", "")))
+                    if oid:
+                         to_cancel.append(oid)
+                         self._logger.info("RF: cleanup token %s...", tid[:8])
+
+        # 4. Ejecutar cancelaciones
+        for oid in to_cancel:
+            try:
+                self._client.cancel_order(oid)
+                self._pending_orders.pop(oid, None)
+                if self._circuit_breaker:
+                    self._circuit_breaker.order_closed()
+            except Exception:
+                self._logger.debug("RF: error cancelando orden %s...", oid[:12])
+
+        # 5. Ejecutar colocaciones (batch si es posible)
+        if to_place:
+            try:
+                if hasattr(self._client, "post_batch_orders"):
+                    batch_results = self._client.post_batch_orders(to_place)
+                    for sig, res in zip(to_place, batch_results):
+                        trade = self._build_trade(sig, res)
+                        trades.append(trade)
+                        if trade.order_id and trade.status not in ("error", "rejected"):
+                            self._pending_orders[trade.order_id] = sig
+                else:
+                    for sig in to_place:
+                        res = self._client.place_limit_order(
+                            token_id=sig.token_id,
+                            side=sig.side,
+                            price=sig.price,
+                            size=sig.size,
+                            post_only=True,
+                        )
+                        trade = self._build_trade(sig, res)
+                        trades.append(trade)
+                        if trade.order_id and trade.status not in ("error", "rejected"):
+                            self._pending_orders[trade.order_id] = sig
+            except Exception:
+                self._logger.exception("RF: error colocando ordenes")
+
+        return trades
+
+        self._logger.info("RF execute: %d señales a colocar", len(signals))
+
+        # 1. Obtener ordenes abiertas actuales del exchange
+        open_orders: list[dict[str, Any]] = []
+        try:
+            open_orders = self._client.get_positions() or []
+        except Exception:
+            self._logger.exception("RF: error obteniendo ordenes abiertas")
+
+        # Indexar SOLO las ordenes que colocamos nosotros (evita cancelar manuales)
+        open_by_token: dict[str, list[dict[str, Any]]] = {}
+        for oo in open_orders:
+            oid = oo.get("id") or oo.get("order_id") or ""
+            if oid not in self._pending_orders:
+                continue  # ignorar ordenes manuales / ajenas
+            tid = oo.get("asset_id") or oo.get("token_id") or ""
+            side = str(oo.get("side", "")).upper()
+            if tid and side == "BUY":
+                open_by_token.setdefault(tid, []).append(oo)
+
+# 2. Decidir que cancelar y que colocar
+        to_cancel: list[str] = []
+        to_place: list[Signal] = []
+        signal_tokens = {s.token_id: s for s in signals}
+        signal_map: dict[str, list[Signal]] = {}
+        for sig in signals:
+            signal_map.setdefault(sig.token_id, []).append(sig)
+
+        for sig in signals:
+            existing = open_by_token.get(sig.token_id, [])
+            if not existing:
+                to_place.append(sig)
+                continue
+
+            oo = existing[0]
+            oo_price = float(oo.get("price", 0.0))
+            oo_size = float(oo.get("original_size", oo.get("size", 0.0)))
+
+            tick_size = 0.01  # Default tick size
+
+            price_diff_ticks = abs(round((sig.price - oo_price) / tick_size))
+            size_diff_pct = abs(sig.size - oo_size) / max(oo_size, 1e-9)
+
+            if price_diff_ticks >= TICK_MOVE_THRESHOLD or size_diff_pct >= SIZE_CHANGE_PCT:
+                self._logger.info(
+                    "RF: cancelando %s %s %.4f (diff=%d ticks, size %.1f%%)",
+                    sig.token_id[:8], sig.side, oo_price,
+                    price_diff_ticks, size_diff_pct * 100,
+                )
+                oid = str(oo.get("id", oo.get("order_id", "")))
+                if oid:
+                    to_cancel.append(oid)
+                to_place.append(sig)
+            else:
+                self._logger.debug(
+                    "RF: manteniendo orden %s en %s @ %.4f (diff %d ticks, size %.1f%%)",
+                    str(oo.get("id", ""))[:12], sig.token_id[:8], oo_price,
+                    price_diff_ticks, size_diff_pct * 100,
+                )
+                # Mantener orden existente, NO hacer nada
+
+        # 3. Cancelar órdenes propias de tokens que YA NO están en signals
         for tid, oos in open_by_token.items():
             if tid not in signal_tokens:
                 for oo in oos:
                     oid = str(oo.get("id", oo.get("order_id", "")))
                     if oid:
                         to_cancel.append(oid)
+                        self._logger.info("RF: cleanup token %s...", tid[:8])
 
-        # 3. Ejecutar cancelaciones
+        # 4. Ejecutar cancelaciones
         for oid in to_cancel:
             try:
                 self._client.cancel_order(oid)
                 self._pending_orders.pop(oid, None)
+                if self._circuit_breaker:
+                    self._circuit_breaker.order_closed()
             except Exception:
                 self._logger.debug("RF: error cancelando orden %s...", oid[:12])
 
@@ -506,8 +649,17 @@ class RewardsFarmerStrategy(BaseStrategy):
         best_ask: float,
         max_spread_usd: float,
         tick_size: float,
+        best_bid: float = 0.0,
     ) -> float:
-        """Calcula precio de BID respetando max_spread y post-only."""
+        """Calcula precio de BID usando best_bid real del orderbook.
+        
+        Si best_bid esta disponible, coloca dentro del spread de rewards
+        (entre best_bid y best_ask) para qualify para liquidity rewards.
+        """
+        if best_bid > 0:
+            bid = round(best_bid - tick_size, 4)
+            return bid if 0 < bid < mid else 0.0
+        
         bid = round(mid - distance, 4)
         if best_ask > 0 and bid >= best_ask:
             bid = round(best_ask - tick_size, 4)

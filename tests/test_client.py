@@ -119,6 +119,6 @@ class TestCancel:
 class TestMergePositions:
     def test_merge_positions_paper(self, client: PolymarketClient) -> None:
         result = client.merge_positions("token_abc", 15.0)
-        assert result["status"] == "merged_paper"
+        assert result["status"] == "reduced_paper"
         assert result["token_id"] == "token_abc"
         assert result["size"] == 15.0

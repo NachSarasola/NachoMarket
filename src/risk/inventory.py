@@ -1,12 +1,13 @@
 """Gestion de inventario de shares por mercado.
 
-Trackea posiciones YES/NO separadamente por market_id.
+Trackea posiciones por token_id por market_id.
 Provee skew, merge detection y quote adjustment para market making.
+Soporta mercados binarios (YES/NO) y multi-outcome (N tokens).
 """
 
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,40 +21,54 @@ _QUOTE_ADJ = 0.005         # 0.5 cents de ajuste por nivel de skew
 
 @dataclass
 class MarketInventory:
-    """Inventario YES/NO de un mercado especifico.
+    """Inventario de un mercado especifico.
 
-    Los valores representan USDC equivalente en shares de cada lado.
+    Las keys de positions son token_id (o 'yes'/'no' para compatibilidad
+    con estado previo). Los valores representan USDC equivalente en shares.
     Positivo = long shares, negativo = short (raro pero posible).
     """
-    yes: float = 0.0
-    no: float = 0.0
+
+    positions: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def yes(self) -> float:
+        return self.positions.get("yes", 0.0)
+
+    @property
+    def no(self) -> float:
+        return self.positions.get("no", 0.0)
 
     def total(self) -> float:
         """USDC total invertido en este mercado."""
-        return abs(self.yes) + abs(self.no)
+        return sum(abs(v) for v in self.positions.values())
 
     def skew(self) -> float:
-        """Skew normalizado de inventario: (yes - no) / (yes + no).
+        """Skew normalizado para mercados binarios: (yes - no) / (yes + no).
 
-        Retorna 0.0 si no hay posicion.
+        Retorna 0.0 si no hay posicion o si hay mas de 2 lados.
         Rango: -1.0 (todo NO) a +1.0 (todo YES).
         """
-        total = abs(self.yes) + abs(self.no)
+        keys = set(self.positions.keys())
+        if not keys.issubset({"yes", "no"}):
+            return 0.0
+        y = self.positions.get("yes", 0.0)
+        n = self.positions.get("no", 0.0)
+        total = abs(y) + abs(n)
         if total == 0:
             return 0.0
-        return (self.yes - self.no) / total
+        return (y - n) / total
 
 
 class InventoryManager:
     """Gestion de inventario de posiciones por mercado.
 
-    Estructura interna: {market_id: MarketInventory(yes, no)}
+    Estructura interna: {market_id: MarketInventory}
 
     Soporta:
-    - Tracking YES/NO por mercado
-    - Calculo de skew para informar a market maker
-    - Deteccion de cuando mergear YES+NO → USDC
-    - Ajuste de quotes segun sesgo de inventario
+    - Tracking por token_id para mercados de N outcomes
+    - Calculo de skew para informar a market maker (binario-only)
+    - Deteccion de merge YES+NO -> USDC (binario-only)
+    - Ajuste de quotes segun sesgo de inventario (binario-only)
     """
 
     def __init__(
@@ -78,33 +93,30 @@ class InventoryManager:
         token_type: str,
         side: str,
         size: float,
+        token_id: str | None = None,
     ) -> None:
         """Registra un trade y actualiza el inventario del mercado.
 
         Args:
             market_id: condition_id del mercado.
-            token_type: 'yes' o 'no' (YES = clobTokenIds[0], NO = clobTokenIds[1]).
+            token_type: 'yes' o 'no' (legacy compat).
             side: 'BUY' o 'SELL'.
             size: Tamano en USDC.
+            token_id: token_id real del outcome. Si se provee, se usa como key.
         """
         if market_id not in self._markets:
             self._markets[market_id] = MarketInventory()
 
         inv = self._markets[market_id]
+        key = token_id or token_type
         delta = size if side == "BUY" else -size
 
-        if token_type == "yes":
-            inv.yes = round(inv.yes + delta, 4)
-        elif token_type == "no":
-            inv.no = round(inv.no + delta, 4)
-        else:
-            logger.warning(f"Unknown token_type '{token_type}' for market {market_id[:8]}...")
-            return
+        inv.positions[key] = round(inv.positions.get(key, 0.0) + delta, 4)
 
         self._save_state()
         logger.info(
-            f"Inventory updated: {side} {size:.2f} {token_type.upper()} "
-            f"@ {market_id[:8]}... → yes={inv.yes:.2f}, no={inv.no:.2f}"
+            f"Inventory updated: {side} {size:.2f} {key[:12]}... "
+            f"@ {market_id[:8]}... -> total={inv.total():.2f}"
         )
 
     def clear_market(self, market_id: str) -> None:
@@ -125,26 +137,22 @@ class InventoryManager:
         """Retorna el skew normalizado: (yes - no) / (yes + no).
 
         Valores:
-          +1.0 → solo YES en inventario
-          -1.0 → solo NO en inventario
-           0.0 → balanceado o sin posicion
+          +1.0 -> solo YES en inventario
+          -1.0 -> solo NO en inventario
+           0.0 -> balanceado o sin posicion / multi-outcome
         """
         return self.get_market_inventory(market_id).skew()
 
     def should_merge(self, market_id: str) -> bool:
-        """True si ambos lados superan el umbral de merge.
+        """True si ambos lados superan el umbral de merge (binario-only).
 
-        Logica: si min(yes, no) > merge_threshold, tenemos suficiente de
-        ambos lados para mergear YES+NO → USDC (cada par vale $1).
-
-        Args:
-            market_id: condition_id del mercado.
-
-        Returns:
-            True si vale la pena ejecutar un merge.
+        Para mercados multi-outcome retorna False (no hay merge nativo).
         """
         inv = self.get_market_inventory(market_id)
-        return min(inv.yes, inv.no) > self._merge_threshold
+        if len(inv.positions) != 2:
+            return False
+        vals = list(inv.positions.values())
+        return min(abs(vals[0]), abs(vals[1])) > self._merge_threshold
 
     def adjust_quotes(
         self,
@@ -175,7 +183,7 @@ class InventoryManager:
             adj = _QUOTE_ADJ * (1 + (skew - _SKEW_THRESHOLD))
             new_ask = round(base_ask + adj, 4)
             new_bid = round(base_bid - adj, 4)
-            logger.debug(f"Skew={skew:.3f} (long YES): ask {base_ask:.4f}→{new_ask:.4f}, bid {base_bid:.4f}→{new_bid:.4f}")
+            logger.debug(f"Skew={skew:.3f} (long YES): ask {base_ask:.4f}->{new_ask:.4f}, bid {base_bid:.4f}->{new_bid:.4f}")
             return (new_bid, new_ask)
 
         elif skew < -_SKEW_THRESHOLD:
@@ -183,7 +191,7 @@ class InventoryManager:
             adj = _QUOTE_ADJ * (1 + (abs(skew) - _SKEW_THRESHOLD))
             new_bid = round(base_bid + adj, 4)
             new_ask = round(base_ask - adj, 4)
-            logger.debug(f"Skew={skew:.3f} (long NO): bid {base_bid:.4f}→{new_bid:.4f}, ask {base_ask:.4f}→{new_ask:.4f}")
+            logger.debug(f"Skew={skew:.3f} (long NO): bid {base_bid:.4f}->{new_bid:.4f}, ask {base_ask:.4f}->{new_ask:.4f}")
             return (new_bid, new_ask)
 
         return (base_bid, base_ask)
@@ -195,7 +203,7 @@ class InventoryManager:
     def get_positions(self) -> dict[str, dict[str, float]]:
         """Retorna todas las posiciones como dict serializable."""
         return {
-            market_id: {"yes": inv.yes, "no": inv.no}
+            market_id: dict(inv.positions)
             for market_id, inv in self._markets.items()
         }
 
@@ -215,10 +223,16 @@ class InventoryManager:
         try:
             data = json.loads(self._state_file.read_text(encoding="utf-8"))
             for market_id, inv_data in data.get("markets", {}).items():
-                self._markets[market_id] = MarketInventory(
-                    yes=inv_data.get("yes", 0.0),
-                    no=inv_data.get("no", 0.0),
-                )
+                positions: dict[str, float] = {}
+                # Compatibilidad con formato viejo yes/no
+                if "yes" in inv_data or "no" in inv_data:
+                    if inv_data.get("yes", 0.0) != 0.0:
+                        positions["yes"] = inv_data["yes"]
+                    if inv_data.get("no", 0.0) != 0.0:
+                        positions["no"] = inv_data["no"]
+                else:
+                    positions = {k: float(v) for k, v in inv_data.items()}
+                self._markets[market_id] = MarketInventory(positions=positions)
         except (json.JSONDecodeError, KeyError, TypeError):
             logger.warning("Could not load inventory state, starting fresh")
 

@@ -255,35 +255,27 @@ class TestDiscoverMarkets:
 # ------------------------------------------------------------------
 
 class TestRewardMarkets:
-    @patch("src.polymarket.markets.requests.get")
-    def test_returns_reward_map(self, mock_get) -> None:
-        mock_get.return_value = MagicMock(
-            status_code=200,
-            json=MagicMock(return_value=[
-                {"conditionId": "cond_1", "rewardsDailyRate": 150.0, "minSize": 25, "maxSpread": 0.04},
-                {"conditionId": "cond_2", "rewardsDailyRate": 80.0, "minSize": 10, "maxSpread": 0.05},
-            ]),
-            raise_for_status=MagicMock(),
-        )
+    def test_returns_reward_map(self) -> None:
+        client = make_client()
+        client.get_rewards.return_value = {
+            "cond_1": {"rewards_daily_rate": 150.0, "min_size": 25, "max_spread": 0.04},
+            "cond_2": {"rewards_daily_rate": 80.0, "min_size": 10, "max_spread": 0.05},
+        }
 
-        analyzer = MarketAnalyzer(make_client(), make_config())
+        analyzer = MarketAnalyzer(client, make_config())
         rewards = analyzer.get_reward_markets()
 
         assert len(rewards) == 2
         assert rewards["cond_1"]["rewards_daily_rate"] == 150.0
         assert rewards["cond_2"]["min_size"] == 10.0
 
-    @patch("src.polymarket.markets.requests.get")
-    def test_enriches_markets(self, mock_get) -> None:
-        mock_get.return_value = MagicMock(
-            status_code=200,
-            json=MagicMock(return_value=[
-                {"conditionId": "cond_123", "rewardsDailyRate": 200.0, "minSize": 10, "maxSpread": 0.03},
-            ]),
-            raise_for_status=MagicMock(),
-        )
+    def test_enriches_markets(self) -> None:
+        client = make_client()
+        client.get_rewards.return_value = {
+            "cond_123": {"rewards_daily_rate": 200.0, "min_size": 10, "max_spread": 0.03},
+        }
 
-        analyzer = MarketAnalyzer(make_client(), make_config())
+        analyzer = MarketAnalyzer(client, make_config())
         markets = [{"condition_id": "cond_123", "rewards_active": False, "rewards_rate": 0.0}]
         enriched = analyzer.enrich_with_rewards(markets)
 
@@ -341,8 +333,9 @@ class TestScoreMarket:
             "volume_24h": 50000,
             "end_date": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
         }
-        no_rewards = {**base, "rewards_rate": 0}
-        with_rewards = {**base, "rewards_rate": 300}
+        no_rewards = {**base, "rewards_active": False, "rewards_rate": 0.0}
+        # 5% diario de rewards sobre $7.5 = $0.375/dia → score 0.75 en componente rewards
+        with_rewards = {**base, "rewards_active": True, "rewards_rate": 0.05}
         assert self.analyzer.score_market(with_rewards) > self.analyzer.score_market(no_rewards)
 
     def test_extreme_price_penalizes_volatility(self) -> None:

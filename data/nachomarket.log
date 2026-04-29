@@ -140,3 +140,247 @@ py_clob_client.exceptions.PolyApiException: PolyApiException[status_code=401, er
 2026-04-16 20:37:15 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
 2026-04-16 20:37:16 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
 2026-04-16 20:37:17 | nachomarket.telegram | INFO | Telegram bot polling started
+2026-04-27 20:42:52 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-27 20:42:52 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER (capital simulado=$166.00 USDC)
+2026-04-27 20:42:52 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-27 20:42:52 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-27 20:42:52 | nachomarket | INFO | Conexión OK
+2026-04-27 20:42:52 | nachomarket.websocket | INFO | Health callback registrado (total: 1)
+2026-04-27 20:42:52 | nachomarket.telegram | INFO | Telegram bot thread started
+2026-04-27 20:42:52 | nachomarket.strategy.market_maker | INFO | Estrategia 'market_maker' inicializada
+2026-04-27 20:42:52 | nachomarket.strategy.rewards_farmer | INFO | Estrategia 'rewards_farmer' inicializada
+2026-04-27 20:42:52 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'rewards_farmer']
+2026-04-27 20:42:52 | nachomarket.risk.profitability | INFO | Profitability: 2 mercados cargados
+2026-04-27 20:42:53 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-27 20:42:53 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-27 20:42:53 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-27 20:42:53 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-27 20:42:53 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-27 20:42:53 | nachomarket.websocket | INFO | Health monitor iniciado (threshold=60s)
+2026-04-27 20:42:54 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-27 20:42:54 | nachomarket.telegram | INFO | Telegram bot polling started
+2026-04-27 20:45:54 | nachomarket | INFO | NachoMarket iniciando en modo LIVE
+2026-04-27 20:45:54 | nachomarket.client | INFO | PolymarketClient inicializado en modo LIVE (signature_type=2, signer=0x7B2833091e32343565D6E3Fb99A09e2DF60471a1, funder=0x631dD32783c38D7362126C47B394B89D430aa059)
+2026-04-27 20:45:54 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-27 20:45:55 | nachomarket.client | INFO | Credenciales Level 2 verificadas correctamente
+2026-04-27 20:45:56 | nachomarket.client | INFO | Server time: 1777333562
+2026-04-27 20:45:56 | nachomarket | INFO | Conexión OK
+2026-04-27 20:45:56 | nachomarket.websocket | INFO | Health callback registrado (total: 1)
+2026-04-27 20:45:56 | nachomarket.telegram | INFO | Telegram bot thread started
+2026-04-27 20:45:56 | nachomarket.strategy.market_maker | INFO | Estrategia 'market_maker' inicializada
+2026-04-27 20:45:56 | nachomarket.strategy.rewards_farmer | INFO | Estrategia 'rewards_farmer' inicializada
+2026-04-27 20:45:56 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'rewards_farmer']
+2026-04-27 20:45:56 | nachomarket.risk.profitability | INFO | Profitability: 2 mercados cargados
+2026-04-27 20:45:56 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-27 20:45:56 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-27 20:45:56 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-27 20:45:56 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-27 20:45:56 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-27 20:45:56 | nachomarket.websocket | INFO | Health monitor iniciado (threshold=60s)
+2026-04-27 20:45:57 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-27 20:45:58 | nachomarket.telegram | INFO | Telegram bot polling started
+2026-04-27 20:46:58 | nachomarket | ERROR | Error actualizando mercados
+Traceback (most recent call last):
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\urllib3\response.py", line 903, in _error_catcher
+    yield
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\urllib3\response.py", line 1421, in read_chunked
+    chunk = self._handle_chunk(amt)
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\urllib3\response.py", line 1354, in _handle_chunk
+    value = self._fp._safe_read(amt)  # type: ignore[union-attr]
+  File "C:\Python314\Lib\http\client.py", line 648, in _safe_read
+    data = self.fp.read(cursize)
+  File "C:\Python314\Lib\socket.py", line 725, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+  File "C:\Python314\Lib\ssl.py", line 1304, in recv_into
+    return self.read(nbytes, buffer)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\ssl.py", line 1138, in read
+    return self._sslobj.read(len, buffer)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\requests\models.py", line 822, in generate
+    yield from self.raw.stream(chunk_size, decode_content=True)
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\urllib3\response.py", line 1250, in stream
+    yield from self.read_chunked(amt, decode_content=decode_content)
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\urllib3\response.py", line 1397, in read_chunked
+    with self._error_catcher():
+         ~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Python314\Lib\contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\urllib3\response.py", line 908, in _error_catcher
+    raise ReadTimeoutError(self._pool, None, "Read timed out.") from e  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='gamma-api.polymarket.com', port=443): Read timed out.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "c:\Users\Usuario\Desktop\NachoMarket\src\main.py", line 987, in _update_markets
+    markets = self._market_analyzer.scan_markets()
+  File "c:\Users\Usuario\Desktop\NachoMarket\src\polymarket\markets.py", line 482, in scan_markets
+    return self.select_top_markets(n=self._max_markets)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Users\Usuario\Desktop\NachoMarket\src\polymarket\markets.py", line 434, in select_top_markets
+    markets = self.discover_markets()
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\tenacity\__init__.py", line 331, in wrapped_f
+    return copy(f, *args, **kw)
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\tenacity\__init__.py", line 470, in __call__
+    do = self.iter(retry_state=retry_state)
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\tenacity\__init__.py", line 371, in iter
+    result = action(retry_state)
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\tenacity\__init__.py", line 393, in <lambda>
+    self._add_action_func(lambda rs: rs.outcome.result())
+                                     ~~~~~~~~~~~~~~~~~^^
+  File "C:\Python314\Lib\concurrent\futures\_base.py", line 443, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Python314\Lib\concurrent\futures\_base.py", line 395, in __get_result
+    raise self._exception
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\tenacity\__init__.py", line 473, in __call__
+    result = fn(*args, **kwargs)
+  File "c:\Users\Usuario\Desktop\NachoMarket\src\polymarket\markets.py", line 165, in discover_markets
+    resp = requests.get(
+        f"{GAMMA_API_URL}/markets",
+        params=params,
+        timeout=15,
+    )
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\requests\api.py", line 73, in get
+    return request("get", url, params=params, **kwargs)
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\requests\api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\requests\sessions.py", line 592, in request
+    resp = self.send(prep, **send_kwargs)
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\requests\sessions.py", line 749, in send
+    r.content
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\requests\models.py", line 904, in content
+    self._content = b"".join(self.iter_content(CONTENT_CHUNK_SIZE)) or b""
+                    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Usuario\AppData\Roaming\Python\Python314\site-packages\requests\models.py", line 828, in generate
+    raise ConnectionError(e)
+requests.exceptions.ConnectionError: HTTPSConnectionPool(host='gamma-api.polymarket.com', port=443): Read timed out.
+2026-04-27 20:46:58 | nachomarket | INFO | Esperando 3.0s para que el WebSocket conecte...
+2026-04-27 20:47:00 | nachomarket.client | INFO | Credenciales Level 2 verificadas correctamente
+2026-04-27 20:47:01 | nachomarket.client | INFO | Server time: 1777333627
+2026-04-27 20:47:01 | nachomarket | INFO | Loop principal iniciado (interval=10s, mercados=0)
+2026-04-27 20:47:02 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:47:12 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:47:23 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:47:33 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:47:44 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:47:55 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:48:06 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:48:16 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:48:27 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:48:37 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:48:47 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:48:58 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:49:09 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:49:19 | nachomarket | WARNING | Sin mercados activos — ciclo salteado
+2026-04-27 20:49:30 | nachomarket | INFO | NachoMarket iniciando en modo LIVE
+2026-04-27 20:49:30 | nachomarket.client | INFO | PolymarketClient inicializado en modo LIVE (signature_type=2, signer=0x7B2833091e32343565D6E3Fb99A09e2DF60471a1, funder=0x631dD32783c38D7362126C47B394B89D430aa059)
+2026-04-27 20:49:30 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-27 20:49:31 | nachomarket.client | INFO | Credenciales Level 2 verificadas correctamente
+2026-04-27 20:49:31 | nachomarket.client | INFO | Server time: 1777333777
+2026-04-27 20:49:31 | nachomarket | INFO | Conexión OK
+2026-04-27 20:49:31 | nachomarket.websocket | INFO | Health callback registrado (total: 1)
+2026-04-27 20:49:31 | nachomarket.telegram | INFO | Telegram bot thread started
+2026-04-27 20:49:31 | nachomarket.strategy.market_maker | INFO | Estrategia 'market_maker' inicializada
+2026-04-27 20:49:31 | nachomarket.strategy.rewards_farmer | INFO | Estrategia 'rewards_farmer' inicializada
+2026-04-27 20:49:31 | nachomarket | INFO | Estrategias habilitadas: ['market_maker', 'rewards_farmer']
+2026-04-27 20:49:31 | nachomarket.risk.profitability | INFO | Profitability: 2 mercados cargados
+2026-04-27 20:49:31 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-27 20:49:31 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-27 20:49:31 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-27 20:49:31 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-27 20:49:31 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-27 20:49:31 | nachomarket.websocket | INFO | Health monitor iniciado (threshold=60s)
+2026-04-27 20:49:32 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-27 20:49:33 | nachomarket.telegram | INFO | Telegram bot polling started
+2026-04-29 05:20:40 | nachomarket | INFO | NachoMarket iniciando en modo REVIEW-ONLY
+2026-04-29 05:20:40 | nachomarket | INFO | Ejecutando self-review manual...
+2026-04-29 05:20:40 | nachomarket.review | INFO | Metrics: winrate=100.0% pnl=7.8667 profit_factor=999.00 spread=0.0983 trades=238 errors=0
+2026-04-29 05:20:44 | nachomarket.review | INFO | Review saved: data\reviews\review_20260429_082044.json
+2026-04-29 05:20:44 | nachomarket.review | INFO | Self-review completed: 238 trades analyzed, cost≈$0.00152
+2026-04-29 05:20:58 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-29 05:20:58 | nachomarket.client | INFO | _load_rewards_cache: 20 mercados cargados
+2026-04-29 05:20:58 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER (capital simulado=$166.00 pUSD)
+2026-04-29 05:20:58 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-29 05:20:58 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-29 05:20:58 | nachomarket | INFO | Conexión OK
+2026-04-29 05:20:58 | nachomarket.websocket | INFO | Health callback registrado (total: 1)
+2026-04-29 05:20:58 | nachomarket.telegram | INFO | Telegram bot thread started
+2026-04-29 05:20:58 | nachomarket.strategy.rewards_farmer | INFO | Estrategia 'rewards_farmer' inicializada
+2026-04-29 05:20:58 | nachomarket.strategy.rewards_farmer | INFO | RF v3-multi inicializado: two_sided=True spread_pct=0.50 max_capital=50 max_mkts=5
+2026-04-29 05:20:58 | nachomarket | INFO | Estrategias habilitadas: ['rewards_farmer']
+2026-04-29 05:20:58 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-29 05:20:58 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-29 05:20:58 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-29 05:20:58 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-29 05:20:58 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-29 05:20:58 | nachomarket.websocket | INFO | Health monitor iniciado (threshold=120s)
+2026-04-29 05:20:59 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-29 05:21:00 | nachomarket.telegram | INFO | Telegram bot polling started
+2026-04-29 05:21:18 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-29 05:21:18 | nachomarket.client | INFO | _load_rewards_cache: 20 mercados cargados
+2026-04-29 05:21:18 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER (capital simulado=$166.00 pUSD)
+2026-04-29 05:21:18 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-29 05:21:18 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-29 05:21:18 | nachomarket | INFO | Conexión OK
+2026-04-29 05:21:18 | nachomarket.websocket | INFO | Health callback registrado (total: 1)
+2026-04-29 05:21:18 | nachomarket.telegram | INFO | Telegram bot thread started
+2026-04-29 05:21:18 | nachomarket.strategy.rewards_farmer | INFO | Estrategia 'rewards_farmer' inicializada
+2026-04-29 05:21:18 | nachomarket.strategy.rewards_farmer | INFO | RF v3-multi inicializado: two_sided=True spread_pct=0.50 max_capital=50 max_mkts=5
+2026-04-29 05:21:18 | nachomarket | INFO | Estrategias habilitadas: ['rewards_farmer']
+2026-04-29 05:21:18 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-29 05:21:18 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-29 05:21:18 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-29 05:21:18 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-29 05:21:18 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-29 05:21:18 | nachomarket.websocket | INFO | Health monitor iniciado (threshold=120s)
+2026-04-29 05:21:19 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-29 05:21:19 | nachomarket.telegram | INFO | Telegram bot polling started
+2026-04-29 05:22:17 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-29 05:22:17 | nachomarket.client | INFO | _load_rewards_cache: 20 mercados cargados
+2026-04-29 05:22:17 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER (capital simulado=$166.00 pUSD)
+2026-04-29 05:22:17 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-29 05:22:17 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-29 05:22:17 | nachomarket | INFO | Conexión OK
+2026-04-29 05:22:17 | nachomarket.websocket | INFO | Health callback registrado (total: 1)
+2026-04-29 05:22:17 | nachomarket.telegram | INFO | Telegram bot thread started
+2026-04-29 05:22:17 | nachomarket.strategy.rewards_farmer | INFO | Estrategia 'rewards_farmer' inicializada
+2026-04-29 05:22:17 | nachomarket.strategy.rewards_farmer | INFO | RF v3-multi inicializado: two_sided=True spread_pct=0.50 max_capital=50 max_mkts=5
+2026-04-29 05:22:17 | nachomarket | INFO | Estrategias habilitadas: ['rewards_farmer']
+2026-04-29 05:22:17 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-29 05:22:17 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-29 05:22:17 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-29 05:22:17 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-29 05:22:17 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-29 05:22:17 | nachomarket.websocket | INFO | Health monitor iniciado (threshold=120s)
+2026-04-29 05:22:18 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-29 05:22:18 | nachomarket.telegram | INFO | Telegram bot polling started
+2026-04-29 05:28:31 | nachomarket | INFO | NachoMarket iniciando en modo PAPER
+2026-04-29 05:28:31 | nachomarket.client | INFO | _load_rewards_cache: 20 mercados cargados
+2026-04-29 05:28:31 | nachomarket.client | INFO | PolymarketClient inicializado en modo PAPER (capital simulado=$166.00 pUSD)
+2026-04-29 05:28:31 | nachomarket | INFO | Verificando conexión con Polymarket CLOB...
+2026-04-29 05:28:31 | nachomarket.client | INFO | Paper mode: test_connection OK (simulado)
+2026-04-29 05:28:31 | nachomarket | INFO | Conexión OK
+2026-04-29 05:28:31 | nachomarket.websocket | INFO | Health callback registrado (total: 1)
+2026-04-29 05:28:31 | nachomarket.telegram | INFO | Telegram bot thread started
+2026-04-29 05:28:31 | nachomarket.strategy.rewards_farmer | INFO | Estrategia 'rewards_farmer' inicializada
+2026-04-29 05:28:31 | nachomarket.strategy.rewards_farmer | INFO | RF v3-multi inicializado: two_sided=True spread_pct=0.50 max_capital=50 max_mkts=5
+2026-04-29 05:28:31 | nachomarket | INFO | Estrategias habilitadas: ['rewards_farmer']
+2026-04-29 05:28:31 | nachomarket | INFO | WebSocket feed thread iniciado
+2026-04-29 05:28:31 | nachomarket.websocket | INFO | OrderbookFeed iniciando...
+2026-04-29 05:28:31 | nachomarket | INFO | Scan inicial de mercados...
+2026-04-29 05:28:31 | nachomarket.markets | INFO | Cache de mercados invalidado
+2026-04-29 05:28:31 | nachomarket.markets | INFO | Consultando Gamma API para mercados activos...
+2026-04-29 05:28:31 | nachomarket.websocket | INFO | Health monitor iniciado (threshold=120s)
+2026-04-29 05:28:32 | nachomarket.websocket | INFO | WebSocket conectado a wss://ws-subscriptions-clob.polymarket.com/ws/market
+2026-04-29 05:28:33 | nachomarket.telegram | INFO | Telegram bot polling started

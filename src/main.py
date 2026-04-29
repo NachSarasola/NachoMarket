@@ -131,13 +131,20 @@ class NachoMarketBot:
         # (time_windows, min_mid_change_to_reposition, bot_order_size, competition,
         # loss_reserve_usdc) y a risk.yaml (cost_model, position_sizing).
         # Orden: settings (base) ← markets ← risk → keys de risk pisan, settings es default.
-        merged_strategy_config = {
-            **self._settings,
-            **self._markets_config,
-            **self._risk_config,
-        }
+
+        # --- f. Risk: circuit breaker + position sizer + inventory (DEBE estar primero) ---
+        self._circuit_breaker = CircuitBreaker(
+            self._risk_config,
+            alert_callback=self._cb_alert_handler,
+            scale_down_callback=self._on_scale_down,
+            pause_strategies_callback=self._on_pause_strategies,
+        )
+        self._position_sizer = PositionSizer(self._risk_config)
+        self._inventory = InventoryManager(self._risk_config)
+
+        merged_strategy_config = {**self._settings, **self._markets_config, **self._risk_config}
         _strategy_factories = {
-            "rewards_farmer": lambda: RewardsFarmerStrategy(self._client, merged_strategy_config),
+            "rewards_farmer": lambda: RewardsFarmerStrategy(self._client, merged_strategy_config, circuit_breaker=self._circuit_breaker),
         }
         self._strategies = [
             _strategy_factories[name]()
@@ -148,15 +155,6 @@ class NachoMarketBot:
             "Estrategias habilitadas: %s", [s.name for s in self._strategies]
         )
 
-        # --- f. Risk: circuit breaker + position sizer + inventory ---
-        self._circuit_breaker = CircuitBreaker(
-            self._risk_config,
-            alert_callback=self._cb_alert_handler,
-            scale_down_callback=self._on_scale_down,
-            pause_strategies_callback=self._on_pause_strategies,
-        )
-        self._position_sizer = PositionSizer(self._risk_config)
-        self._inventory = InventoryManager(self._risk_config)
         # Balance cacheado: arranca con capital_total del config, se actualiza cada ciclo
         self._cached_balance: float = float(self._settings.get("capital_total", 300.0))
 
@@ -1050,27 +1048,24 @@ class NachoMarketBot:
                 missing_tokens.append(token_id)
 
             if not td:
-                # Fallback a REST API para desbloquear primer ciclo
+                # Fallback a REST API usando get_best_bid_ask() que es más confiable
+                # que get_orderbook() (el cual puede retornar datos stale 0.01/0.99)
                 try:
-                    book = self._client.get_orderbook(token_id)
-                    bids = book.get("bids", [])
-                    asks = book.get("asks", [])
-                    if bids and asks:
-                        best_bid = float(bids[0]["price"])
-                        best_ask = float(asks[0]["price"])
-                        if best_bid < best_ask:
-                            td["mid_price"] = round((best_bid + best_ask) / 2, 4)
-                            td["spread"] = round(best_ask - best_bid, 4)
-                            td["best_bid"] = best_bid
-                            td["best_ask"] = best_ask
-                            td["orderbook"] = {
-                                "bids": [{"price": b["price"], "size": b["size"]} for b in bids],
-                                "asks": [{"price": a["price"], "size": a["size"]} for a in asks],
-                            }
-                            self._logger.info(
-                                "REST fallback para %s... en %s...",
-                                token_id[:8], market.get("condition_id", "")[:8]
-                            )
+                    best_bid, best_ask = self._client.get_best_bid_ask(token_id)
+                    if best_bid > 0 and best_ask < 1.0 and best_bid < best_ask:
+                        td["mid_price"] = round((best_bid + best_ask) / 2, 4)
+                        td["spread"] = round(best_ask - best_bid, 4)
+                        td["best_bid"] = best_bid
+                        td["best_ask"] = best_ask
+                        # Construir orderbook básico con solo best bid/ask
+                        td["orderbook"] = {
+                            "bids": [{"price": str(best_bid), "size": "1000"}],
+                            "asks": [{"price": str(best_ask), "size": "1000"}],
+                        }
+                        self._logger.info(
+                            "REST fallback para %s... en %s...",
+                            token_id[:8], market.get("condition_id", "")[:8]
+                        )
                 except Exception:
                     pass
 

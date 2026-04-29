@@ -41,7 +41,7 @@ BACKOFF_MAX = 60.0
 BACKOFF_MULTIPLIER = 2.0
 
 # Dead man's switch — pausa trading si no hay mensajes del WS
-DEFAULT_STALENESS_THRESHOLD_SEC = 60.0
+DEFAULT_STALENESS_THRESHOLD_SEC = 120.0
 HEALTH_CHECK_INTERVAL_SEC = 5.0
 
 # Tipo de callback para eventos de salud del feed
@@ -92,6 +92,8 @@ class OrderbookFeed:
         # Referencia a la conexion activa para suscripciones dinamicas
         self._ws_ref: Any | None = None
         self._ws_lock = asyncio.Lock()  # Para send() concurrente
+        # Event loop del thread del WebSocket (para enviar desde otros threads)
+        self._ws_loop: asyncio.AbstractEventLoop | None = None
 
         # --- Dead man's switch ---
         self._last_message_time: float = 0.0
@@ -153,9 +155,15 @@ class OrderbookFeed:
 
         logger.info(f"Suscrito a {token_id[:8]}... (condition={condition_id[:8] if condition_id else 'N/A'}...)")
 
-        # Si ya hay una conexion activa, suscribir en caliente
-        if self._connected and self._ws_ref is not None:
-            asyncio.create_task(self._send_subscribe(token_id, condition_id))
+        # Si ya hay una conexion activa, suscribir en caliente desde el loop del WS
+        if self._connected and self._ws_ref is not None and self._ws_loop is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_subscribe(token_id, condition_id),
+                    self._ws_loop,
+                )
+            except RuntimeError:
+                logger.debug(f"No se pudo suscribir en caliente a {token_id[:8]}... (loop cerrado)")
 
     def unsubscribe(self, token_id: str) -> None:
         """Elimina todas las suscripciones de un token."""
@@ -289,6 +297,7 @@ class OrderbookFeed:
         Este metodo corre indefinidamente hasta que stop() sea llamado.
         """
         self._running = True
+        self._ws_loop = asyncio.get_event_loop()
         backoff = BACKOFF_BASE
 
         logger.info("OrderbookFeed iniciando...")
@@ -383,20 +392,23 @@ class OrderbookFeed:
             await self._send_subscribe_ws(self._ws_ref, token_id, condition_id)
 
     async def _send_subscribe_ws(self, ws: Any, token_id: str, condition_id: str) -> None:
-        """Envia el mensaje de suscripcion al WebSocket."""
+        """Envia el mensaje de suscripcion al WebSocket.
+
+        Formato oficial Polymarket:
+        {"type": "market", "assets_ids": [token_id], "custom_feature_enabled": true}
+        """
         msg: dict[str, Any] = {
-            "type": "subscribe",
+            "type": "market",
             "assets_ids": [token_id],
+            "custom_feature_enabled": True,
         }
-        if condition_id:
-            msg["markets"] = [condition_id]
 
         async with self._ws_lock:
             try:
                 await ws.send(json.dumps(msg))
-                logger.debug(f"Suscripcion enviada: {token_id[:8]}...")
+                logger.debug("Suscripcion enviada: %s...", token_id[:8])
             except Exception:
-                logger.exception(f"Error enviando suscripcion para {token_id[:8]}...")
+                logger.exception("Error enviando suscripcion para %s...", token_id[:8])
 
     def _get_condition_id(self, token_id: str) -> str:
         """Busca el condition_id para un token_id."""
@@ -449,8 +461,28 @@ class OrderbookFeed:
     async def _dispatch_event(self, event: dict[str, Any]) -> None:
         """Despacha un evento segun su tipo."""
         event_type = event.get("event_type", event.get("type", ""))
-        token_id = event.get("asset_id", "")
 
+        if event_type == "price_change":
+            changes = event.get("price_changes", [])
+            if changes:
+                for change in changes:
+                    tid = change.get("asset_id", "")
+                    if tid:
+                        with self._lock:
+                            subscribed = tid in self._subscriptions
+                        if subscribed:
+                            await self._handle_price_change(tid, change)
+            else:
+                # Fallback: formato directo (backward compatibility)
+                tid = event.get("asset_id", "")
+                if tid:
+                    with self._lock:
+                        subscribed = tid in self._subscriptions
+                    if subscribed:
+                        await self._handle_price_change(tid, event)
+            return
+
+        token_id = event.get("asset_id", "")
         if not token_id:
             return
 
@@ -460,14 +492,16 @@ class OrderbookFeed:
 
         if event_type == "book":
             await self._handle_book_snapshot(token_id, event)
-        elif event_type == "price_change":
-            await self._handle_price_change(token_id, event)
         elif event_type == "tick_size_change":
-            logger.debug(f"tick_size_change para {token_id[:8]}...")
+            logger.debug("tick_size_change para %s...", token_id[:8])
         elif event_type in ("last_trade_price", "trade"):
-            logger.debug(f"Trade event para {token_id[:8]}...")
+            logger.debug("Trade event para %s...", token_id[:8])
+        elif event_type == "best_bid_ask":
+            logger.debug("best_bid_ask para %s...", token_id[:8])
+        elif event_type in ("new_market", "market_resolved"):
+            logger.debug("%s: %s", event_type, token_id[:8])
         else:
-            logger.debug(f"Evento desconocido '{event_type}' para {token_id[:8]}...")
+            logger.debug("Evento desconocido '%s' para %s...", event_type, token_id[:8])
 
     # ------------------------------------------------------------------
     # Procesamiento de eventos

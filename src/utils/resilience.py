@@ -6,7 +6,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
-    retry_if_not_result,
+    retry_if_exception,
     before_sleep_log,
 )
 
@@ -15,12 +15,16 @@ logger = logging.getLogger("nachomarket.resilience")
 
 def _is_permanent_error(exc: Exception) -> bool:
     """Retorna True si el error es permanente y no vale la pena reintentar."""
+    # Errores de programacion/cliente — no se arreglan con retry
+    if isinstance(exc, (AttributeError, TypeError, ValueError)):
+        return True
+
     # Requests HTTPError
     if isinstance(exc, HTTPError):
         if 400 <= exc.response.status_code < 500 and exc.response.status_code != 429:
             return True
     
-    # PolyApiException oficial de py-clob-client
+    # PolyApiException oficial de py-clob-client-v2
     if hasattr(exc, 'status_code'):
         status = getattr(exc, 'status_code')
         if status in (404, 405, 400, 401, 403):
@@ -36,6 +40,11 @@ def _is_permanent_error(exc: Exception) -> bool:
     return False
 
 
+def _should_retry(exc: Exception) -> bool:
+    """Retorna True si el error amerita retry."""
+    return not _is_permanent_error(exc)
+
+
 def retry_with_backoff(
     max_attempts: int = 3,
     min_wait: float = 1.0,
@@ -48,7 +57,7 @@ def retry_with_backoff(
     return retry(
         stop=stop_after_attempt(max_attempts),
         wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
-        retry=retry_if_exception_type(exceptions) & retry_if_not_result(_is_permanent_error),
+        retry=retry_if_exception_type(exceptions) & retry_if_exception(_should_retry),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )

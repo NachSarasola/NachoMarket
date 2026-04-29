@@ -5,6 +5,7 @@ Uso:
     python scripts/generate_api_keys.py
 
 Requiere que POLYMARKET_PRIVATE_KEY esté en tu archivo .env
+Lee signature_type desde config/settings.yaml para generar credenciales consistentes.
 """
 
 import os
@@ -33,21 +34,44 @@ if not private_key:
     print()
     sys.exit(1)
 
+# Leer signature_type desde config/settings.yaml
+config_path = Path(__file__).parent.parent / "config" / "settings.yaml"
+signature_type = 2  # default oficial (GNOSIS_SAFE)
+if config_path.exists():
+    try:
+        import yaml
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+            signature_type = cfg.get("signature_type", 2)
+    except Exception:
+        pass
+
+funder = None
+if signature_type == 2:
+    funder = os.environ.get("POLYMARKET_PROXY_ADDRESS")
+    if not funder:
+        print()
+        print("ERROR: signature_type=2 requiere POLYMARKET_PROXY_ADDRESS en .env")
+        print()
+        sys.exit(1)
+
 print()
-print("Conectando con Polymarket para generar credenciales API...")
+print(f"Conectando con Polymarket para generar credenciales API...")
+print(f"  signature_type={signature_type}  funder={funder or 'N/A'}")
 print()
 
 try:
-    from py_clob_client.client import ClobClient
+    from py_clob_client_v2 import ClobClient
 
     client = ClobClient(
         host="https://clob.polymarket.com",
         chain_id=137,
         key=private_key,
-        signature_type=1,
+        signature_type=signature_type,
+        funder=funder,
     )
 
-    creds = client.create_or_derive_api_creds()
+    creds = client.create_or_derive_api_key()
 
     print("=" * 60)
     print("CREDENCIALES GENERADAS CORRECTAMENTE")
@@ -66,35 +90,33 @@ try:
     print()
 
     # Actualizar automáticamente (sin preguntar)
-    if True:
-        import re
-        contenido = env_path.read_text()
-        # Usar regex para reemplazar toda la línea, evitando duplicados
-        contenido = re.sub(
-            r"^POLYMARKET_API_KEY=.*$",
-            f"POLYMARKET_API_KEY={creds.api_key}",
-            contenido,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        contenido = re.sub(
-            r"^POLYMARKET_SECRET=.*$",
-            f"POLYMARKET_SECRET={creds.api_secret}",
-            contenido,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        contenido = re.sub(
-            r"^POLYMARKET_PASSPHRASE=.*$",
-            f"POLYMARKET_PASSPHRASE={creds.api_passphrase}",
-            contenido,
-            count=1,
-            flags=re.MULTILINE,
-        )
-        env_path.write_text(contenido)
-        print()
-        print(".env actualizado correctamente.")
-        print()
+    import re
+    contenido = env_path.read_text()
+    contenido = re.sub(
+        r"^POLYMARKET_API_KEY=.*$",
+        f"POLYMARKET_API_KEY={creds.api_key}",
+        contenido,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    contenido = re.sub(
+        r"^POLYMARKET_SECRET=.*$",
+        f"POLYMARKET_SECRET={creds.api_secret}",
+        contenido,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    contenido = re.sub(
+        r"^POLYMARKET_PASSPHRASE=.*$",
+        f"POLYMARKET_PASSPHRASE={creds.api_passphrase}",
+        contenido,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    env_path.write_text(contenido)
+    print()
+    print(".env actualizado correctamente.")
+    print()
 
 except ImportError:
     print("ERROR: Falta instalar dependencias.")
@@ -105,6 +127,6 @@ except Exception as e:
     print()
     print("Posibles causas:")
     print("  - Clave privada incorrecta o mal formateada")
-    print("  - Sin conexión a internet")
-    print("  - Polymarket API temporalmente caída")
+    print("  - Sin conexion a internet")
+    print("  - Polymarket API temporalmente caida")
     sys.exit(1)

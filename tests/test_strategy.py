@@ -61,6 +61,41 @@ def dir_config() -> dict:
     }
 
 
+def _make_mm_market_data(
+    condition_id: str = "cond_1",
+    token_id: str = "tok_1",
+    mid_price: float = 0.5,
+    spread: float = 0.05,
+    best_bid: float | None = None,
+    best_ask: float | None = None,
+    token_inventory: dict[str, float] | None = None,
+) -> dict:
+    """Construye market_data valido para MarketMakerStrategy.evaluate()."""
+    if best_bid is None:
+        best_bid = round(mid_price - spread / 2, 4)
+    if best_ask is None:
+        best_ask = round(mid_price + spread / 2, 4)
+    return {
+        "condition_id": condition_id,
+        "spread": spread,
+        "mid_price": mid_price,
+        "tokens": [{"token_id": token_id}],
+        "token_data": {
+            token_id: {
+                "mid_price": mid_price,
+                "spread": spread,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "orderbook": {
+                    "bids": [{"price": best_bid, "size": 100}],
+                    "asks": [{"price": best_ask, "size": 100}],
+                },
+            }
+        },
+        "token_inventory": token_inventory or {},
+    }
+
+
 # ------------------------------------------------------------------
 # Tests: Signal y Trade dataclasses
 # ------------------------------------------------------------------
@@ -173,12 +208,9 @@ class TestBaseStrategy:
         base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
         try:
             strategy = MarketMakerStrategy(client, mm_config)
-            trades = strategy.run({
-                "spread": 0.05,
-                "mid_price": 0.5,
-                "token_id": "t1",
-                "condition_id": "cond_1",
-            })
+            trades = strategy.run(_make_mm_market_data(
+                condition_id="cond_1", token_id="t1", mid_price=0.5, spread=0.05
+            ))
             assert len(trades) > 0
             assert all(isinstance(t, Trade) for t in trades)
             assert all(t.strategy_name == "market_maker" for t in trades)
@@ -204,22 +236,19 @@ class TestMarketMaker:
 
     def test_evaluate_returns_signals(self, client, mm_config) -> None:
         strategy = MarketMakerStrategy(client, mm_config)
-        signals = strategy.evaluate({
-            "token_id": "tok_123",
-            "mid_price": 0.5,
-            "condition_id": "cond_1",
-        })
+        signals = strategy.evaluate(_make_mm_market_data(
+            token_id="tok_123", condition_id="cond_1", mid_price=0.5, spread=0.05
+        ))
         assert len(signals) > 0
         assert all(isinstance(s, Signal) for s in signals)
         assert all(s.strategy_name == "market_maker" for s in signals)
 
     def test_evaluate_generates_bids_and_asks(self, client, mm_config) -> None:
         strategy = MarketMakerStrategy(client, mm_config)
-        signals = strategy.evaluate({
-            "token_id": "tok_1",
-            "mid_price": 0.5,
-            "condition_id": "c1",
-        })
+        signals = strategy.evaluate(_make_mm_market_data(
+            token_id="tok_1", condition_id="c1", mid_price=0.5, spread=0.05,
+            token_inventory={"tok_1": 10.0},
+        ))
         sides = {s.side for s in signals}
         assert "BUY" in sides
         assert "SELL" in sides
@@ -290,12 +319,9 @@ class TestMarketMaker:
         strategy = MarketMakerStrategy(client, mm_config)
         # Paper mode: tick_size = 0.01, so 2*tick = 0.02
         # spread = 0.05 > 0.02 → signals
-        signals = strategy.evaluate({
-            "token_id": "tok_1",
-            "mid_price": 0.5,
-            "condition_id": "c1",
-            "spread": 0.05,
-        })
+        signals = strategy.evaluate(_make_mm_market_data(
+            token_id="tok_1", condition_id="c1", mid_price=0.5, spread=0.05
+        ))
         assert len(signals) > 0
 
     def test_inventory_skew_adjusts_quotes(self, client, mm_config) -> None:
@@ -343,7 +369,7 @@ class TestMarketMaker:
         assert len(buy_signals) == 0
 
     def test_execute_updates_inventory(self, client, mm_config, tmp_path) -> None:
-        """execute() debe actualizar el inventario interno."""
+        """execute() NO actualiza inventario interno (solo tras fill confirmado)."""
         import src.strategy.base as base_mod
         original = base_mod.TRADES_FILE
         base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
@@ -353,10 +379,14 @@ class TestMarketMaker:
 
             signal = strategy._make_signal("m1", "t1", "BUY", 0.45, 5.0, 0.9)
             strategy.execute([signal])
+            # Post-only GTC: la orden puede no llenarse → inventario no cambia
+            assert strategy.get_inventory("t1") == 0.0
+
+            # Solo _update_inventory (llamado tras fill confirmado) cambia el inventario
+            strategy._update_inventory("t1", "BUY", 5.0)
             assert strategy.get_inventory("t1") == 5.0
 
-            signal_sell = strategy._make_signal("m1", "t1", "SELL", 0.55, 3.0, 0.9)
-            strategy.execute([signal_sell])
+            strategy._update_inventory("t1", "SELL", 3.0)
             assert strategy.get_inventory("t1") == 2.0
         finally:
             base_mod.TRADES_FILE = original
@@ -422,12 +452,9 @@ class TestMarketMaker:
         base_mod.TRADES_FILE = tmp_path / "trades.jsonl"
         try:
             strategy = MarketMakerStrategy(client, mm_config)
-            market_data = {
-                "spread": 0.05,
-                "mid_price": 0.5,
-                "token_id": "t1",
-                "condition_id": "cond_1",
-            }
+            market_data = _make_mm_market_data(
+                condition_id="cond_1", token_id="t1", mid_price=0.5, spread=0.05
+            )
 
             # Primera ejecucion: debe ejecutar
             trades1 = strategy.run(market_data)
@@ -451,12 +478,10 @@ class TestMarketMaker:
         strategy = MarketMakerStrategy(client, mm_config)
         strategy._paused_sides["tok_1"] = {"BUY"}
 
-        signals = strategy.evaluate({
-            "token_id": "tok_1",
-            "mid_price": 0.5,
-            "condition_id": "c1",
-            "spread": 0.05,
-        })
+        signals = strategy.evaluate(_make_mm_market_data(
+            token_id="tok_1", condition_id="c1", mid_price=0.5, spread=0.05,
+            token_inventory={"tok_1": 10.0},
+        ))
 
         buy_signals = [s for s in signals if s.side == "BUY"]
         sell_signals = [s for s in signals if s.side == "SELL"]

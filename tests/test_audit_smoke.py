@@ -50,12 +50,12 @@ def test_cb_above_floor_no_trigger():
     assert not cb.is_triggered()
 
 
-def test_position_sizer_clamps_at_5pct_of_150():
+def test_position_sizer_clamps_at_20usd():
     _, risk, _, _ = _load_configs()
     ps = PositionSizer(risk)
     size = ps.size_for_signal(capital=150, estimated_prob=0.99, market_price=0.01)
-    # max_position_usdc=7.5 (5% de $150) y kelly clamp 0.05
-    assert size <= 7.5
+    # max_position_usdc=20.0 para farming de rewards
+    assert size <= 20.0
 
 
 def test_market_maker_reads_merged_config(monkeypatch):
@@ -75,10 +75,10 @@ def test_market_maker_reads_merged_config(monkeypatch):
     assert 0 in mm._prime_hours
     assert mm._prime_boost == 1.3
     # settings.yaml keys
-    assert mm._refresh_seconds == 90
-    assert mm._order_size == 5.5
-    assert mm._near_resolution_hours == 336
-    assert mm._spread_offset == 0.02
+    assert mm._refresh_seconds == 180
+    assert mm._order_size == 7.0
+    assert mm._near_resolution_hours == 300
+    assert mm._spread_offset == 0.012
 
 
 def test_trade_has_enriched_fields():
@@ -123,14 +123,15 @@ def test_excluded_keywords_in_config():
 
 def test_diversification_cap_set():
     _, _, markets_cfg, _ = _load_configs()
-    assert markets_cfg["diversification"]["max_per_category"] == 2
+    assert markets_cfg["diversification"]["max_per_category"] == 3
 
 
 def test_strategies_enabled_concentration():
     settings, _, _, _ = _load_configs()
     enabled = settings["strategies_enabled"]
-    assert "market_maker" in enabled
+    # RF es la estrategia principal; MM desactivado para concentrar capital
     assert "rewards_farmer" in enabled
+    # assert "market_maker" in enabled  # Desactivado temporalmente
     # Strategies que no compensan con $150
     assert "multi_arb" not in enabled
     assert "stat_arb" not in enabled
@@ -143,16 +144,16 @@ def test_kelly_fraction_quarter():
     assert risk["position_sizing"]["kelly_fraction"] == 0.25
 
 
-def test_capital_total_150():
+def test_capital_total_166():
     settings, risk, _, _ = _load_configs()
-    assert settings["capital_total"] == 150
-    assert settings["max_daily_drawdown"] == 7.5
-    assert risk["circuit_breakers"]["max_daily_loss_usdc"] == 7.5
+    assert settings["capital_total"] == 166
+    assert settings["max_daily_drawdown"] == 8.3
+    assert risk["circuit_breakers"]["max_daily_loss_usdc"] == 8.3
 
 
 def test_min_volume_and_resolution_window():
     settings, _, markets_cfg, _ = _load_configs()
-    assert markets_cfg["min_daily_volume_usd"] == 40000
-    assert markets_cfg["small_market_volume_usd"] == 5000
-    assert markets_cfg["filters"]["min_time_to_resolution_hours"] == 336
+    assert markets_cfg["min_daily_volume_usd"] == 500
+    assert markets_cfg["small_market_volume_usd"] == 200
+    assert markets_cfg["filters"]["min_time_to_resolution_hours"] == 168
     assert settings["near_resolution_hours"] == 336

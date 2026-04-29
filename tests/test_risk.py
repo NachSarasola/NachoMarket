@@ -151,12 +151,12 @@ class TestPositionSizer:
         assert size == 10.0
 
     def test_can_trade_delegates_correctly(self) -> None:
-        assert self.sizer.can_trade(5, 400) is True
-        assert self.sizer.can_trade(25, 400) is False
+        assert self.sizer.can_trade(5, 400) is True     # 5 < 380 (95%)
+        assert self.sizer.can_trade(390, 400) is False  # 390 > 380
 
     def test_can_trade_with_new_size(self) -> None:
-        assert self.sizer.can_trade(10, 400, new_size=5) is True   # 15 < 20
-        assert self.sizer.can_trade(15, 400, new_size=10) is False  # 25 > 20
+        assert self.sizer.can_trade(10, 400, new_size=5) is True    # 15 < 380
+        assert self.sizer.can_trade(370, 400, new_size=20) is False # 390 > 380
 
 
 # ===========================================================================

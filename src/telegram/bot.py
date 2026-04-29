@@ -23,12 +23,18 @@ Comandos disponibles:
     /demote      — Demotear estrategia al stage anterior
     /blacklist   — Mercados en blacklist activa
     /block       — Bloquear mercado temporalmente
+    /unblock     — Desbloquear mercado de la blacklist
+    /logs        — Ultimas N lineas del log general
+    /strategies  — Lista estrategias con estado y PnL
+    /config      — Mostrar configuracion
+    /force_reconcile — Forzar reconciliacion on-chain
     /health      — Estado del WebSocket y sistema
     /errors      — Ultimos errores consecutivos
     /review      — Forzar self-review inmediato
     /pause       — Pausa instantanea del trading
     /resume      — Reanuda el trading
-    /kill        — Para el bot completamente
+    /kill        — Para el bot completamente (requiere confirmacion)
+    /confirm_kill — Confirmar detencion del bot
 """
 
 import asyncio
@@ -36,6 +42,8 @@ import json
 import logging
 import os
 import threading
+import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -68,12 +76,21 @@ def send_alert(message: str) -> None:
     Args:
         message: Texto de la alerta (acepta Markdown de Telegram).
     """
-    if _bot_instance is None or _event_loop is None or _event_loop.is_closed():
-        return
-    asyncio.run_coroutine_threadsafe(
-        _bot_instance._send_message(message),
-        _event_loop,
-    )
+    from tenacity import retry, stop_after_attempt, wait_exponential
+
+    def _send() -> None:
+        if _bot_instance is None or _event_loop is None or _event_loop.is_closed():
+            return
+        asyncio.run_coroutine_threadsafe(
+            _bot_instance._send_message(message),
+            _event_loop,
+        )
+
+    retry_cfg = retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
+    try:
+        retry_cfg(_send)()
+    except Exception:
+        logger.exception("Failed to send Telegram alert after retries")
 
 
 class TelegramBot:
@@ -91,6 +108,11 @@ class TelegramBot:
         self._controller = bot_controller
         self._app: Application | None = None
         self._stop_event: asyncio.Event | None = None
+        self._last_command_time: dict[str, float] = {}
+        self._pending_kill_user_id: int | None = None
+        self._pending_kill_time: float = 0.0
+        self._pnl_cache: tuple[datetime, dict[str, float]] | None = None
+        self._start_time = datetime.now(timezone.utc)
 
         # Auto-arrancar en thread daemon si hay token configurado
         if self._token:
@@ -142,6 +164,9 @@ class TelegramBot:
         self._stop_event = asyncio.Event()
         self._app = Application.builder().token(self._token).build()
 
+        # Middleware global de errores
+        self._app.add_error_handler(self._error_handler)
+
         # Registrar handlers
         handlers = [
             ("start", self._cmd_start),
@@ -150,10 +175,12 @@ class TelegramBot:
             ("pause", self._cmd_pause),
             ("resume", self._cmd_resume),
             ("kill", self._cmd_kill),
+            ("confirm_kill", self._cmd_confirm_kill),
             ("review", self._cmd_review),
             ("markets", self._cmd_markets),
             ("pnl", self._cmd_pnl),
             ("block", self._cmd_block),
+            ("unblock", self._cmd_unblock),
             ("drawdown", self._cmd_drawdown),
             ("stats", self._cmd_stats),
             ("attribution", self._cmd_attribution),
@@ -164,9 +191,17 @@ class TelegramBot:
             ("positions", self._cmd_positions),
             ("health", self._cmd_health),
             ("errors", self._cmd_errors),
+            ("logs", self._cmd_logs),
+            ("strategies", self._cmd_strategies),
+            ("config", self._cmd_config),
+            ("force_reconcile", self._cmd_force_reconcile),
         ]
         for name, handler in handlers:
             self._app.add_handler(CommandHandler(name, handler))
+
+        # Tareas de fondo
+        asyncio.create_task(self._heartbeat_loop())
+        asyncio.create_task(self._daily_summary_loop())
 
         async with self._app:
             await self._app.start()
@@ -217,7 +252,7 @@ class TelegramBot:
         await self._send_message(msg)
 
     # ------------------------------------------------------------------
-    # Seguridad
+    # Seguridad y rate-limiting
     # ------------------------------------------------------------------
 
     def _is_authorized(self, update: Update) -> bool:
@@ -242,6 +277,21 @@ class TelegramBot:
         """Respuesta silenciosa para usuarios no autorizados."""
         if update.message:
             await update.message.reply_text("Acceso no autorizado.")
+
+    def _check_rate_limit(self, user_id: str) -> bool:
+        """Devuelve True si el usuario puede ejecutar el comando (>=1s desde el ultimo)."""
+        now = time.time()
+        last = self._last_command_time.get(user_id, 0.0)
+        if now - last < 1.0:
+            return False
+        self._last_command_time[user_id] = now
+        return True
+
+    async def _error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handler global de errores no capturados en handlers de Telegram."""
+        logger.exception("Unhandled exception in Telegram handler")
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text("❌ Error interno. Revisá /errors.")
 
     # ------------------------------------------------------------------
     # Helpers de formato
@@ -273,6 +323,11 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
 
         text = (
             "🤖 *NachoMarket — Bot de Trading*\n"
@@ -284,18 +339,23 @@ class TelegramBot:
             "  /positions → Posiciones detalladas (mid, share, PnL)\n"
             "  /markets   → Mercados activos con inventory\n"
             "  /health    → Estado WebSocket y sistema\n"
+            "  /logs      → Últimas líneas del log\n"
             "\n"
             "*📈 Rendimiento*\n"
             "  /pnl          → PnL día / semana / mes\n"
             "  /stats        → Sharpe / Sortino / Calmar 30d\n"
             "  /attribution  → Top/bottom estrategias y mercados\n"
             "  /drawdown     → Rolling drawdown 7/15/30d\n"
+            "  /strategies   → Estado y PnL de estrategias\n"
             "\n"
             "*⚙️ Control*\n"
             "  /pause   → Pausar trading (cancela órdenes)\n"
             "  /resume  → Reanudar trading\n"
             "  /kill    → Parar el bot completamente\n"
+            "  /confirm_kill → Confirmar detención\n"
             "  /review  → Forzar self-review inmediato\n"
+            "  /config  → Ver configuración\n"
+            "  /force_reconcile → Reconciliación on-chain\n"
             "\n"
             "*🔧 Estrategias*\n"
             "  /stages              → Stage actual de cada estrategia\n"
@@ -305,6 +365,7 @@ class TelegramBot:
             "*🛡️ Seguridad*\n"
             "  /blacklist              → Mercados en blacklist activa\n"
             "  /block <id> <horas>     → Bloquear mercado temporalmente\n"
+            "  /unblock <id>           → Desbloquear mercado\n"
             "  /errors                 → Últimos errores consecutivos\n"
             "\n"
             "_Notificaciones automáticas: trades, errores, circuit breaker, reviews, stage changes_"
@@ -316,6 +377,11 @@ class TelegramBot:
         """Estado resumido del bot — una pantalla rápida."""
         if not self._is_authorized(update):
             await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
             return
         if not update.message:
             return
@@ -339,17 +405,28 @@ class TelegramBot:
         active_strats = [s.name for s in strategies if getattr(s, "is_active", True)]
         inactive_strats = [s.name for s in strategies if not getattr(s, "is_active", True)]
 
+        open_orders = status.get('open_orders', 0)
+        open_exposure = status.get('open_exposure', 0.0)
+        inventory_exposure = status.get('inventory_exposure', 0.0)
+
         lines = [
             f"{state_icon} *Estado:* `{state.upper()}`",
-            f"💰 *Exposure:* `{status.get('total_exposure', 0):.2f}` USDC",
+            f"💰 *Balance:* `${status.get('balance_usdc', 0):.2f}` USDC",
+            f"📊 *Exposure:* `${status.get('total_exposure', 0):.2f}` USDC",
+        ]
+        if open_exposure > 0:
+            lines.append(f"   └ En ordenes: `{open_exposure:.2f}` USDC")
+        if inventory_exposure > 0:
+            lines.append(f"   └ En posiciones: `{inventory_exposure:.2f}` USDC")
+        lines.extend([
             f"📈 *PnL hoy:* `{status.get('daily_pnl', 0):+.4f}` USDC",
             f"📊 *Trades hoy:* `{today_trades}`",
-            f"📋 *Órdenes abiertas:* `{status.get('open_orders', 0)}`",
-            f"🏪 *Mercados activos:* `{len(positions)}`",
-            f"⚡ *Estrategias:* {', '.join(active_strats) or 'ninguna'}",
-        ]
+            f"📋 *Ordenes abiertas:* `{open_orders}`",
+            f"🏪 *Mercados:* `{len(positions)}` de `{status.get('active_markets', 0)}`",
+            f"⚡ *Estrategias:* `{'`, `'.join(active_strats) if active_strats else 'ninguna'}`",
+        ])
         if inactive_strats:
-            lines.append(f"   ⏸️ Pausadas: {', '.join(inactive_strats)}")
+            lines.append(f"   ⏸️ Pausadas: `{'`, `'.join(inactive_strats)}`")
 
         lines.extend([
             f"🔁 *Errores:* `{status.get('consecutive_errors', 0)}`",
@@ -377,6 +454,11 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
@@ -392,8 +474,10 @@ class TelegramBot:
         for pos in positions.values():
             total_deployed += abs(pos.get("yes", 0)) + abs(pos.get("no", 0))
 
-        balance = status.get("balance", 0.0)
+        balance = status.get("balance_usdc", 0.0)
         exposure = status.get("total_exposure", 0.0)
+        open_exposure = status.get("open_exposure", 0.0)
+        inventory_exposure = status.get("inventory_exposure", 0.0)
         daily_pnl = status.get("daily_pnl", 0.0)
         open_orders = status.get("open_orders", 0)
 
@@ -404,14 +488,20 @@ class TelegramBot:
             "💰 *Balance Detail*",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"",
-            f"🏦 *Balance USDC:* `{balance:.2f}`",
+            f"🏦 *Balance pUSD:* `{balance:.2f}`",
             f"📊 *Exposure total:* `{exposure:.2f}`",
-            f"💵 *Capital desplegado:* `{total_deployed:.2f}`",
+        ]
+        if open_exposure > 0:
+            lines.append(f"   └ En órdenes abiertas: `{open_exposure:.2f}`")
+        if inventory_exposure > 0:
+            lines.append(f"   └ En posiciones llenadas: `{inventory_exposure:.2f}`")
+        lines.extend([
+            f"💵 *Capital desplegado (fills):* `{total_deployed:.2f}`",
             f"📈 *PnL diario:* {pnl_icon} `{daily_pnl:+.4f}`",
             f"📋 *Órdenes abiertas:* `{open_orders}`",
             f"",
             f"*Utilización:* `{((exposure / balance) * 100):.1f}%`" if balance > 0 else "",
-        ]
+        ])
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -419,6 +509,11 @@ class TelegramBot:
         """Posiciones detalladas con mid, participation share, inventory y horas activo."""
         if not self._is_authorized(update):
             await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
             return
         if not update.message:
             return
@@ -467,6 +562,11 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
@@ -509,6 +609,11 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
@@ -550,7 +655,7 @@ class TelegramBot:
                     icon = "🟢" if roi_pct >= 0 else "🔴"
                     lines.append(
                         f"   {icon} `{entry['question'][:25]}` "
-                        f"ROI:`{roi_pct:.1f}%` PnL:`${entry['total_pnl']:.2f}`"
+                        f"ROI: `{roi_pct:.1f}%` PnL: `${entry['total_pnl']:.2f}`"
                     )
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -560,11 +665,16 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
         try:
-            from src.analysis.performance_metrics import compute_metrics_from_trades_file  # noqa: PLC0415
+            from src.utils.performance_metrics import compute_metrics_from_trades_file  # noqa: PLC0415
             metrics = compute_metrics_from_trades_file(
                 str(TRADES_FILE),
                 window_days=30,
@@ -597,13 +707,11 @@ class TelegramBot:
             "📊 *Métricas Cuantitativas — 30 días*\n" + "━" * 22,
             f"",
             f"{_grade(sharpe, 1.5, 0.5)} Sharpe Ratio: `{sharpe:.3f}`",
-            f"🟡 Sortino Ratio: `{sortino:.3f}`",
+            f"{_grade(sortino, 1.5, 0.5)} Sortino Ratio: `{sortino:.3f}`",
             f"{_grade(calmar, 2.0, 0.5)} Calmar Ratio: `{calmar:.3f}`",
             f"{_grade(-max_dd, -20, -50)} Max Drawdown: `${max_dd:.4f}`",
             f"💰 Return total: `${total_return:+.4f}`",
             f"🔢 Trades analizados: `{count}`",
-            f"",
-            "_Benchmark: Sharpe>1.5 🟢, >0.5 🟡, <0.5 🔴_",
         ]
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -612,6 +720,11 @@ class TelegramBot:
         """Top y bottom estrategias/mercados por PnL."""
         if not self._is_authorized(update):
             await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
             return
         if not update.message:
             return
@@ -629,6 +742,11 @@ class TelegramBot:
         """Rolling drawdown 7/15/30d y estado de scale-down."""
         if not self._is_authorized(update):
             await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
             return
         if not update.message:
             return
@@ -675,12 +793,19 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
         if not self._controller:
             await update.message.reply_text("❌ Bot controller no conectado.")
             return
+
+        status = self._controller.get_status()
 
         # WebSocket status
         feed = getattr(self._controller, "_feed", None)
@@ -702,11 +827,16 @@ class TelegramBot:
         last_trade_time = self._get_last_trade_time()
         last_trade_str = f"{last_trade_time:.0f}m atrás" if last_trade_time is not None else "n/a"
 
-        # Uptime (aproximado desde inicio del proceso)
-        import time as time_module
-        uptime_sec = time_module.time() % 86400  # Aproximado
-        uptime_h = int(uptime_sec // 3600)
-        uptime_m = int((uptime_sec % 3600) // 60)
+        # Uptime real del bot
+        start_time = status.get("start_time", 0.0)
+        if start_time > 0:
+            uptime_sec = time.time() - start_time
+            uptime_h = int(uptime_sec // 3600)
+            uptime_m = int((uptime_sec % 3600) // 60)
+            uptime_d = int(uptime_sec // 86400)
+            uptime_str = f"{uptime_d}d {uptime_h}h {uptime_m}m" if uptime_d > 0 else f"{uptime_h}h {uptime_m}m"
+        else:
+            uptime_str = "n/a"
 
         lines = [
             "🏥 *Health Check*\n" + "━" * 22,
@@ -714,7 +844,7 @@ class TelegramBot:
             f"{ws_icon} WebSocket: {'Conectado' if ws_connected else 'DESCONECTADO'}",
             f"{api_icon} Polymarket API: {'OK' if api_ok else 'ERROR'}",
             f"🕐 Último trade: `{last_trade_str}`",
-            f"⏱️ Uptime: `{uptime_h}h {uptime_m}m`",
+            f"⏱️ Uptime: `{uptime_str}`",
             f"",
             f"📊 Loop interval: `{getattr(self._controller, '_loop_interval', '?')}s`",
             f"🔄 Mercados activos: `{len(getattr(self._controller, '_active_markets', []))}`",
@@ -726,6 +856,11 @@ class TelegramBot:
         """Muestra últimos errores consecutivos y errores recientes del log."""
         if not self._is_authorized(update):
             await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
             return
         if not update.message:
             return
@@ -766,6 +901,11 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
@@ -780,12 +920,19 @@ class TelegramBot:
             "Usá `/resume` para reanudar.",
             parse_mode="Markdown",
         )
+        user_id_val = update.effective_user.id if update.effective_user else "?"
+        send_alert(f"⏸️ Bot PAUSADO por usuario `{user_id_val}` via Telegram")
         logger.info("Bot paused via Telegram")
 
     async def _cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Reanuda el trading."""
         if not self._is_authorized(update):
             await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
             return
         if not update.message:
             return
@@ -801,18 +948,60 @@ class TelegramBot:
             "Bot operando normalmente.",
             parse_mode="Markdown",
         )
+        user_id_val = update.effective_user.id if update.effective_user else "?"
+        send_alert(f"▶️ Bot REANUDADO por usuario `{user_id_val}` via Telegram")
         logger.info("Bot resumed via Telegram")
 
     async def _cmd_kill(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Para el bot completamente."""
+        """Para el bot completamente (requiere confirmacion)."""
         if not self._is_authorized(update):
             await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
             return
         if not update.message:
             return
 
         if not self._controller:
             await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        if update.effective_user:
+            self._pending_kill_user_id = update.effective_user.id
+            self._pending_kill_time = time.time()
+
+        await update.message.reply_text(
+            "⚠️ ¿Estás seguro? Respondé /confirm_kill para detener el bot.",
+            parse_mode="Markdown",
+        )
+
+    async def _cmd_confirm_kill(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Confirma la detencion del bot."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
+        if not update.message:
+            return
+
+        if self._pending_kill_user_id is None:
+            await update.message.reply_text("No hay kill pendiente. Usá /kill primero.")
+            return
+
+        if update.effective_user and update.effective_user.id != self._pending_kill_user_id:
+            await update.message.reply_text("No sos el usuario que inició el kill.")
+            return
+
+        if time.time() - self._pending_kill_time > 60:
+            self._pending_kill_user_id = None
+            await update.message.reply_text("Expiró el tiempo de confirmación. Usá /kill de nuevo.")
             return
 
         await update.message.reply_text(
@@ -822,12 +1011,18 @@ class TelegramBot:
             parse_mode="Markdown",
         )
         self._controller.kill()
+        self._pending_kill_user_id = None
         logger.critical("Bot killed via Telegram")
 
     async def _cmd_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Fuerza un self-review inmediato con Claude Haiku."""
         if not self._is_authorized(update):
             await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
             return
         if not update.message:
             return
@@ -876,6 +1071,11 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
@@ -911,10 +1111,174 @@ class TelegramBot:
         else:
             await update.message.reply_text("❌ Bot no tiene market analyzer activo.")
 
+    async def _cmd_unblock(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Desbloquea un mercado de la blacklist."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
+        if not update.message:
+            return
+
+        args = context.args or []
+        if not args:
+            await update.message.reply_text(
+                "🛡️ *Uso: /unblock*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "`/unblock <condition_id>`\n"
+                "Ejemplo: `/unblock 0xabc123`",
+                parse_mode="Markdown",
+            )
+            return
+
+        market_id = args[0]
+        blacklist = self._get_blacklist()
+        if blacklist:
+            bl_dict = getattr(blacklist, "_blacklisted", None)
+            if bl_dict and market_id in bl_dict:
+                bl_dict.pop(market_id, None)
+                if hasattr(blacklist, "_save"):
+                    blacklist._save()
+                await update.message.reply_text(
+                    f"✅ Mercado desbloqueado: `{market_id[:16]}...`"
+                )
+                return
+        await update.message.reply_text("❌ Mercado no encontrado en blacklist o blacklist no disponible.")
+
+    async def _cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Devuelve las últimas N líneas del log general."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
+        if not update.message:
+            return
+
+        args = context.args or []
+        n = int(args[0]) if args else 20
+        n = max(1, min(n, 100))
+        lines = self._get_recent_log_lines(n)
+        text = "📋 *Últimas líneas del log*\n" + "━" * 22 + "\n\n" + "\n".join(f"`{l[:90]}`" for l in lines)
+        await update.message.reply_text(text, parse_mode="Markdown")
+
+    async def _cmd_strategies(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Lista estrategias con estado (RUNNING/PAUSED/KILLED) y PnL del día."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        strategies = getattr(self._controller, "_strategies", [])
+        monitor = getattr(self._controller, "_strategy_monitor", None)
+
+        if not strategies:
+            await update.message.reply_text("📭 Sin estrategias registradas.")
+            return
+
+        lines = ["🧠 *Estrategias*\n" + "━" * 22]
+        for s in strategies:
+            name = getattr(s, "name", "?")
+            is_active = getattr(s, "is_active", False)
+            killed = monitor.is_killed(name) if monitor and hasattr(monitor, "is_killed") else False
+            if killed:
+                status = "🔴 KILLED"
+            elif is_active:
+                status = "🟢 RUNNING"
+            else:
+                status = "🟡 PAUSED"
+            daily_pnl = getattr(s, "daily_pnl", 0.0)
+            lines.append(f"`{name}`: {status} | PnL: `${daily_pnl:+.2f}`")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _cmd_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Muestra valor de una key de config. Sin args → lista keys principales."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
+        if not update.message:
+            return
+
+        args = context.args or []
+        settings = getattr(self._controller, "_settings", {}) if self._controller else {}
+        if not args:
+            keys = ["mode", "capital_total", "signature_type", "max_risk_per_market", "main_loop_interval_sec"]
+            text = "⚙️ *Config*\n" + "\n".join(f"`{k}`: `{settings.get(k, 'N/A')}`" for k in keys)
+        else:
+            key = args[0]
+            val = settings.get(key, "N/A")
+            text = f"⚙️ `{key}` = `{val}`"
+        await update.message.reply_text(text, parse_mode="Markdown")
+
+    async def _cmd_force_reconcile(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Fuerza reconciliacion on-chain inmediata."""
+        if not self._is_authorized(update):
+            await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
+        if not update.message:
+            return
+
+        if not self._controller:
+            await update.message.reply_text("❌ Bot controller no conectado.")
+            return
+
+        await update.message.reply_text("🔄 Forzando reconciliación...")
+        if hasattr(self._controller, "_client"):
+            try:
+                result = self._controller._client.reconcile_state()
+            except Exception:
+                logger.exception("Error en reconciliacion")
+                await update.message.reply_text("❌ Error forzando reconciliación.")
+                return
+            desync = result.get("desync", False)
+            icon = "⚠️" if desync else "✅"
+            text = (
+                f"{icon} *Reconciliación*\n"
+                f"Balance: `${result.get('balance_onchain', 0):.2f}`\n"
+                f"Órdenes: `{result.get('open_orders_onchain', 0)}`\n"
+                f"Desync: `{'SÍ' if desync else 'NO'}`"
+            )
+            await update.message.reply_text(text, parse_mode="Markdown")
+        else:
+            await update.message.reply_text("❌ Cliente no disponible.")
+
     async def _cmd_promote(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Promover estrategia al siguiente stage."""
         if not self._is_authorized(update):
             await self._reject(update)
+            return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
             return
         if not update.message:
             return
@@ -964,6 +1328,11 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
@@ -1012,6 +1381,11 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
@@ -1051,6 +1425,11 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._reject(update)
             return
+        user_id = str(update.effective_user.id) if update.effective_user else "?"
+        if not self._check_rate_limit(user_id):
+            if update.message:
+                await update.message.reply_text("⏳ Muy rápido. Esperá un segundo.")
+            return
         if not update.message:
             return
 
@@ -1064,7 +1443,7 @@ class TelegramBot:
             await update.message.reply_text("✅ Sin mercados en blacklist activa.")
             return
 
-        now = __import__("time").time()
+        now = time.time()
         lines = [f"🚫 *Blacklist ({len(active)} mercados)*\n" + "━" * 22]
 
         for mid, expire in sorted(active.items(), key=lambda x: x[1]):
@@ -1078,6 +1457,76 @@ class TelegramBot:
         )
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    # ------------------------------------------------------------------
+    # Loops de fondo
+    # ------------------------------------------------------------------
+
+    async def _heartbeat_loop(self) -> None:
+        """Envia un heartbeat cada 30 minutos si no hubo alertas recientes."""
+        while self._stop_event and not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=1800)
+            except asyncio.TimeoutError:
+                if self._controller:
+                    try:
+                        status = self._controller.get_status()
+                        uptime_delta = datetime.now(timezone.utc) - self._start_time
+                        uptime_h = int(uptime_delta.total_seconds() // 3600)
+                        uptime_m = int((uptime_delta.total_seconds() % 3600) // 60)
+                        uptime_d = int(uptime_delta.total_seconds() // 86400)
+                        uptime_str = f"{uptime_d}d {uptime_h}h {uptime_m}m" if uptime_d > 0 else f"{uptime_h}h {uptime_m}m"
+                        send_alert(
+                            f"💓 *Heartbeat*\n"
+                            f"Uptime: `{uptime_str}`\n"
+                            f"Balance: `${status.get('balance_usdc', 0):.2f}`\n"
+                            f"Estado: `{status.get('state', '?')}`"
+                        )
+                    except Exception:
+                        logger.exception("Error en heartbeat loop")
+
+    async def _daily_summary_loop(self) -> None:
+        """Envia un resumen diario automatico a las 00:00 UTC."""
+        while self._stop_event and not self._stop_event.is_set():
+            now = datetime.now(timezone.utc)
+            next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            seconds_until = (next_midnight - now).total_seconds()
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=seconds_until)
+            except asyncio.TimeoutError:
+                try:
+                    self._send_daily_summary()
+                except Exception:
+                    logger.exception("Error enviando resumen diario")
+
+    def _send_daily_summary(self) -> None:
+        """Calcula y envia resumen diario por Telegram."""
+        cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        stats = self._compute_pnl_since(cutoff)
+        trades_today = int(stats["count"])
+        pnl_today = stats["pnl"]
+        fees = stats["fees"]
+        rewards = stats["rewards"]
+
+        # Drawdown
+        dd_str = "N/A"
+        if self._controller:
+            cb = getattr(self._controller, "_circuit_breaker", None)
+            if cb and hasattr(cb, "get_drawdown_report"):
+                dd_report = cb.get_drawdown_report()
+                dd_7 = dd_report.get("drawdown_7d", 0.0)
+                dd_str = f"${dd_7:+.2f}"
+
+        msg = (
+            f"📅 *Resumen Diario*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Trades: `{trades_today}`\n"
+            f"PnL: `${pnl_today:+.4f}`\n"
+            f"Fees: `${fees:.4f}`\n"
+            f"Rewards: `${rewards:.4f}`\n"
+            f"Drawdown 7d: `{dd_str}`"
+        )
+        send_alert(msg)
 
     # ------------------------------------------------------------------
     # Accesores a componentes
@@ -1114,12 +1563,20 @@ class TelegramBot:
 
     def _compute_pnl_since(self, cutoff: datetime) -> dict[str, float]:
         """Calcula estadisticas de PnL para trades posteriores a cutoff."""
+        # Cache por 60 segundos para evitar re-leer el archivo en cada comando
+        now = datetime.now(timezone.utc)
+        if self._pnl_cache is not None:
+            cached_time, cached_val = self._pnl_cache
+            if (now - cached_time).total_seconds() < 60:
+                return cached_val.copy()
+
         stats: dict[str, float] = {
             "count": 0, "errors": 0, "deployed": 0.0,
             "pnl": 0.0, "fees": 0.0, "rewards": 0.0,
         }
 
         if not TRADES_FILE.exists():
+            self._pnl_cache = (now, stats.copy())
             return stats
 
         trades_by_market: dict[str, list[dict]] = {}
@@ -1142,7 +1599,7 @@ class TelegramBot:
                     if t.get("side") == "BUY":
                         stats["deployed"] += t.get("size", 0.0)
                     stats["fees"] += t.get("fee_paid", 0.0)
-                    stats["rewards"] += t.get("rewards", 0.0)
+                    stats["rewards"] += t.get("rewards_earned", 0.0)
 
                     mid = t.get("market_id", "unknown")
                     trades_by_market.setdefault(mid, []).append(t)
@@ -1173,6 +1630,7 @@ class TelegramBot:
         stats["fees"] = round(stats["fees"], 4)
         stats["rewards"] = round(stats["rewards"], 4)
         stats["deployed"] = round(stats["deployed"], 2)
+        self._pnl_cache = (now, stats.copy())
         return stats
 
     def _count_today_trades(self) -> int:
@@ -1227,21 +1685,32 @@ class TelegramBot:
         """Retorna las últimas N líneas de error del log."""
         if not LOG_FILE.exists():
             return []
-        errors = []
+        errors: deque[str] = deque(maxlen=n)
         try:
             with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-                for line in reversed(lines):
+                for line in f:
                     if "ERROR" in line or "CRITICAL" in line or "exception" in line.lower():
-                        # Limpiar timestamp y nivel para mostrar solo mensaje
                         cleaned = line.strip()
                         if len(cleaned) > 10:
                             errors.append(cleaned)
-                        if len(errors) >= n:
-                            break
         except OSError:
             pass
-        return list(reversed(errors))  # Orden cronológico
+        return list(errors)
+
+    def _get_recent_log_lines(self, n: int = 20) -> list[str]:
+        """Retorna las últimas N líneas del log general."""
+        if not LOG_FILE.exists():
+            return []
+        lines: deque[str] = deque(maxlen=n)
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    stripped = line.rstrip("\n")
+                    if stripped:
+                        lines.append(stripped)
+        except OSError:
+            pass
+        return list(lines)
 
     # ------------------------------------------------------------------
     # Compatibilidad con main.py (API publica sync anterior)

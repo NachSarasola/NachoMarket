@@ -402,6 +402,40 @@ class PolymarketClient:
             return float(result.get("mid", 0.0))
         return float(result or 0.0)
 
+    def get_best_bid_ask(self, token_id: str) -> tuple[float, float]:
+        """Obtiene best_bid y best_ask usando get_price() que es más confiable.
+
+        get_orderbook() a veces retorna datos stale (0.01/0.99) mientras que
+        get_price() sempre retorna precios reales.
+
+        Returns:
+            Tuple (best_bid, best_ask). Si no hay datos, retorna (0.0, 1.0).
+        """
+        if self.paper_mode:
+            return 0.01, 0.99
+
+        if token_id in self._invalid_tokens:
+            return 0.0, 1.0
+
+        best_bid, best_ask = 0.0, 1.0
+        try:
+            buy_result = self._client.get_price(token_id, side="BUY")
+            sell_result = self._client.get_price(token_id, side="SELL")
+
+            if isinstance(buy_result, dict):
+                best_bid = float(buy_result.get("price", 0))
+            if isinstance(sell_result, dict):
+                best_ask = float(sell_result.get("price", 1))
+
+            if best_bid <= 0 or best_ask >= 1.0:
+                best_bid, best_ask = 0.0, 1.0
+
+        except Exception as e:
+            if "404" in str(e) or "No orderbook exists" in str(e):
+                self._invalid_tokens.add(token_id)
+
+        return best_bid, best_ask
+
     @_log_api_call
     @retry_with_backoff(max_attempts=3)
     def get_tick_size(self, token_id: str) -> str:
@@ -803,7 +837,7 @@ class PolymarketClient:
                     PostOrdersV2Args(order=signed_order, orderType=OrderType.GTC)
                 )
 
-            batch_result = self._client.post_orders(orders_with_type)
+            batch_result = self._client.post_orders(orders_with_type, post_only=True)
             # batch_result puede ser una lista de dicts u objeto
             if isinstance(batch_result, list):
                 for res in batch_result:
