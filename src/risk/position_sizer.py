@@ -105,7 +105,7 @@ def can_trade(
         True si hay room para la nueva posicion.
     """
     limit = capital * max_risk_pct
-    return (current_exposure + new_size) < limit
+    return (current_exposure + new_size) <= limit
 
 
 # ---------------------------------------------------------------------------
@@ -159,5 +159,11 @@ class PositionSizer:
         capital: float,
         new_size: float = 0.0,
     ) -> bool:
-        """Wrapper de can_trade() con max_risk_pct = 5%."""
-        return can_trade(current_exposure, capital, 0.05, new_size)
+        """Verifica que la exposure total no supere el 60% del capital.
+
+        Deja un cash buffer del 40% para absorber fills y reposicionamiento.
+        Con $166: 60% = $100 de exposure maxima, $66 de buffer.
+        El limite por senal individual sigue siendo max_position_usdc ($20).
+        """
+        limit = capital * 0.60
+        return (current_exposure + new_size) <= limit

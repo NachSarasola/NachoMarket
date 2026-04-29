@@ -1,26 +1,29 @@
 # NachoMarket - Configuracion general
 mode: live  # paper | live
 
-# Auth Polymarket
-# signature_type=1 → EOA (private key directo, sin proxy)
-# signature_type=2 → Browser wallet / Magic Link (proxy address en POLYMARKET_PROXY_ADDRESS)
+# Auth Polymarket (convencion oficial py-clob-client-v2)
+# signature_type=0 → EOA (MetaMask directo, sin proxy)
+# signature_type=1 → POLY_PROXY (Magic Link / email wallets)
+# signature_type=2 → POLY_GNOSIS_SAFE (MetaMask + proxy wallet — mas comun)
 signature_type: 2
 
 # Capital y riesgo
 capital_total: 166           # USDC total disponible
-max_risk_per_market: 0.05    # 5% maximo por mercado
+max_risk_per_market: 0.30    # 30% maximo por mercado para farming de rewards ($50)
 max_daily_drawdown: 8.3      # 5% de $166 — parar si se pierden $8.3 en un dia
 kelly_fraction: 0.25         # Quarter Kelly (conservador)
-min_market_volume: 30000     # Tip 1: volumen minimo 40K; override para mercados chicos con alta participacion
+min_market_volume: 300      # Regla INQUEBRANTABLE: sin rewards → >= $300. Con rewards puede ser menor.
+                             # 5K como default práctico: evita basura pero no excluye mercados con rewards.
 
 # Self-review con Claude Haiku
 review_interval_hours: 8
 review_model: claude-haiku-4-5-20251001
 
 # Estrategias activas
+# RF es la estrategia principal. MM desactivado para concentrar capital en farming.
 strategies_enabled:
-  - market_maker
   - rewards_farmer
+  # - market_maker   # Desactivado: todo el capital a rewards farming
   # multi_arb, stat_arb, directional desactivados: con $150 los tickets son
   # demasiado chicos para que el arb compense fees. Concentrar en MM + rewards.
   # - event_driven   # Activar cuando se configure FRED API key
@@ -29,12 +32,13 @@ strategies_enabled:
 # Near-resolution gate: MM cancela quotes si el mercado resuelve en < N horas
 near_resolution_hours: 336   # Tip 2: 14 dias (336h) minimo para operar
 
-# Market Making
+# Market Making (secundario a RF — mas conservador)
 market_maker:
-  spread_offset: 0.015          # 2 centavos de offset al mid (tip 3: agresivo desde 2c)
-  order_size: 10.0             # ~$6 por lado (escalado a $166 de capital)
-  refresh_seconds: 45          # Tip 21: paciencia — no reposicionar si mid no cambio >=2c
-  max_inventory_per_market: 30 # 15% cap (tip 15: bot <= 15% de $166 = $24.9)
+  spread_offset: 0.012          # Un poco mas ancho que RF
+  order_size: 7.0              # Mas chico que RF para no competir por capital
+  num_levels: 1                 # Solo mejor nivel: mas capital eficiente
+  refresh_seconds: 180        # Menos frecuente — dejar espacio a RF
+  max_inventory_per_market: 20 # 12% cap — menos agresivo que RF
   repositioning_enabled: true  # Despues de un fill, reposicionar en entry+1c
   reposition_offset: 0.01      # 1 centavo de offset para reposicionamiento (tip 6)
   reposition_timeout_min: 60   # Cancelar reposicion si no se ejecuta en 90min
@@ -52,12 +56,16 @@ stat_arb:
   max_markets_simultaneous: 5
   fee_bps: 100
 
-# LP Rewards Farming
+# LP Rewards Farming v2 — Two-sided optimizado
 rewards_farmer:
-  max_capital_per_market: 24.9   # Tip 15: 15% de $166 = $24.9
-  min_rewards_rate: 0.001        # 0.1% diario minimo
-  max_markets_simultaneous: 5    # Tip 7: hasta 6 mercados con $166
-  spread_offset: 0.015           # Tight para maximizar rewards
+  max_capital_per_market: 33.0        # $33 por mercado (166/5 = $33.2)
+  min_rewards_pool_usd: 0.0           # WORKAROUND: API rewards caida. Restaurar a 1.0 cuando endpoint responda.
+  max_markets_simultaneous: 5         # 5 mercados max
+  two_sided: true                     # BID en YES + BID en NO = 3x Q_min
+  spread_pct_of_max: 0.50             # Centro del max_spread (S=0.50, buen compromiso)
+  inventory_merge_threshold: 5        # Merge YES+NO cuando ambos >= 5 shares
+  competition_share_min: 0.05         # Rotar a otro mercado si share < 5%
+  max_mid_deviation: 0.35             # Solo |mid-0.50| <= 0.35 (mid en [0.15, 0.85])
 
 # Event-Driven Momentum (desactivado)
 event_driven:
@@ -92,7 +100,7 @@ anti_frontrun:
   timing_jitter_sec: 5.0
 
 # Loop principal
-main_loop_interval_sec: 10
+main_loop_interval_sec: 30
 health_check_interval_sec: 60
 
 # Logging

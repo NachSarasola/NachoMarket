@@ -20,10 +20,9 @@ import anthropic
 import yaml
 from dotenv import load_dotenv
 
-from src.analysis.performance_metrics import compute_metrics_from_trades_file
+from src.utils.performance_metrics import compute_metrics_from_trades_file
 
-if TYPE_CHECKING:
-    from src.strategy.stages import StageMachine
+# StageMachine eliminado en refactor v3
 
 load_dotenv()
 logger = logging.getLogger("nachomarket.review")
@@ -261,6 +260,15 @@ class SelfReviewer:
             "inventory_turnover": round(inventory_turnover, 4),
             "rewards_earned": round(rewards_earned, 4),
             "error_trades": error_trades,
+            # Rewards farming metrics (PROMPT paso 7)
+            "fill_rate": round(
+                sum(1 for t in trades if t.get("status") in ("ORDER_STATUS_MATCHED", "matched", "paper"))
+                / total if total > 0 else 0.0, 4
+            ),
+            "reward_yield_apy": round(
+                (rewards_earned / self._capital * 365) if self._capital > 0 and rewards_earned > 0 else 0.0, 4
+            ),
+            "merge_count": sum(1 for t in trades if "merge" in str(t.get("metadata", "")).lower()),
         }
 
     def _calculate_max_drawdown(self, trades: list[dict]) -> float:
@@ -323,6 +331,7 @@ class SelfReviewer:
             "max_drawdown": 0.0, "avg_spread_captured": 0.0,
             "capital_deployed": 0.0, "inventory_turnover": 0.0,
             "rewards_earned": 0.0, "error_trades": 0,
+            "fill_rate": 0.0, "reward_yield_apy": 0.0, "merge_count": 0,
         }
 
     # ------------------------------------------------------------------
@@ -624,6 +633,11 @@ Devolvé SOLO el JSON, sin texto adicional."""
                 f"Spread: `{metrics['avg_spread_captured']:.4f}` | "
                 f"Rewards: `${metrics['rewards_earned']:.4f}` | "
                 f"Errores: `{metrics['error_trades']}`"
+            ),
+            (
+                f"🎯 Fill rate: `{metrics.get('fill_rate', 0):.1%}` | "
+                f"Reward yield: `{metrics.get('reward_yield_apy', 0):.1%}` APY | "
+                f"Merges: `{metrics.get('merge_count', 0)}`"
             ),
             f"_{summary}_",
         ]

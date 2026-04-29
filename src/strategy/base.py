@@ -18,9 +18,6 @@ from typing import TYPE_CHECKING, Any
 
 from src.polymarket.client import PolymarketClient
 
-if TYPE_CHECKING:
-    from src.risk.blacklist import MarketBlacklist
-
 TRADES_FILE = Path("data/trades.jsonl")
 
 
@@ -132,7 +129,7 @@ class BaseStrategy(ABC):
     # Metodos concretos — compartidos por todas las estrategias
     # ------------------------------------------------------------------
 
-    def set_blacklist(self, blacklist: "MarketBlacklist") -> None:
+    def set_blacklist(self, blacklist: Any) -> None:
         """Inyecta la blacklist para filtrado previo al ciclo.
 
         Dependency Injection: evita acoplamiento directo al módulo de blacklist.

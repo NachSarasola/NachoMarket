@@ -1,55 +1,56 @@
-# NachoMarket - Mercados target y parametros
-min_daily_volume_usd: 30000  # Tip 1: minimo 40K de volumen diario
-small_market_volume_usd: 5000  # Tip 12: override para mercados chicos si participation_share > 5%
-max_markets_simultaneous: 6  # Tip 7: con $150, 3-7 mercados optimo
-bot_order_size: 8.3          # USDC por lado (escalado a $166), para calcular participation share
-market_refresh_interval_sec: 300  # Re-escanear mercados cada 5 min
+# NachoMarket v2 - Mercados target y parametros
+# Optimizado para rewards farming two-sided
+min_daily_volume_usd: 300      # Reducido: mercados chicos con rewards pueden funcionar
+small_market_volume_usd: 150   # Override para mercados muy chicos con buen share
+max_markets_simultaneous: 12   # Suficiente para RF v2 (10 activos + 2 slot rotacion)
+bot_order_size: 6.0            # Por lado en two-sided (6 YES + 6 NO = $12 total)
+market_refresh_interval_sec: 300
 
 # Filtros de mercado
 filters:
-  min_liquidity_usd: 500
-  max_spread_pct: 5.0
-  min_time_to_resolution_hours: 336  # Tip 2: 14 dias minimo (336h)
-  min_market_age_hours: 48
+  min_liquidity_usd: 200
+  max_spread_pct: 10.0         # Permitir spreads mas anchos (mas room para scorer)
+  min_time_to_resolution_hours: 72  # 3 dias minimo (captura al menos medio epoch)
+  min_market_age_hours: 4      # Entrar temprano en mercados nuevos (pre-game sports)
   excluded_categories:
-    - entertainment  # Tip 10: evitar mercados de entretenimiento para bot
-  excluded_keywords:  # Tip 10: evitar eventos de un solo dia
+    - entertainment
+  excluded_keywords:
     - "release"
     - "launch"
     - "opening weekend"
     - "tomorrow"
-  mid_price_min: 0.40  # Tip 8: zona simetrica 40-60c
-  mid_price_max: 0.60  # Tip 8: a 50c el riesgo es simetrico
+  mid_price_min: 0.15          # Mas restrictivo: two-sided near 0.50
+  mid_price_max: 0.85
 
-# Competition scoring: priorizar mercados donde el bot tiene alta participacion
+# Competition scoring
 competition:
-  max_book_depth_per_side: 500  # Skip mercados con >$500/lado de profundidad
-  min_participation_share: 0.05  # Necesitar al menos 5% de share para entrar
+  max_book_depth_per_side: 1500
+  min_participation_share: 0.02
 
-# Diversificacion por tematica (Tip 13)
+# Diversificacion por tematica
 diversification:
-  max_per_category: 2  # No mas de 2 mercados de la misma categoria
+  max_per_category: 4  # Aumentado: sports puede tener muchos juegos simultaneos
 
-# Preferencias de mercado (ordenadas por prioridad)
+# Preferencias de mercado (ordenadas por prioridad — sports primero en Abril 2026)
+# Abril 2026: $5M liquidity incentives en sports/esports
+# Estrategia $166: Tier 2-3 (menos competencia, mejor share del pool)
+# Tier 1 (Champions League, EPL, NBA) tiene MMs con $100K+ → nos aplastan
 preferred_categories:
-  - politics
-  - crypto
-  - sports
+  - sports        # Prioridad 1: MLB, MLS, Liga MX, Bundesliga, Serie A, La Liga, Ligue 1
+  - esports       # Prioridad 2: Valorant, Dota 2 ($3.5K/pool, comunidad chica de MMs)
+  - politics      # Prioridad 3: estables, feesEnabled=true, holding rewards 4% APY
+  - crypto        # Prioridad 4: alto volumen, feesEnabled=true
 
 # Ventanas de tiempo: ajustar tamaño de ordenes segun actividad del mercado
 time_windows:
-  # Horas UTC de baja actividad: reducir tamaño de ordenes
   low_activity_hours: [5, 6, 7, 8, 9, 10, 11, 12]
-  # Horas UTC de alta actividad (US market hours)
   high_activity_hours: [14, 15, 16, 17, 18, 19, 20, 21]
-  # Factor de reduccion durante baja actividad (0.5 = mitad del tamaño)
   low_activity_size_factor: 0.5
-  # Tip 19: ventana prime (21hs ARG = 00 UTC) — boost de sizing
-  prime_placement_window_utc: [0, 1, 2, 3]  # 00-04 UTC = prime window
-  prime_size_boost: 1.3                       # +30% en esa ventana
+  prime_placement_window_utc: [0, 1, 2, 3]   # 00-04 UTC = minima competencia US/Europa
+  prime_size_boost: 1.3                       # +30% en ventana prime
 
 # Tip 21: no cancelar y reposicionar si el mid no se movio suficiente
-min_mid_change_to_reposition: 0.02  # Solo reposicionar si mid cambio >= 2c
+min_mid_change_to_reposition: 0.02
 
 # Tip 16: reserva — informativa, consumida por circuit breaker
 loss_reserve_usdc: 20.0
@@ -59,5 +60,4 @@ banned_markets:
   condition_ids: []
   question_patterns: []
 
-# Tokens a escuchar por WebSocket (se actualiza automaticamente al escanear mercados)
 watch_tokens: []
