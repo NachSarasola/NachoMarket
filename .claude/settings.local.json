@@ -13,7 +13,9 @@
       "Bash(timeout 25 python -m src.main)",
       "Bash(git commit -m 'fix: auto-detect mode from settings.yaml, default to PAPER for safety *)",
       "Bash(git push *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(rm -f src/backtest/__init__.py src/data/__init__.py)",
+      "Bash(rmdir src/backtest src/data)"
     ]
   }
 }

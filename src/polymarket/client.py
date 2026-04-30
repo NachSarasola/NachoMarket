@@ -175,7 +175,8 @@ class PolymarketClient:
             logger.info("Heartbeat detenido")
 
     def _heartbeat_loop(self, interval_sec: float) -> None:
-        """Loop interno del heartbeat."""
+        """Loop interno del heartbeat con contador de fallos consecutivos."""
+        consecutive_failures = 0
         while self._heartbeat_running and self._client is not None:
             try:
                 self._rate_limiter.acquire()
@@ -183,14 +184,24 @@ class PolymarketClient:
                 if isinstance(result, dict):
                     self._heartbeat_id = result.get("heartbeat_id", "")
                 logger.debug("Heartbeat OK: %s", self._heartbeat_id[:16])
+                consecutive_failures = 0
             except Exception as exc:
                 err_msg = str(exc)
                 if "Invalid Heartbeat ID" in err_msg:
-                    # Resetear a string vacio para que el servidor genere uno nuevo
                     self._heartbeat_id = ""
                     logger.info("Heartbeat ID invalido, reseteado")
+                    consecutive_failures = 0
                 else:
-                    logger.exception("Heartbeat fallo")
+                    consecutive_failures += 1
+                    logger.warning(
+                        "Heartbeat fallo (%d consecutivos): %s",
+                        consecutive_failures, err_msg[:120],
+                    )
+                    if consecutive_failures >= 3:
+                        logger.error(
+                            "Heartbeat: 3 fallos consecutivos — ordenes en riesgo de cancelacion automatica"
+                        )
+                        consecutive_failures = 0  # reset para no spamear
             time.sleep(interval_sec)
 
     # ------------------------------------------------------------------
@@ -403,38 +414,33 @@ class PolymarketClient:
         return float(result or 0.0)
 
     def get_best_bid_ask(self, token_id: str) -> tuple[float, float]:
-        """Obtiene best_bid y best_ask usando get_price() que es más confiable.
-
-        get_orderbook() a veces retorna datos stale (0.01/0.99) mientras que
-        get_price() sempre retorna precios reales.
+        """Obtiene best_bid y best_ask usando get_price().
 
         Returns:
-            Tuple (best_bid, best_ask). Si no hay datos, retorna (0.0, 1.0).
+            Tuple (best_bid, best_ask). Si no hay datos, retorna (0.0, 0.0)
+            para que el caller pueda detectar ausencia de liquidez y no operar.
         """
         if self.paper_mode:
-            return 0.01, 0.99
+            return 0.0, 0.0
 
         if token_id in self._invalid_tokens:
-            return 0.0, 1.0
+            return 0.0, 0.0
 
-        best_bid, best_ask = 0.0, 1.0
         try:
             buy_result = self._client.get_price(token_id, side="BUY")
             sell_result = self._client.get_price(token_id, side="SELL")
 
-            if isinstance(buy_result, dict):
-                best_bid = float(buy_result.get("price", 0))
-            if isinstance(sell_result, dict):
-                best_ask = float(sell_result.get("price", 1))
+            best_bid = float(buy_result.get("price", 0)) if isinstance(buy_result, dict) else 0.0
+            best_ask = float(sell_result.get("price", 0)) if isinstance(sell_result, dict) else 0.0
 
-            if best_bid <= 0 or best_ask >= 1.0:
-                best_bid, best_ask = 0.0, 1.0
+            if best_bid > 0 and best_ask > 0:
+                return best_bid, best_ask
 
         except Exception as e:
             if "404" in str(e) or "No orderbook exists" in str(e):
                 self._invalid_tokens.add(token_id)
 
-        return best_bid, best_ask
+        return 0.0, 0.0
 
     @_log_api_call
     @retry_with_backoff(max_attempts=3)
@@ -681,7 +687,8 @@ class PolymarketClient:
             token_id: ID del token de Polymarket.
             side: 'BUY' o 'SELL'.
             price: Precio limite (entre 0 y 1).
-            size: Cantidad en pUSD.
+            size: Cantidad en SHARES (no pUSD). Para BUY limit, es la cantidad
+                  de shares condicionales a comprar al precio limite indicado.
             post_only: Si True, usa Post Only (maker, sin pagar taker fees).
                        SIEMPRE True para market making.
 
@@ -1034,63 +1041,34 @@ class PolymarketClient:
     # ------------------------------------------------------------------
 
     @_log_api_call
-    @retry_with_backoff(max_attempts=3)
-    def exit_position_market(self, token_id: str, size: float) -> dict[str, Any]:
-        """Reduce una posicion vendiendo shares al mercado.
+    @retry_with_backoff(max_attempts=2)
+    def close_position_with_fok(self, token_id: str, size: float) -> dict[str, Any]:
+        """Cierra una posicion vendiendo shares con una orden FOK al best_bid.
 
-        NOTA: Este metodo NO realiza un merge on-chain real (YES+NO -> pUSD).
-        Un merge verdadero requiere transaccion al NegRiskAdapter
-        (0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296) via web3, que no esta
-        implementado. En su lugar, coloca una orden GTC SELL post_only
-        ligeramente por debajo del midpoint para ser filled como maker
-        (0% fee) en lugar de taker (1% fee).
+        Usa Fill-or-Kill al mejor precio disponible para cerrar rapidamente.
+        Para un merge real de YES+NO → pUSD usar merger.merge_positions().
 
         Args:
             token_id: Token a cerrar.
-            size: Shares a vender (no dolares).
+            size: Shares a vender.
 
         Returns:
             Dict con resultado de la operacion.
         """
         if self.paper_mode:
-            logger.info("[PAPER] reduce_position: SELL %s shares en %s...", size, token_id[:8])
-            return {"status": "reduced_paper", "token_id": token_id, "size": size}
+            logger.info("[PAPER] close_position_with_fok: SELL %s shares en %s...", size, token_id[:8])
+            return {"status": "closed_paper", "token_id": token_id, "size": size}
 
-        mid = self.get_midpoint(token_id)
-        if mid <= 0:
-            raise ValueError("No se pudo obtener midpoint para %s..." % token_id[:8])
+        best_bid, _ = self.get_best_bid_ask(token_id)
+        if best_bid <= 0:
+            raise ValueError("No hay best_bid disponible para cerrar %s..." % token_id[:8])
 
-        tick_size = float(self._get_cached_tick_size(token_id))
-        # Precio 1 tick por debajo del mid para ser maker (0% fee)
-        sell_price = round(mid - tick_size, 6)
-        sell_price = max(tick_size, min(sell_price, 1 - tick_size))
-
-        options = PartialCreateOrderOptions(
-            tick_size=self._get_cached_tick_size(token_id),
-            neg_risk=self._get_cached_neg_risk(token_id),
-        )
-        order_args = OrderArgs(
+        return self.place_fok_order(
             token_id=token_id,
-            price=sell_price,
-            size=size,
             side="SELL",
+            price=best_bid,
+            size=size,
         )
-
-        signed_order = self._client.create_order(order_args, options=options)
-        result = self._client.post_order(signed_order, order_type=OrderType.GTC, post_only=True)
-
-        order_id = result.get("orderID", result.get("id", "unknown"))
-        logger.info(
-            "reduce_position: SELL %s @ %s | order_id=%s | token=%s...",
-            size, sell_price, order_id, token_id[:8],
-        )
-        return {
-            "status": "submitted",
-            "order_id": order_id,
-            "token_id": token_id,
-            "size": size,
-            "price": sell_price,
-        }
 
     # ------------------------------------------------------------------
     # Reconciliación on-chain (TODO 1.2)

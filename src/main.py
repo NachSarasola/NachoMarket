@@ -105,7 +105,7 @@ class NachoMarketBot:
         self._client = PolymarketClient(
             paper_mode=paper_mode,
             signature_type=self._settings.get("signature_type", 1),
-            paper_capital=float(self._settings.get("capital_total", 300.0)),
+            paper_capital=float(self._settings.get("capital_total", 166.0)),
         )
         self._logger.info("Verificando conexión con Polymarket CLOB...")
         self._client.test_connection()  # lanza excepción si falla
@@ -156,7 +156,7 @@ class NachoMarketBot:
         )
 
         # Balance cacheado: arranca con capital_total del config, se actualiza cada ciclo
-        self._cached_balance: float = float(self._settings.get("capital_total", 300.0))
+        self._cached_balance: float = float(self._settings.get("capital_total", 166.0))
 
         # --- g. Scheduler (self-review, market updates) ---
         # Merge RF config into markets_config para que enrich_with_rewards lo use
@@ -228,7 +228,7 @@ class NachoMarketBot:
         schedule.every(review_hours).hours.do(self._run_review)
         schedule.every(_MARKET_UPDATE_INTERVAL_MIN).minutes.do(self._update_markets)
         schedule.every(_FULL_SCAN_INTERVAL_HOURS).hours.do(self._full_market_scan)
-        schedule.every().day.at("00:00").do(self._circuit_breaker.reset_daily)
+        schedule.every().day.at("00:00").do(self._daily_reset)
         # Reconciliación on-chain cada 6h (TODO 1.2)
         schedule.every(6).hours.do(self._run_reconciliation)
         # Monitorear reward percentages en tiempo real (API /rewards/user/percentages)
@@ -666,7 +666,7 @@ class NachoMarketBot:
         Para mercados binarios (2 tokens):
         - Si el merger on-chain está listo: mergePositions() en NegRiskAdapter
           (quema YES+NO, devuelve pUSD completo, sin perder spread)
-        - Si no: exit_position_market() (vende al mercado, pierde spread)
+        - Si no: close_position_with_fok() (vende al mercado con FOK, pierde spread)
 
         Multi-outcome no tiene merge nativo.
         """
@@ -704,9 +704,9 @@ class NachoMarketBot:
                             )
                         else:
                             self._logger.warning("Merge on-chain fallo, usando fallback sell")
-                            self._client.exit_position_market(token_ids[0], merge_size)
+                            self._client.close_position_with_fok(token_ids[0], merge_size)
                     else:
-                        self._client.exit_position_market(token_ids[0], merge_size)
+                        self._client.close_position_with_fok(token_ids[0], merge_size)
                     self._inventory.clear_market(market_id)
                     send_alert(
                         f"♻️ Merged `{merge_size:.2f}` shares (MM)\n"
@@ -756,11 +756,11 @@ class NachoMarketBot:
                             self._logger.warning("Merge on-chain RF fallo, usando fallback sell")
                             yes_token_id = tokens[0].get("token_id", "")
                             if yes_token_id:
-                                self._client.exit_position_market(yes_token_id, merge_size)
+                                self._client.close_position_with_fok(yes_token_id, merge_size)
                     else:
                         yes_token_id = tokens[0].get("token_id", "")
                         if yes_token_id:
-                            self._client.exit_position_market(yes_token_id, merge_size)
+                            self._client.close_position_with_fok(yes_token_id, merge_size)
                     rf.mark_merged(market_id, merge_size)
                     send_alert(
                         f"♻️ Merged `{merge_size:.2f}` shares (RF)\n"
@@ -835,35 +835,41 @@ class NachoMarketBot:
 
             status_val = status.get("status", "")
             if status_val == "ORDER_STATUS_MATCHED":
-                fill_px = float(status.get("price", signal.price))
-                fill_sz = float(status.get("size_matched", status.get("original_size", signal.size)))
-                market = markets_by_id.get(signal.market_id, {})
+                # signal puede ser None para ordenes reconciliadas al arranque
+                fill_px = float(status.get("price", signal.price if signal else 0.0))
+                fill_sz = float(status.get("size_matched", status.get("original_size", signal.size if signal else 0.0)))
+                market_id_for_fill = signal.market_id if signal else status.get("market_id", "")
+                token_id_for_fill = signal.token_id if signal else status.get("asset_id", "")
+                side_for_fill = signal.side if signal else str(status.get("side", "")).upper()
+                market = markets_by_id.get(market_id_for_fill, {})
                 tokens = market.get("tokens", [])
-                rf.record_fill(
-                    token_id=signal.token_id,
-                    side=signal.side,
-                    size=fill_sz,
-                    market_id=signal.market_id,
-                    tokens=tokens,
-                )
-                self._handle_trade(
-                    Trade(
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                        strategy_name=signal.strategy_name,
-                        market_id=signal.market_id,
-                        token_id=signal.token_id,
-                        side=signal.side,
-                        price=fill_px,
+                if token_id_for_fill and side_for_fill:
+                    rf.record_fill(
+                        token_id=token_id_for_fill,
+                        side=side_for_fill,
                         size=fill_sz,
-                        status="ORDER_STATUS_MATCHED",
-                        order_id=order_id,
-                    ),
-                    market,
-                )
+                        market_id=market_id_for_fill,
+                        tokens=tokens,
+                    )
+                if signal:
+                    self._handle_trade(
+                        Trade(
+                            timestamp=datetime.now(timezone.utc).isoformat(),
+                            strategy_name=signal.strategy_name,
+                            market_id=signal.market_id,
+                            token_id=signal.token_id,
+                            side=signal.side,
+                            price=fill_px,
+                            size=fill_sz,
+                            status="ORDER_STATUS_MATCHED",
+                            order_id=order_id,
+                        ),
+                        market,
+                    )
                 self._logger.info(
                     "RF fill detectado: %s %s %.2fsh @ %.4f en %s...",
-                    signal.side, signal.token_id[:8], fill_sz, fill_px,
-                    signal.market_id[:12],
+                    side_for_fill, token_id_for_fill[:8], fill_sz, fill_px,
+                    market_id_for_fill[:12],
                 )
                 filled_ids.append(order_id)
                 self._circuit_breaker.order_closed()
@@ -1057,13 +1063,13 @@ class NachoMarketBot:
                         td["spread"] = round(best_ask - best_bid, 4)
                         td["best_bid"] = best_bid
                         td["best_ask"] = best_ask
-                        # Construir orderbook básico con solo best bid/ask
+                        # Orderbook sin size real — solo precios para calcular mid
                         td["orderbook"] = {
-                            "bids": [{"price": str(best_bid), "size": "1000"}],
-                            "asks": [{"price": str(best_ask), "size": "1000"}],
+                            "bids": [{"price": str(best_bid), "size": "0"}],
+                            "asks": [{"price": str(best_ask), "size": "0"}],
                         }
                         self._logger.info(
-                            "REST fallback para %s... en %s...",
+                            "REST fallback (sin depth real) para %s... en %s...",
                             token_id[:8], market.get("condition_id", "")[:8]
                         )
                 except Exception:
@@ -1169,6 +1175,14 @@ class NachoMarketBot:
     # Actualización de mercados (schedule + startup)
     # ------------------------------------------------------------------
 
+    def _daily_reset(self) -> None:
+        """Reset de contadores diarios. Llamado a 00:00 UTC."""
+        self._circuit_breaker.reset_daily()
+        for strat in self._strategies:
+            if hasattr(strat, "reset_daily_counters"):
+                strat.reset_daily_counters()
+        self._logger.info("Reset diario: circuit_breaker + contadores de fill rate")
+
     def _update_markets(self) -> None:
         """Quick refresh: re-evalua mercados usando cache del MarketAnalyzer.
 
@@ -1192,12 +1206,9 @@ class NachoMarketBot:
     def _full_market_scan(self) -> None:
         """Scan profundo: invalida cache y re-descubre mercados de Gamma + CLOB.
 
-        Llamado cada 4 horas (PROMPT paso 2: detectar nuevos mercados con rewards).
-        Descubre mercados, enriquece con rewards, calcula reward_density,
-        y selecciona los mejores para farming.
+        Llamado cada 4 horas para detectar nuevos mercados con rewards.
         """
         try:
-            self._purge_low_share_markets()
             self._market_analyzer.invalidate_cache()
             markets = self._market_analyzer.scan_markets()
             self._active_markets = markets
@@ -1209,12 +1220,6 @@ class NachoMarketBot:
             )
         except Exception:
             self._logger.exception("Error en full market scan")
-
-    def _purge_low_share_markets(self) -> None:
-        """Cancela ordenes y bloquea temporalmente mercados con share bajo prolongado.
-        Desactivado en v3 (profiler eliminado).
-        """
-        pass
 
     # ------------------------------------------------------------------
     # Self-review programado
@@ -1272,21 +1277,6 @@ class NachoMarketBot:
         self._run_review()
         return {"triggered": True}
 
-    def _on_strategy_killed(self, strategy_name: str) -> None:
-        """Callback del StrategyMonitor: desactivado en v3."""
-        pass
-
-    def _run_strategy_monitor(self) -> None:
-        """Evalúa el strategy monitor (kill switch). Desactivado en v3."""
-        pass
-
-    def _poll_whale_tracker(self) -> None:
-        """Actualiza whale tracker. Desactivado en v3."""
-        pass
-
-    def _run_allocator_evaluation(self) -> None:
-        """Actualiza allocations del bandit allocator. Desactivado en v3."""
-        pass
 
     # ------------------------------------------------------------------
     # Circuit breaker → Telegram

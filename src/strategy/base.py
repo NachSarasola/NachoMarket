@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from src.polymarket.client import PolymarketClient
+if TYPE_CHECKING:
+    from src.polymarket.client import PolymarketClient
 
 TRADES_FILE = Path("data/trades.jsonl")
 
@@ -78,7 +79,7 @@ class BaseStrategy(ABC):
     def __init__(
         self,
         name: str,
-        client: PolymarketClient,
+        client: Any,
         config: dict[str, Any],
         logger: logging.Logger | None = None,
     ) -> None:

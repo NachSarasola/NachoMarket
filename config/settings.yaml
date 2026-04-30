@@ -9,95 +9,32 @@ signature_type: 2
 
 # Capital y riesgo
 capital_total: 166           # USDC total disponible
-max_risk_per_market: 0.30    # 30% maximo por mercado para farming de rewards ($50)
+max_risk_per_market: 0.20    # 20% maximo por mercado = $33 (circuit breaker)
 max_daily_drawdown: 8.3      # 5% de $166 — parar si se pierden $8.3 en un dia
 kelly_fraction: 0.25         # Quarter Kelly (conservador)
-min_market_volume: 300      # Regla INQUEBRANTABLE: sin rewards → >= $300. Con rewards puede ser menor.
-                             # 5K como default práctico: evita basura pero no excluye mercados con rewards.
+min_market_volume: 500       # Solo mercados con >= $500 volumen diario
 
 # Self-review con Claude Haiku
 review_interval_hours: 8
 review_model: claude-haiku-4-5-20251001
 
-# Estrategias activas
-# RF es la estrategia principal. MM desactivado para concentrar capital en farming.
+# Estrategias activas — solo RF
 strategies_enabled:
   - rewards_farmer
-  # - market_maker   # Desactivado: todo el capital a rewards farming
-  # multi_arb, stat_arb, directional desactivados: con $150 los tickets son
-  # demasiado chicos para que el arb compense fees. Concentrar en MM + rewards.
-  # - event_driven   # Activar cuando se configure FRED API key
-  # - directional    # Requiere mas capital
 
-# Near-resolution gate: MM cancela quotes si el mercado resuelve en < N horas
-near_resolution_hours: 336   # Tip 2: 14 dias (336h) minimo para operar
-
-# Market Making (secundario a RF — mas conservador)
-market_maker:
-  spread_offset: 0.012          # Un poco mas ancho que RF
-  order_size: 7.0              # Mas chico que RF para no competir por capital
-  num_levels: 1                 # Solo mejor nivel: mas capital eficiente
-  refresh_seconds: 180        # Menos frecuente — dejar espacio a RF
-  max_inventory_per_market: 20 # 12% cap — menos agresivo que RF
-  repositioning_enabled: true  # Despues de un fill, reposicionar en entry+1c
-  reposition_offset: 0.01      # 1 centavo de offset para reposicionamiento (tip 6)
-  reposition_timeout_min: 60   # Cancelar reposicion si no se ejecuta en 90min
-  near_resolution_hours: 300   # Tip 2: cancelar quotes si faltan < 14 dias para resolucion
-
-# Arbitraje Multi-Outcome (desactivado)
-multi_arb:
-  min_edge: 0.03
-  max_position: 12  # 7.3% de $166
-
-# Stat-Arb YES/NO Cointegrado (desactivado)
-stat_arb:
-  edge_threshold: 0.02
-  max_position: 12  # 7.3% de $166
-  max_markets_simultaneous: 5
-  fee_bps: 100
+# Near-resolution gate
+near_resolution_hours: 336   # 14 dias (336h) minimo para operar
 
 # LP Rewards Farming v2 — Two-sided optimizado
 rewards_farmer:
-  max_capital_per_market: 33.0        # $33 por mercado (166/5 = $33.2)
-  min_rewards_pool_usd: 0.0           # WORKAROUND: API rewards caida. Restaurar a 1.0 cuando endpoint responda.
-  max_markets_simultaneous: 5         # 5 mercados max
-  two_sided: true                     # BID en YES + BID en NO = 3x Q_min
-  spread_pct_of_max: 0.50             # Centro del max_spread (S=0.50, buen compromiso)
+  max_capital_per_market: 50.0        # $50 por mercado: side_capital=12.5, compra 20 shares a $0.50-$0.68
+  min_rewards_pool_usd: 5.0           # Descartar mercados con rewards < $5/dia
+  max_markets_simultaneous: 3         # 3 mercados × $40 real = $120 desplegado (72% de $166)
+  two_sided: true                     # BID+ASK por token = 3x Q_min vs solo BID
+  spread_pct_of_max: 0.50             # Informativo; _qualifying_bid domina la logica
   inventory_merge_threshold: 5        # Merge YES+NO cuando ambos >= 5 shares
-  competition_share_min: 0.05         # Rotar a otro mercado si share < 5%
-  max_mid_deviation: 0.35             # Solo |mid-0.50| <= 0.35 (mid en [0.15, 0.85])
-
-# Event-Driven Momentum (desactivado)
-event_driven:
-  max_position: 8.3
-  momentum_delay_sec: 120
-  pre_event_window_sec: 7200
-
-# Directional Strategy (desactivado)
-directional:
-  min_edge_bps: 100
-  min_size_usdc: 5.0
-  max_size_usdc: 8.3         # 5% de $166 — regla INQUEBRANTABLE
-  kelly_fraction: 0.25       # Quarter-Kelly
-  expected_hold_seconds: 7200
-
-# Blacklist por round-trip win rate
-blacklist:
-  min_trades: 10
-  wr_threshold: 0.30
-  blacklist_days: 7
-
-# Stage Machine
-stages:
-  promote_threshold: 7
-  review_window: 10
-
-# Anti-frontrunning jitter
-anti_frontrun:
-  enabled: true
-  size_jitter_pct: 0.15
-  price_jitter_prob: 0.30
-  timing_jitter_sec: 5.0
+  competition_share_min: 0.005        # 0.5% — antes 5% era demasiado alto
+  max_mid_deviation: 0.40             # mid en [0.10, 0.90]
 
 # Loop principal
 main_loop_interval_sec: 30
