@@ -106,7 +106,7 @@ class NachoMarketBot:
         self._client = PolymarketClient(
             paper_mode=paper_mode,
             signature_type=self._settings.get("signature_type", 1),
-            paper_capital=float(self._settings.get("capital_total", 166.0)),
+            paper_capital=float(self._settings.get("capital_total", 50.0)),
         )
         self._logger.info("Verificando conexión con Polymarket CLOB...")
         self._client.test_connection()  # lanza excepción si falla
@@ -147,7 +147,7 @@ class NachoMarketBot:
         self._inventory = InventoryManager(self._risk_config)
 
         # Balance cacheado: arranca con capital_total del config, se actualiza cada ciclo
-        self._cached_balance: float = float(self._settings.get("capital_total", 166.0))
+        self._cached_balance: float = float(self._settings.get("capital_total", 50.0))
 
         # --- g. Scheduler (self-review, market updates) ---
         # Merge RF config into markets_config para que enrich_with_rewards lo use
@@ -177,7 +177,7 @@ class NachoMarketBot:
         # --- h. Self-reviewer (Telegram callback resuelto en runtime) ---
         self._reviewer = SelfReviewer(
             model=self._settings.get("review_model", "claude-haiku-4-5-20251001"),
-            capital=float(self._settings.get("capital_total", 300.0)),
+            capital=float(self._settings.get("capital_total", 50.0)),
         )
 
         # --- i. Position Merger (merge on-chain via NegRiskAdapter) ---
@@ -973,16 +973,22 @@ class NachoMarketBot:
             if len(history) > 12:
                 self._competition_history[cid] = history[-12:]
 
-            # PROMPT: share < 0.5% -> demasiada competencia, rotar
-            if pct < 0.5:
+            # Rotar SOLO si no genera centavos; share es indicativo, no decisivo
+            cpm = self._reward_tracker.cents_per_min(cid) if self._reward_tracker else None
+            if cpm is not None and cpm < 0.025:
                 self._logger.warning(
-                    "RF CRITICO: share %.2f%% en %s... — rotando a otro mercado",
-                    pct, cid[:12],
+                    "RF CRITICO: %.3f¢/min en %s... — rotando (share=%.2f%%)",
+                    cpm, cid[:12], pct,
                 )
                 low_share_markets.append(cid)
+            elif pct < 0.5:
+                self._logger.info(
+                    "RF: share bajo (%.2f%%) en %s... — pero genera %.3f¢/min, sigue",
+                    pct, cid[:12], cpm or 0.0,
+                )
             elif pct < 5.0:
-                self._logger.warning(
-                    "RF: share bajo (%.1f%%) en %s... — evaluar rotacion",
+                self._logger.info(
+                    "RF: share medio (%.1f%%) en %s... — evaluar",
                     pct, cid[:12],
                 )
             elif pct > 5.0:
@@ -1000,6 +1006,21 @@ class NachoMarketBot:
             "activos=%d, low_share=%d, high_share=%d",
             total, high_share, len(rf._active_farms), len(low_share_markets), len(high_share_markets),
         )
+
+        # ROTACION REAL: cancelar + bloquear mercados que no generan centavos
+        for cid in low_share_markets:
+            try:
+                self._client.cancel_market_orders(condition_id=cid)
+                if self._market_analyzer and self._market_analyzer.market_filter:
+                    self._market_analyzer.market_filter.block_market_until(cid, 2.0)
+                rf._active_farms.pop(cid, None)
+                rf._market_entry_ts.pop(cid, None)
+                self._logger.info(
+                    "RF: mercado %s... cancelado y bloqueado 2h (cpm < 0.025)",
+                    cid[:12],
+                )
+            except Exception:
+                self._logger.debug("RF: error cancelando %s...", cid[:12], exc_info=True)
 
     # ------------------------------------------------------------------
     # WebSocket feed

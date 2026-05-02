@@ -53,15 +53,15 @@ SAFETY_TICKS = 2             # ticks detras del BBO para evitar fills
 DANGER_ZONE_TICKS = 1        # si estamos a ≤1 tick del BBO, huir
 REPRICE_THRESHOLD_RATIO = 0.5  # recolocar si mid se movio >= max_spread * 0.5
 SIZE_DRIFT_THRESHOLD = 0.30  # recolocar si size difiere > 30%
-MIN_MAX_SPREAD_USD = 0.005   # no operar si max_spread < 0.5¢ (Opción B: captura mercados como Elon Musk ~0.35¢)
+MIN_MAX_SPREAD_USD = 0.001   # no operar si max_spread < 0.1¢ (captura mercados de alto pool con spread ajustado)
 
 # Shadow sizing — orders no se fillean, el tamaño no está limitado por capital real.
 SHADOW_SIZE_MULT = 8         # ordenes en 8× min_size para capturar más % del libro
 MAX_ORDER_NOTIONAL = 75.0    # tope nocional por orden ($75); ajustado a capital $55
 
 # Yield farming dinámico
-GRACE_PERIOD_SEC = 180       # esperar 3min antes de aplicar non_earning (lag del endpoint ~1-2min)
-MIN_CENTS_PER_MIN = 0.05     # ~$0.72/day — threshold mínimo de farmeo para small-cap
+GRACE_PERIOD_SEC = 360       # esperar 6min antes de aplicar non_earning (lag del endpoint ~1-2min + tiempo para que share crezca)
+MIN_CENTS_PER_MIN = 0.025    # ~$0.36/day — mínimo aceptable para capital $50
 NON_EARNING_BLOCK_HOURS = 1.0  # bloquear mercado 1h tras cancelar por non_earning (mínimo req. usuario)
 
 
@@ -201,6 +201,7 @@ class RewardsFarmerStrategy(BaseStrategy):
         self._circuit_breaker = circuit_breaker
         self._reward_tracker = reward_tracker
         self._market_filter = market_filter
+        self._market_volume: dict[str, float] = {}
         rf_cfg = config.get("rewards_farmer", {})
         markets_cfg = config.get("markets", config)
 
@@ -210,7 +211,7 @@ class RewardsFarmerStrategy(BaseStrategy):
         self._two_sided = bool(rf_cfg.get("two_sided", True))
         self._merge_threshold = float(rf_cfg.get("inventory_merge_threshold", 5.0))
         self._min_share_pct = float(rf_cfg.get("competition_share_min", 0.005))
-        self._max_mid_deviation = float(rf_cfg.get("max_mid_deviation", 0.40))
+        self._max_mid_deviation = float(rf_cfg.get("max_mid_deviation", 0.45))
 
         tw = markets_cfg.get("time_windows", {})
         self._low_activity_hours: set[int] = set(tw.get("low_activity_hours", []))
@@ -223,6 +224,7 @@ class RewardsFarmerStrategy(BaseStrategy):
         self._reward_pct: dict[str, float] = {}
         self._pending_orders: dict[str, Signal] = {}
         self._order_placed_at: dict[str, float] = {}  # order_id → timestamp de colocación
+        self._market_entry_ts: dict[str, float] = {}  # condition_id → timestamp primera orden
 
         # Tracking de fill rate para auto-widen (si fill_rate > 5%, incrementar safety)
         self._orders_placed_today: int = 0
@@ -330,56 +332,43 @@ class RewardsFarmerStrategy(BaseStrategy):
         return True
 
     def allocate_capital(self, candidate_cids: list[str], available_cash: float) -> dict[str, float]:
-        """Asigna capital al mercado con mayor share real observado.
-
-        Concentra todo el capital en el mercado con mayor share_pct (dato real
-        de Polymarket, no estimado). Si no hay share en ningún mercado, explora
-        el primero disponible.
-        Saltea mercados bloqueados (market_filter).
-        """
-        max_mkts = self._max_markets
         total = available_cash * 0.95
         alloc: dict[str, float] = {}
-
-        # Filtrar mercados bloqueados
         active_cids = [
             cid for cid in candidate_cids
             if not self._market_filter or not self._market_filter.is_banned({"condition_id": cid})
         ]
-
         if not active_cids:
-            self._logger.info("RF capital alloc: sin mercados activos (todos bloqueados o sin datos)")
             return alloc
 
-        # Recolectar share real observado (dato de Polymarket, no estimación)
-        earning_by_share: dict[str, float] = {}
+        # Realized cents desde la primera orden en cada mercado
+        realized: dict[str, float] = {}
         for cid in active_cids:
-            if self._reward_tracker is None:
+            entry_ts = self._market_entry_ts.get(cid)
+            if entry_ts is None or self._reward_tracker is None:
                 continue
-            share = self._reward_tracker.last_share_pct(cid)
-            if share and share > 0:
-                earning_by_share[cid] = share
+            cents = self._reward_tracker.realized_cents_since(cid, entry_ts)
+            if cents is not None and cents > 0:
+                realized[cid] = cents
 
-        if earning_by_share:
-            # Concentrar todo el capital en el mercado con mayor share real
-            best_cid = max(earning_by_share, key=earning_by_share.get)
-            best_share = earning_by_share[best_cid]
+        if realized:
+            best_cid = max(realized, key=realized.get)
             alloc[best_cid] = total
+            elapsed_min = (time.time() - self._market_entry_ts[best_cid]) / 60
             self._logger.info(
-                "RF capital alloc: %s...=$%.0f @ %.4f%% share → 100%% capital",
-                best_cid[:8], total, best_share,
+                "RF capital alloc: %s...=$%.0f | %.2f¢ farmeados en %.1fmin → 100%% capital",
+                best_cid[:8], total, realized[best_cid], elapsed_min,
             )
         else:
-            # Sin share medible: explorar con el primero disponible
-            exploring = active_cids[:max_mkts]
+            # Sin earnings medidos aún → explorar el top scored (max_markets=1)
+            exploring = active_cids[:self._max_markets]
             per_market = total / len(exploring) if exploring else 0
             for cid in exploring:
                 alloc[cid] = per_market
             self._logger.info(
-                "RF capital alloc: %d mercados en explore → $%.0f c/u (total $%.0f)",
-                len(exploring), per_market, total,
+                "RF capital alloc: %d explore → $%.0f c/u (sin realized aún)",
+                len(exploring), per_market,
             )
-
         return alloc
 
     def evaluate(self, market_data: dict[str, Any]) -> list[Signal]:
@@ -394,6 +383,7 @@ class RewardsFarmerStrategy(BaseStrategy):
         condition_id = market_data.get("condition_id", "")
         if not condition_id:
             return []
+        self._market_volume[condition_id] = float(market_data.get("volume_24h", 0.0))
 
         tokens = market_data.get("tokens", [])
         token_data = market_data.get("token_data", {})
@@ -408,6 +398,10 @@ class RewardsFarmerStrategy(BaseStrategy):
         min_shares = max(MIN_SHARES_FALLBACK, rewards_min_size)
 
         if max_spread_usd < MIN_MAX_SPREAD_USD:
+            self._logger.info(
+                "RF eval %s...: skip max_spread=%.4f < MIN=%.4f",
+                condition_id[:12], max_spread_usd, MIN_MAX_SPREAD_USD,
+            )
             return []
 
         available_cash = float(market_data.get("available_cash", self._max_capital_per_market))
@@ -445,6 +439,13 @@ class RewardsFarmerStrategy(BaseStrategy):
             # Shadow orders: viabilidad contra tope nocional, no contra capital
             if min_shares * t_mid_v <= MAX_ORDER_NOTIONAL:
                 viable_token_ids.add(tid_v)
+
+        if not viable_token_ids:
+            self._logger.info(
+                "RF eval %s...: skip (0 viable tokens, min_shares=%d)",
+                condition_id[:12], int(min_shares),
+            )
+            return []
 
         n_viable = max(1, len(viable_token_ids))
 
@@ -655,6 +656,8 @@ class RewardsFarmerStrategy(BaseStrategy):
                 # No colocar si el mercado está bloqueado (p.ej. non_earning reciente)
                 if self._market_filter and self._market_filter.is_banned({"condition_id": sig.market_id}):
                     continue
+                if sig.market_id not in self._market_entry_ts:
+                    self._market_entry_ts[sig.market_id] = time.time()
                 to_place.append(sig)
                 continue
 
@@ -684,7 +687,11 @@ class RewardsFarmerStrategy(BaseStrategy):
             # Criterio 3: non_earning — la orden lleva >= 3min y no genera ¢/min suficientes
             non_earning = False
             order_age_sec = 0.0
-            if oid and self._reward_tracker:
+            vol_zero = self._market_volume.get(sig.market_id, 0.0) == 0.0
+            if vol_zero:
+                danger = False
+                non_earning = False
+            elif oid and self._reward_tracker:
                 placed_at = self._order_placed_at.get(oid, 0.0)
                 order_age_sec = time.time() - placed_at if placed_at > 0 else 0.0
                 if order_age_sec >= GRACE_PERIOD_SEC:
@@ -740,6 +747,8 @@ class RewardsFarmerStrategy(BaseStrategy):
                     # Bloquear mercado — no re-colocar, liberar capital para reasignación
                     if self._market_filter:
                         self._market_filter.block_market_until(sig.market_id, NON_EARNING_BLOCK_HOURS)
+                    self._market_entry_ts.pop(sig.market_id, None)
+                    self._active_farms.pop(sig.market_id, None)
                     share_pct = self._reward_tracker.last_share_pct(sig.market_id)
                     share_str = f"share={share_pct:.4f}%" if share_pct else "share=0"
                     self._logger.info(

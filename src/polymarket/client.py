@@ -690,8 +690,6 @@ class PolymarketClient:
 
     @_log_api_call
     @retry_with_backoff(max_attempts=3)
-    @_log_api_call
-    @retry_with_backoff(max_attempts=3)
     def get_balance(self) -> float:
         """Obtiene el balance pUSD disponible en la cuenta.
 

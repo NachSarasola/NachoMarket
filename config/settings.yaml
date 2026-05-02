@@ -3,7 +3,7 @@ mode: live
 signature_type: 2
 
 # Capital y riesgo
-capital_total: 55
+capital_total: 50
 max_risk_per_market: 0.25
 max_daily_drawdown: 10.0
 kelly_fraction: 0.15
@@ -19,7 +19,7 @@ strategies_enabled:
 # LP Rewards Farming v2 - Pivot a mercados chicos/nuevos
 rewards_farmer:
   max_capital_per_market: 50.0       # Antes 40. Mas capital en mercado dominado = mas rewards (scoring cuadratico)
-  min_rewards_pool_usd: 10.0         # Capturar pools chicos donde $50 puede capturar share significativo
+  min_rewards_pool_usd: 15.0         # Minimo $15/dia para evitar capital muerto en pools diminutos
   max_markets_simultaneous: 1       # Concentrar todo el capital en un solo mercado
   two_sided: false
   spread_pct_of_max: 0.80

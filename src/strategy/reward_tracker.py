@@ -1,17 +1,16 @@
 """RewardTracker — mide ¢/min realmente farmeados por mercado.
 
-Muestrea client.get_reward_percentages() cada 60s y calcula el delta de
-share acumulado × daily_rate para obtener una tasa observada de ¢/min.
+Muestrea client.get_reward_percentages() cada 60s. El share% devuelto por
+Polymarket es una foto instantánea de tu participación en el libro.
 
-Sin este módulo el bot solo sabe si una orden está "scoring" (bool). Con él
-puede cancelar mercados que no generan suficiente retorno y concentrar capital
-en los que sí rinden.
+Cálculo correcto (integración real, sin extrapolar):
+  Para cada par de muestras consecutivas:
+    - avg_share = (share_prev + share_cur) / 2
+    - elapsed_min = (ts_cur - ts_prev) / 60
+    - earned_cents = avg_share% × daily_rate × (elapsed_min / 1440) × 100
+  Sumar todos los intervalos → cents ganados REALMENTE en ese periodo.
 
-Mecanismo:
-  - get_reward_percentages() → % share acumulado del día por mercado (0-100)
-  - delta_pct × daily_rate = USD farmeados en el intervalo
-  - EMA(α=0.4) sobre los pares de delta para suavizar lag del endpoint (~1-2min)
-  - Retorna None si no hay suficiente historia (< 2 muestras separadas ≥ 30s)
+El c/min es earned_total / minutos_totales de los intervalos.
 """
 
 import json
@@ -30,6 +29,7 @@ EMA_ALPHA = 0.6
 STALE_FACTOR = 2.5      # si buf[-1].ts > STALE_FACTOR * interval → dato muerto
 PERSIST_INTERVAL_SEC = 300
 PERSIST_PATH = "data/reward_tracker.json"
+MINUTES_PER_DAY = 1440.0
 
 
 class _Sample(NamedTuple):
@@ -52,7 +52,7 @@ class RewardTracker:
         self._sample_interval = sample_interval_sec
         self._window_sec = window_sec
         self._persist_path = Path(persist_path)
-        self._buffers: dict[str, deque[_Sample]] = defaultdict(lambda: deque(maxlen=16))
+        self._buffers: dict[str, deque[_Sample]] = defaultdict(lambda: deque(maxlen=128))
         self._ema: dict[str, float] = {}
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
@@ -114,31 +114,34 @@ class RewardTracker:
             )
 
     def _update_ema(self, cid: str) -> None:
+        """Integra earned cents sobre los intervalos en la ventana."""
         buf = list(self._buffers[cid])
-        if len(buf) < 4:
+        if len(buf) < 2:
             return
 
         now = time.time()
-        rates: list[float] = []
+        total_earned_cents = 0.0
+        total_min = 0.0
         for i in range(1, len(buf)):
             prev, cur = buf[i - 1], buf[i]
-            if (now - cur.ts) > self._window_sec + self._sample_interval:
+            if now - cur.ts > self._window_sec + self._sample_interval:
                 continue
-            delta_pct = cur.share_pct - prev.share_pct
-            if delta_pct <= 0:
-                rates.append(0.0)
-                continue
-            delta_min = max((cur.ts - prev.ts) / 60.0, 0.1)
-            delta_usd = (delta_pct / 100.0) * max(prev.daily_rate, cur.daily_rate)
-            rates.append((delta_usd * 100.0) / delta_min)
+            elapsed_min = max((cur.ts - prev.ts) / 60.0, 0.1)
+            avg_share = (prev.share_pct + cur.share_pct) / 2.0
+            daily_rate = max(prev.daily_rate, cur.daily_rate)
+            earned = (avg_share / 100.0) * daily_rate * (elapsed_min / MINUTES_PER_DAY) * 100.0
+            total_earned_cents += earned
+            total_min += elapsed_min
 
-        if not rates:
+        if total_min <= 0:
             return
 
+        cpm = total_earned_cents / total_min
         current = self._ema.get(cid)
-        for rate in rates:
-            current = rate if current is None else EMA_ALPHA * rate + (1 - EMA_ALPHA) * current
-        self._ema[cid] = current
+        if current is None:
+            self._ema[cid] = cpm
+        else:
+            self._ema[cid] = EMA_ALPHA * cpm + (1 - EMA_ALPHA) * current
 
     def cents_per_min(self, condition_id: str) -> float | None:
         """¢/min observado para el mercado.
@@ -154,9 +157,7 @@ class RewardTracker:
         if len(buf) < 2:
             return None
 
-        # Staleness guard: si el tracker no ha visto este mercado recientemente
-        # (desapareció de get_reward_percentages), su EMA es historia muerta.
-        # Retornamos 0.0 — diferente de None para que no vaya al bucket exploring.
+        # Staleness guard
         if time.time() - buf[-1].ts > STALE_FACTOR * self._sample_interval:
             return 0.0
 
@@ -168,8 +169,8 @@ class RewardTracker:
         if (valid[-1].ts - valid[0].ts) < 30:
             return None
 
-        # Share stagnation: si las últimas 3+ muestras tienen el mismo share_pct,
-        # la orden no está scoreando → retornar 0.0 (no None, para que no vaya a explore)
+        # Share stagnation: si las últimas 5+ muestras tienen el mismo share_pct,
+        # la orden no está scoreando → retornar 0.0
         last_share = valid[-1].share_pct
         stagnant_count = 0
         for s in reversed(valid):
@@ -177,7 +178,7 @@ class RewardTracker:
                 stagnant_count += 1
             else:
                 break
-        if stagnant_count >= 3:
+        if stagnant_count >= 5:
             return 0.0
 
         with self._lock:
@@ -195,6 +196,24 @@ class RewardTracker:
             if buf:
                 return buf[-1].share_pct
         return None
+
+    def realized_cents_since(self, condition_id: str, since_ts: float) -> float | None:
+        """Centavos USD farmeados REALMENTE desde since_ts."""
+        with self._lock:
+            buf = list(self._buffers.get(condition_id, deque()))
+        relevant = [s for s in buf if s.ts >= since_ts]
+        if len(relevant) < 2:
+            return None
+
+        total_earned_cents = 0.0
+        for i in range(1, len(relevant)):
+            prev, cur = relevant[i - 1], relevant[i]
+            elapsed_min = max((cur.ts - prev.ts) / 60.0, 0.1)
+            avg_share = (prev.share_pct + cur.share_pct) / 2.0
+            daily_rate = max(prev.daily_rate, cur.daily_rate)
+            earned = (avg_share / 100.0) * daily_rate * (elapsed_min / MINUTES_PER_DAY) * 100.0
+            total_earned_cents += earned
+        return total_earned_cents
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:

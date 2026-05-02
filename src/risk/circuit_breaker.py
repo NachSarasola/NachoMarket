@@ -233,6 +233,8 @@ class CircuitBreaker:
             True si se acaba de triggear (caller puede alertar); False si OK
             o si ya estaba triggered.
         """
+        if current_balance <= 0:
+            return False  # dato stale o API error, no triggerear
         if self._loss_reserve_usdc <= 0:
             return False
         if self._triggered:

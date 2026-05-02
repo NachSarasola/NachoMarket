@@ -102,9 +102,7 @@ class MarketAnalyzer:
 
         self._filter = MarketFilter(config)
 
-        self._rf_max_cap = float(config.get("rewards_farmer", {}).get("max_capital_per_market", 33.0))
         self._rf_min_pool = float(config.get("rewards_farmer", {}).get("min_rewards_pool_usd", 5.0))
-        self._rf_two_sided = bool(config.get("rewards_farmer", {}).get("two_sided", True))
 
         # Pesos recalibrados para small-cap: priorizar baja competencia sobre pool alto.
         # competition=0.35: si el book está vacío, nuestro $50 captura 100% del share.
@@ -155,6 +153,7 @@ class MarketAnalyzer:
         scan_passes = [
             ("volume24hr", "false", 5000, 500),    # alto vol, mas profundo, more streak
             ("createdAt",  "false", 1000, 1000),   # recien creados, sin early-stop agresivo
+            ("volume24hr", "true",  2000, 200),    # menor volumen primero: captura vol=0 con rewards
         ]
 
         for order_by, ascending, max_fetch_pass, early_stop_threshold in scan_passes:
@@ -579,48 +578,7 @@ class MarketAnalyzer:
         if market.get("rewards_active") and total > 0:
             total = min(total * 1.3, 1.0)
 
-        # Boost por bajo volumen (first-mover, poca competencia LP).
-        # Low-volume = máxima prioridad. High volume = whale territory, rechazar.
         volume_24h = float(market.get("volume_24h", 0))
-        if volume_24h <= 0:
-            total *= 2.00       # nuevo/sin trades — ventaja máxima de primer entrante
-        elif volume_24h < 1_000:
-            total *= 1.60       # ultra-bajo volumen: sweet spot
-        elif volume_24h < 5_000:
-            total *= 1.30
-        elif volume_24h < 50_000:
-            total *= 1.00       # neutral
-        elif volume_24h > 1_000_000:
-            total *= 0.40       # whale territory: casi descartado
-        elif volume_24h > 500_000:
-            total *= 0.55
-        elif volume_24h > 100_000:
-            total *= 0.70
-        elif volume_24h > 50_000:
-            total *= 0.85
-        total = min(total, 1.0)
-
-        # Pool boost: entre mercados de baja competencia, preferir los de mayor pool.
-        # $500+/día en un mercado sin volumen es una mina de oro para small-cap.
-        rewards_rate = float(market.get("rewards_rate", 0.0))
-        if market.get("rewards_active") and rewards_rate > 0:
-            if rewards_rate >= 500:
-                total *= 1.30   # pool enorme sin competencia = ideal
-            elif rewards_rate >= 300:
-                total *= 1.20
-            elif rewards_rate >= 100:
-                total *= 1.10
-            elif rewards_rate >= 50:
-                total *= 1.05
-            # pools <$50: sin boost extra (ya tienen ventaja por volumen bajo)
-        total = min(total, 1.0)
-
-        # Synergy: bajo vol + alto pool = máxima eficiencia.
-        if volume_24h < 5_000 and rewards_rate >= 100:
-            total *= 1.30
-        elif volume_24h < 10_000 and rewards_rate >= 50:
-            total *= 1.15
-        total = min(total, 1.0)
 
         logger.debug(
             "score '%s': comp=%.2f spread=%.2f rewards=%.2f acc=%.2f vol=%.2f time=%.2f vol24h=$%.0f -> %.3f",
@@ -666,7 +624,23 @@ class MarketAnalyzer:
 
         logger.info("select_top_markets: %d/%d con score>0", len(scored), len(markets))
 
-        scored.sort(key=lambda m: m["_score"], reverse=True)
+        # Sort: vol=0 primero absoluto, luego MAYOR pool, luego MENOR volumen, score DESC
+        scored.sort(key=lambda m: (
+            0 if float(m.get("volume_24h", 0)) == 0 else 1,
+            -float(m.get("rewards_rate", 0)),
+            float(m.get("volume_24h", 0)),
+            -float(m.get("_score", 0)),
+        ))
+
+        if scored:
+            top5 = scored[:5]
+            logger.info(
+                "select_top_markets sort top-5: %s",
+                " | ".join(
+                    f"#{i+1} vol=${m.get('volume_24h', 0):.0f} pool=${m.get('rewards_rate', 0):.0f} score={m.get('_score', 0):.3f}"
+                    for i, m in enumerate(top5)
+                ),
+            )
         selected = self._apply_category_cap(scored, n)
 
         if selected:
