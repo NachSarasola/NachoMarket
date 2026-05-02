@@ -1,17 +1,17 @@
 # NachoMarket v2 - Mercados target y parametros
-# Optimizado para rewards farming two-sided
-min_daily_volume_usd: 500
-small_market_volume_usd: 200
-max_markets_simultaneous: 8        # Pool de candidatos; RF elige los mejores 4
+# Pivot estrategico: rewards farming en mercados chicos/nuevos (Epstein-style)
+min_daily_volume_usd: 0            # Sin filtro de volumen: permitir mercados nuevos/sin volume
+small_market_volume_usd: 0         # Sin filtro: guarded con `if > 0` en _passes_gamma_filters
+max_markets_simultaneous: 16       # Pool de candidatos; RF elige los mejores 8
 bot_order_size: 6.0                # Placeholder; RF sizea por shares
 market_refresh_interval_sec: 300
 
 # Filtros de mercado
 filters:
-  min_liquidity_usd: 200
+  min_liquidity_usd: 0
   max_spread_pct: 8.0
-  min_time_to_resolution_hours: 96   # 4 dias — captura >= 1 epoch completo
-  min_market_age_hours: 6
+  min_time_to_resolution_hours: 24    # Antes 168 (7d). Bajamos para captar mercados de resolucion corta tipo Epstein-by-May-8
+  min_market_age_hours: 0             # Antes 6. Queremos mercados recien salidos (first mover advantage)
   excluded_categories:
     - entertainment
   excluded_keywords:
@@ -19,9 +19,9 @@ filters:
     - "launch"
     - "opening weekend"
     - "tomorrow"
-  mid_price_min: 0.05
-  mid_price_max: 0.95
-  min_reward_density: 0.005          # $/dia por $ de profundidad de competencia
+  mid_price_min: 0.03                 # Antes 0.05. Algunos mercados chicos tienen YES @ 0.04
+  mid_price_max: 0.97                 # Antes 0.95. Para no perder el lado YES de mercados >0.95
+  min_reward_density: 0.0             # desactivado: filtro calibrado para LPs grandes
 
 # Competition scoring
 competition:

@@ -7,10 +7,12 @@ Tres capas de filtrado que se aplican ANTES del scoring:
 3. News-risk: mercados nuevos con altos rewards o cercanos a resolucion
 """
 
+import json
 import logging
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("nachomarket.market_filter")
@@ -18,6 +20,8 @@ logger = logging.getLogger("nachomarket.market_filter")
 
 class MarketFilter:
     """Filtra mercados no aptos antes de scoring y seleccion."""
+
+    _BLOCKS_FILE = Path("data/market_blocks.json")
 
     def __init__(self, config: dict[str, Any]) -> None:
         banned = config.get("banned_markets", {})
@@ -30,8 +34,8 @@ class MarketFilter:
         self._min_market_age_hours = filters.get("min_market_age_hours", 48)
         self._dedup_similarity_threshold = 0.7
 
-        # Temporal blocks: {condition_id: expiry_timestamp}
-        self._temporal_blocks: dict[str, float] = {}
+        # Temporal blocks: {condition_id: expiry_timestamp} — persisten entre reinicios
+        self._temporal_blocks: dict[str, float] = self._load_blocks()
 
     # ------------------------------------------------------------------
     # 1. Banlist
@@ -43,11 +47,20 @@ class MarketFilter:
         if cid in self._banned_ids:
             return True
 
-        # Check temporal blocks
+        # Check temporal blocks (formato nuevo: (expiry, count) o antiguo: float)
         if cid in self._temporal_blocks:
-            if time.time() < self._temporal_blocks[cid]:
-                return True
-            del self._temporal_blocks[cid]
+            entry = self._temporal_blocks[cid]
+            if isinstance(entry, (int, float)):
+                # Formato antiguo
+                if time.time() < entry:
+                    return True
+                del self._temporal_blocks[cid]
+            elif isinstance(entry, (list, tuple)) and len(entry) == 2:
+                # Formato nuevo: (expiry, count)
+                exp, _ = entry
+                if time.time() < exp:
+                    return True
+                del self._temporal_blocks[cid]
 
         question = market.get("question", "")
         for pattern in self._banned_patterns:
@@ -65,9 +78,85 @@ class MarketFilter:
         return result
 
     def block_market_until(self, condition_id: str, hours: float) -> None:
-        """Bloquea temporalmente un mercado por N horas."""
-        self._temporal_blocks[condition_id] = time.time() + hours * 3600
-        logger.info(f"Mercado {condition_id[:8]}... bloqueado por {hours}h")
+        """Bloquea temporalmente un mercado por N horas (persiste a disco).
+
+        Incremental x2: si el mercado ya estaba bloqueado, duplica el tiempo.
+        Mínimo 1h. Resetea contador si pasaron >30min desde el último block.
+        """
+        now = time.time()
+        min_hours = max(1.0, hours)  # Mínimo 1h (req. usuario)
+
+        if condition_id in self._temporal_blocks:
+            entry = self._temporal_blocks[condition_id]
+            # Migrar formato antiguo (float) a nuevo (tuple)
+            if isinstance(entry, (int, float)):
+                old_expiry = entry
+                block_count = 1
+            else:
+                old_expiry, block_count = entry
+
+            # Si el bloqueo anterior ya expiró hace >30min, resetea contador
+            if now - old_expiry > 1800:  # 30 min
+                block_count = 1
+            else:
+                block_count += 1
+
+            new_hours = min_hours * (2 ** (block_count - 1))
+            self._temporal_blocks[condition_id] = (now + new_hours * 3600, block_count)
+            logger.info(
+                f"Mercado {condition_id[:8]}... re-bloqueado: {new_hours:.0f}h (intento #{block_count})"
+            )
+        else:
+            # Primer bloqueo
+            self._temporal_blocks[condition_id] = (now + min_hours * 3600, 1)
+            logger.info(f"Mercado {condition_id[:8]}... bloqueado por {min_hours:.0f}h")
+
+        self._save_blocks()
+
+    def _load_blocks(self) -> dict[str, tuple[float, int]]:
+        """Carga bloques persistidos, descartando los ya expirados.
+
+        Formato nuevo: {cid: (expiry_timestamp, block_count)}
+        Formato antiguo (migración): {cid: expiry_timestamp}
+        """
+        try:
+            if self._BLOCKS_FILE.exists():
+                raw: dict = json.loads(self._BLOCKS_FILE.read_text("utf-8"))
+                now = time.time()
+                active: dict[str, tuple[float, int]] = {}
+                for cid, entry in raw.items():
+                    if isinstance(entry, (int, float)):
+                        # Formato antiguo: migrar a nuevo
+                        if entry > now:
+                            active[cid] = (entry, 1)
+                    elif isinstance(entry, (list, tuple)) and len(entry) == 2:
+                        exp, count = entry
+                        if exp > now:
+                            active[cid] = (exp, int(count))
+                expired = len(raw) - len(active)
+                if active:
+                    logger.info(
+                        "MarketFilter: %d bloques cargados desde disco (%d expirados ignorados)",
+                        len(active), expired,
+                    )
+                    for cid, (exp, count) in active.items():
+                        mins = (exp - now) / 60
+                        logger.info("  · %s... bloqueado %.0f min más (intento #%d)", cid[:8], mins, count)
+                return active
+        except Exception:
+            logger.debug("MarketFilter: no se pudo cargar market_blocks.json", exc_info=True)
+        return {}
+
+    def _save_blocks(self) -> None:
+        """Persiste los bloques activos a disco."""
+        try:
+            self._BLOCKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self._BLOCKS_FILE.write_text(
+                json.dumps(self._temporal_blocks, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("MarketFilter: no se pudo guardar market_blocks.json", exc_info=True)
 
     # ------------------------------------------------------------------
     # 2. Deduplicacion
@@ -95,6 +184,9 @@ class MarketFilter:
 
             for j in range(i + 1, len(markets)):
                 if j in assigned:
+                    continue
+                # No colapsar dos mercados que ambos tienen rewards — son oportunidades independientes
+                if markets[i].get("rewards_active") and markets[j].get("rewards_active"):
                     continue
                 tokens_j = _tokenize(markets[j].get("question", ""))
                 sim = _jaccard_similarity(tokens_i, tokens_j)
@@ -141,18 +233,28 @@ class MarketFilter:
         Criterios:
         - Mercado nuevo (< min_market_age_hours) con rewards altos (> $500/dia)
         - Mercado con < 48h hasta resolucion y keywords de tiempo
+
+        EXCEPCION: si min_size <= 50, NO aplicar el cooldown por edad nueva.
+        Estos son los mercados Epstein-style que justamente queremos capturar al
+        lanzamiento (poca competencia inicial). El shadow quoting + reposicionamiento
+        cubre el riesgo de news.
         """
+        rewards_min_size = float(market.get("rewards_min_size", 0))
+        small_market_exception = 0 < rewards_min_size <= 50
+
         # Mercado nuevo con rewards altos = trampa potencial
-        created_at = market.get("_raw", {}).get("createdAt", "")
-        if created_at:
-            try:
-                created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                age_hours = (datetime.now(timezone.utc) - created).total_seconds() / 3600
-                rewards = market.get("rewards_rate", 0)
-                if age_hours < self._min_market_age_hours and rewards > 500:
-                    return True
-            except (ValueError, TypeError):
-                pass
+        # (saltamos este check para mercados con min_size <= 50)
+        if not small_market_exception:
+            created_at = market.get("_raw", {}).get("createdAt", "")
+            if created_at:
+                try:
+                    created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    age_hours = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+                    rewards = market.get("rewards_rate", 0)
+                    if age_hours < self._min_market_age_hours and rewards > 500:
+                        return True
+                except (ValueError, TypeError):
+                    pass
 
         # Mercado cercano a resolucion con keywords temporales
         end_date_str = market.get("end_date", "")

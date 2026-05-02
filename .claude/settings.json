@@ -6,7 +6,9 @@
       "Grep",
       "Bash(python -m pytest*)",
       "Bash(python src/main.py --paper*)",
-      "Bash(cat data/trades.jsonl*)"
+      "Bash(cat data/trades.jsonl*)",
+      "Bash(ssh -i \"C:/Users/Usuario/Downloads/NachoMarketAWS.pem\"*)",
+      "Bash(scp -i \"C:/Users/Usuario/Downloads/NachoMarketAWS.pem\"*)"
     ],
     "deny": [
       "Bash(rm -rf*)",

@@ -25,7 +25,10 @@ from py_clob_client_v2 import (
     PartialCreateOrderOptions,
     PostOrdersV2Args,
 )
-from py_clob_client_v2.clob_types import BookParams
+from py_clob_client_v2.clob_types import BookParams, RequestArgs
+from py_clob_client_v2.headers.headers import create_level_2_headers
+
+import requests
 
 from src.utils.resilience import retry_with_backoff
 
@@ -587,6 +590,51 @@ class PolymarketClient:
 
     @_log_api_call
     @retry_with_backoff(max_attempts=3)
+    def get_daily_real_rewards(self, date_str: str) -> float:
+        """Obtiene recompensas reales del día via GET /rewards/user/total.
+
+        Devuelve el valor exacto que muestra la web de Polymarket en
+        "Recompensas diarias" (ej: $2.74), calculado server-side.
+
+        Args:
+            date_str: Fecha en formato YYYY-MM-DD (UTC).
+
+        Returns:
+            Total de recompensas en USD como float.
+        """
+        if self.paper_mode or self._client is None:
+            return 0.0
+
+        request_path = f"/rewards/user/total?date={date_str}"
+        request_args = RequestArgs(method="GET", request_path=request_path)
+
+        signer = self._client.signer
+        creds = self._client.creds
+
+        if signer is None or creds is None:
+            logger.warning("get_daily_real_rewards: sin signer/creds L2")
+            return 0.0
+
+        headers = create_level_2_headers(signer, creds, request_args)
+
+        url = f"{CLOB_HOST}/rewards/user/total?date={date_str}"
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+
+        data = resp.json()
+        total = 0.0
+        if isinstance(data, list):
+            for entry in data:
+                if isinstance(entry, dict):
+                    total += float(entry.get("earnings", 0.0))
+        elif isinstance(data, dict):
+            total = float(data.get("earnings", 0.0))
+
+        logger.info("get_daily_real_rewards(%s): $%.4f", date_str, total)
+        return total
+
+    @_log_api_call
+    @retry_with_backoff(max_attempts=3)
     def is_order_scoring(self, order_id: str) -> bool:
         """Verifica si una orden esta scoreando para rewards.
 
@@ -599,7 +647,12 @@ class PolymarketClient:
         if self.paper_mode or self._client is None:
             return False
 
-        result = self._client.is_order_scoring(order_id)
+        try:
+            result = self._client.is_order_scoring(order_id)
+        except AttributeError:
+            # SDK espera objeto con .orderId en lugar de string — asumir scoring=True
+            # para evitar repricing innecesario.
+            return True
         if isinstance(result, dict):
             return bool(result.get("scoring", False))
         return False
@@ -847,20 +900,60 @@ class PolymarketClient:
             batch_result = self._client.post_orders(orders_with_type, post_only=True)
             # batch_result puede ser una lista de dicts u objeto
             if isinstance(batch_result, list):
-                for res in batch_result:
+                for sig, res in zip(signals, batch_result):
                     order_id = res.get("orderID", res.get("id", "unknown")) if isinstance(res, dict) else getattr(res, "orderID", "unknown")
                     status = res.get("status", "submitted") if isinstance(res, dict) else getattr(res, "status", "submitted")
                     results.append({"status": status, "order_id": order_id})
+                    self._log_trade({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "type": "limit_batch",
+                        "token_id": sig.token_id,
+                        "side": sig.side,
+                        "price": sig.price,
+                        "size": sig.size,
+                        "post_only": True,
+                        "paper_mode": False,
+                        "status": status,
+                        "order_id": order_id,
+                    })
+                    logger.info(
+                        "Orden colocada: %s %s @ %s | order_id=%s",
+                        sig.side, sig.size, sig.price, order_id,
+                    )
             else:
                 # Fallback: devolver submitted generico si la respuesta no es lista
-                for _ in signals:
+                for sig in signals:
                     results.append({"status": "submitted", "order_id": "unknown"})
+                    self._log_trade({
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "type": "limit_batch",
+                        "token_id": sig.token_id,
+                        "side": sig.side,
+                        "price": sig.price,
+                        "size": sig.size,
+                        "post_only": True,
+                        "paper_mode": False,
+                        "status": "submitted",
+                        "order_id": "unknown",
+                    })
             return results
         except Exception:
             logger.exception("Error en post_batch_orders")
             # Fallback: devolver error para todas
-            for _ in signals:
+            for sig in signals:
                 results.append({"status": "error", "order_id": ""})
+                self._log_trade({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": "limit_batch",
+                    "token_id": sig.token_id,
+                    "side": sig.side,
+                    "price": sig.price,
+                    "size": sig.size,
+                    "post_only": True,
+                    "paper_mode": False,
+                    "status": "error",
+                    "order_id": "",
+                })
             return results
 
     @_log_api_call

@@ -1,43 +1,34 @@
 # NachoMarket - Configuracion general
-mode: live  # paper | live
-
-# Auth Polymarket (convencion oficial py-clob-client-v2)
-# signature_type=0 → EOA (MetaMask directo, sin proxy)
-# signature_type=1 → POLY_PROXY (Magic Link / email wallets)
-# signature_type=2 → POLY_GNOSIS_SAFE (MetaMask + proxy wallet — mas comun)
+mode: live
 signature_type: 2
 
 # Capital y riesgo
-capital_total: 166           # USDC total disponible
-max_risk_per_market: 0.20    # 20% maximo por mercado = $33 (circuit breaker)
-max_daily_drawdown: 8.3      # 5% de $166 — parar si se pierden $8.3 en un dia
-kelly_fraction: 0.25         # Quarter Kelly (conservador)
-min_market_volume: 500       # Solo mercados con >= $500 volumen diario
+capital_total: 166
+max_risk_per_market: 0.25
+max_daily_drawdown: 10.0
+kelly_fraction: 0.15
 
-# Self-review con Claude Haiku
+# Self-review
 review_interval_hours: 8
 review_model: claude-haiku-4-5-20251001
 
-# Estrategias activas — solo RF
+# Estrategias activas
 strategies_enabled:
   - rewards_farmer
 
-# Near-resolution gate
-near_resolution_hours: 336   # 14 dias (336h) minimo para operar
-
-# LP Rewards Farming v2 — Two-sided optimizado
+# LP Rewards Farming v2 - Pivot a mercados chicos/nuevos
 rewards_farmer:
-  max_capital_per_market: 50.0        # $50 por mercado: side_capital=12.5, compra 20 shares a $0.50-$0.68
-  min_rewards_pool_usd: 5.0           # Descartar mercados con rewards < $5/dia
-  max_markets_simultaneous: 3         # 3 mercados × $40 real = $120 desplegado (72% de $166)
-  two_sided: true                     # BID+ASK por token = 3x Q_min vs solo BID
-  spread_pct_of_max: 0.50             # Informativo; _qualifying_bid domina la logica
-  inventory_merge_threshold: 5        # Merge YES+NO cuando ambos >= 5 shares
-  competition_share_min: 0.005        # 0.5% — antes 5% era demasiado alto
-  max_mid_deviation: 0.40             # mid en [0.10, 0.90]
+  max_capital_per_market: 50.0       # Antes 40. Mas capital en mercado dominado = mas rewards (scoring cuadratico)
+  min_rewards_pool_usd: 50.0         # Antes 6. Epstein-style pagan $100/dia, esto filtra mas agresivo
+  max_markets_simultaneous: 12       # Antes 8. Mas diversificacion sobre mercados chicos
+  two_sided: false
+  spread_pct_of_max: 0.80
+  inventory_merge_threshold: 5
+  competition_share_min: 0.02        # Antes 0.01. Trump nos dio 0.01% real, el filtro debe ser mas estricto
+  max_mid_deviation: 0.45
 
 # Loop principal
-main_loop_interval_sec: 30
+main_loop_interval_sec: 15
 health_check_interval_sec: 60
 
 # Logging

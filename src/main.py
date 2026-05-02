@@ -30,6 +30,7 @@ from src.risk.circuit_breaker import CircuitBreaker
 from src.risk.inventory import InventoryManager
 from src.risk.position_sizer import PositionSizer
 from src.review.self_review import SelfReviewer
+from src.strategy.reward_tracker import RewardTracker
 from src.strategy.rewards_farmer import RewardsFarmerStrategy
 from src.telegram.bot import TelegramBot, send_alert
 from src.utils.geo_check import verify_geo_access
@@ -114,6 +115,9 @@ class NachoMarketBot:
         # Heartbeat CRITICO: sin esto Polymarket cancela ordenes GTC tras ~15s de inactividad
         self._client.start_heartbeat(interval_sec=5.0)
 
+        # --- c'. RewardTracker — mide ¢/min realmente farmeados por mercado ---
+        self._reward_tracker = RewardTracker(self._client)
+
         # --- c. WebSocket feed (el thread se arranca en run()) ---
         self._feed = OrderbookFeed()
         # Dead man's switch: pausar bot si el feed queda sin mensajes >60s
@@ -142,9 +146,24 @@ class NachoMarketBot:
         self._position_sizer = PositionSizer(self._risk_config)
         self._inventory = InventoryManager(self._risk_config)
 
+        # Balance cacheado: arranca con capital_total del config, se actualiza cada ciclo
+        self._cached_balance: float = float(self._settings.get("capital_total", 166.0))
+
+        # --- g. Scheduler (self-review, market updates) ---
+        # Merge RF config into markets_config para que enrich_with_rewards lo use
+        if "rewards_farmer" in self._settings:
+            self._markets_config["rewards_farmer"] = self._settings["rewards_farmer"]
+        self._market_analyzer = MarketAnalyzer(self._client, self._markets_config, reward_tracker=self._reward_tracker)
+        self._active_markets: list[dict[str, Any]] = []
+
         merged_strategy_config = {**self._settings, **self._markets_config, **self._risk_config}
         _strategy_factories = {
-            "rewards_farmer": lambda: RewardsFarmerStrategy(self._client, merged_strategy_config, circuit_breaker=self._circuit_breaker),
+            "rewards_farmer": lambda: RewardsFarmerStrategy(
+                self._client, merged_strategy_config,
+                circuit_breaker=self._circuit_breaker,
+                reward_tracker=self._reward_tracker,
+                market_filter=self._market_analyzer.market_filter,
+            ),
         }
         self._strategies = [
             _strategy_factories[name]()
@@ -154,16 +173,6 @@ class NachoMarketBot:
         self._logger.info(
             "Estrategias habilitadas: %s", [s.name for s in self._strategies]
         )
-
-        # Balance cacheado: arranca con capital_total del config, se actualiza cada ciclo
-        self._cached_balance: float = float(self._settings.get("capital_total", 166.0))
-
-        # --- g. Scheduler (self-review, market updates) ---
-        # Merge RF config into markets_config para que enrich_with_rewards lo use
-        if "rewards_farmer" in self._settings:
-            self._markets_config["rewards_farmer"] = self._settings["rewards_farmer"]
-        self._market_analyzer = MarketAnalyzer(self._client, self._markets_config)
-        self._active_markets: list[dict[str, Any]] = []
 
         # --- h. Self-reviewer (Telegram callback resuelto en runtime) ---
         self._reviewer = SelfReviewer(
@@ -209,6 +218,9 @@ class NachoMarketBot:
         # Registrar signal handlers para shutdown graceful
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
+
+        # Arrancar RewardTracker daemon
+        self._reward_tracker.start()
 
         # Arrancar WebSocket en thread daemon
         self._start_ws_feed()
@@ -358,6 +370,21 @@ class NachoMarketBot:
                 "conectado" if self._feed.is_connected() else "DESCONECTADO",
             )
 
+        # Calcular alocación dinámica de capital por mercado via RewardTracker
+        rf_strategy = next(
+            (s for s in self._strategies if s.name == "rewards_farmer"), None
+        )
+        capital_alloc: dict[str, float] = {}
+        if rf_strategy is not None and hasattr(rf_strategy, "allocate_capital"):
+            candidate_cids = [m.get("condition_id", "") for m in markets if m.get("condition_id")]
+            capital_alloc = rf_strategy.allocate_capital(candidate_cids, self._cached_balance)
+            if capital_alloc:
+                top = sorted(capital_alloc.items(), key=lambda x: x[1], reverse=True)[:3]
+                self._logger.info(
+                    "RF capital alloc: %s",
+                    " ".join(f"{cid[:8]}=${v:.0f}" for cid, v in top),
+                )
+
         # Para cada mercado, correr todas las estrategias habilitadas
         for market in markets:
             # Enriquecer con datos real-time del WebSocket si están disponibles
@@ -379,6 +406,11 @@ class NachoMarketBot:
 
             # Inyectar cash disponible para que RF sizee correctamente
             market_data["available_cash"] = self._cached_balance
+
+            # Inyectar cap dinámico calculado por allocate_capital()
+            cid_key = market.get("condition_id", "")
+            if cid_key and cid_key in capital_alloc:
+                market_data["max_total_capital"] = capital_alloc[cid_key]
 
             for strategy in self._strategies:
                 if not strategy.is_active:
@@ -483,19 +515,30 @@ class NachoMarketBot:
         base_exposure = self._inventory.get_total_exposure()
 
         for sig in signals:
-            # Límite de órdenes abiertas
+            # Límite de órdenes abiertas (aplica a todas las estrategias)
             if not self._circuit_breaker.can_place_order():
                 self._logger.info(
                     "Risk filter: límite de órdenes abiertas alcanzado — descartando resto"
                 )
                 break
 
-            # Calcular exposure proyectado con esta señal
+            # Shadow orders (rewards_farmer) no tienen exposure real:
+            # - safety_ticks=2 las aleja del BBO → fill probability ~0
+            # - danger_zone las cancela en <10s si el mercado se mueve
+            # - non_earning las cancela si no generan rewards
+            # RF gestiona su propio riesgo; bypaseamos los checks de exposure.
+            if sig.strategy_name == "rewards_farmer":
+                filtered.append(sig)
+                continue
+
+            # Calcular exposure proyectado con esta señal.
+            # sig.size está en shares; multiplicar por price para obtener USDC.
+            trade_value = sig.size * sig.price
             buys, sells = token_exposure.get(sig.token_id, (0.0, 0.0))
             if sig.side == "BUY":
-                buys += sig.size
+                buys += trade_value
             else:
-                sells += sig.size
+                sells += trade_value
             token_exposure[sig.token_id] = (buys, sells)
 
             projected_exposure = base_exposure + sum(
@@ -508,15 +551,15 @@ class NachoMarketBot:
             ):
                 self._logger.info(
                     "Risk filter: %s %s $%.2f @ %s descartada — exposure $%.2f > 70%% de $%.2f",
-                    sig.strategy_name, sig.side, sig.size, sig.token_id[:8],
+                    sig.strategy_name, sig.side, trade_value, sig.token_id[:8],
                     projected_exposure, self._cached_balance,
                 )
                 # Revertir el incremento para esta señal
                 buys, sells = token_exposure.get(sig.token_id, (0.0, 0.0))
                 if sig.side == "BUY":
-                    buys -= sig.size
+                    buys -= trade_value
                 else:
-                    sells -= sig.size
+                    sells -= trade_value
                 if buys > 0 or sells > 0:
                     token_exposure[sig.token_id] = (buys, sells)
                 else:
@@ -524,7 +567,7 @@ class NachoMarketBot:
                 continue
 
             # Límite de exposure por mercado individual
-            if not self._inventory.can_add_position(sig.market_id, sig.size):
+            if not self._inventory.can_add_position(sig.market_id, trade_value):
                 self._logger.info(
                     "Risk filter: %s %s descartada — límite de mercado %s... alcanzado",
                     sig.strategy_name, sig.side, sig.market_id[:12],
@@ -1478,6 +1521,12 @@ class NachoMarketBot:
             "🛑 *NachoMarket deteniéndose*\n"
             "Cancelando todas las órdenes abiertas..."
         )
+
+        # Detener RewardTracker
+        try:
+            self._reward_tracker.stop()
+        except Exception:
+            self._logger.debug("Error deteniendo RewardTracker (ignorado)")
 
         # Detener heartbeat antes de cancelar ordenes (evita race condition)
         try:

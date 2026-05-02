@@ -36,6 +36,8 @@ GAMMA_API_URL = "https://gamma-api.polymarket.com"
 CLOB_API_URL = "https://clob.polymarket.com"
 CACHE_TTL_SEC = 900  # 15 minutos
 MIN_DAYS_TO_RESOLUTION = 7
+# Shadow orders no necesitan capital real → viabilidad se chequea contra el tope nocional
+_SHADOW_MAX_NOTIONAL = 150.0
 
 
 class _Cache:
@@ -66,9 +68,10 @@ class _Cache:
 class MarketAnalyzer:
     """Seleccion y scoring de mercados para rewards farming."""
 
-    def __init__(self, client: PolymarketClient, config: dict[str, Any]) -> None:
+    def __init__(self, client: PolymarketClient, config: dict[str, Any], reward_tracker: Any = None) -> None:
         self._client = client
         self._cache = _Cache(ttl_sec=CACHE_TTL_SEC)
+        self._reward_tracker = reward_tracker
 
         self._min_volume = config.get("min_daily_volume_usd", 500)
         self._small_market_volume = config.get("small_market_volume_usd", 200)
@@ -102,11 +105,18 @@ class MarketAnalyzer:
         self._rf_min_pool = float(config.get("rewards_farmer", {}).get("min_rewards_pool_usd", 5.0))
         self._rf_two_sided = bool(config.get("rewards_farmer", {}).get("two_sided", True))
 
+        # Pesos recalibrados para pivot a mercados chicos/nuevos.
+        # accessibility (min_size bajo) sube a 0.30 porque es lo que diferencia
+        # Pesos rebalanceados: priorizar rewards y eficiencia sobre accessibility.
+        # accessibility bajado a 0.15: min_size alto ya no penaliza tanto.
+        # rewards subido a 0.35: capturar mercados con buen pool absoluto.
+        # competition bajado a 0.20: evitar sobrepeso en mercados poco profundos.
         self._weights = {
-            "spread": 0.15,
-            "competition": 0.15,
-            "rewards": 0.45,
-            "volatility": 0.15,
+            "spread": 0.10,
+            "competition": 0.20,
+            "rewards": 0.35,
+            "accessibility": 0.15,
+            "volatility": 0.05,
             "time_to_resolution": 0.10,
         }
 
@@ -138,55 +148,66 @@ class MarketAnalyzer:
 
         logger.info("Consultando Gamma API para mercados activos...")
         all_markets: list[dict[str, Any]] = []
-        offset = 0
+        seen_cids: set[str] = set()
         limit = 100
-        max_fetch = 2000  # Los rewards estan en los primeros ~1-2k por volumen
-        no_rewards_streak = 0
+        # Dos pases para captar tanto mercados de alto volumen como recien salidos.
+        # Los Epstein-style (low vol pero rewards activos) estan profundos en el sort
+        # por volumen pero arriba en el sort por createdAt DESC.
+        scan_passes = [
+            ("volume24hr", "false", 5000, 500),    # alto vol, mas profundo, more streak
+            ("createdAt",  "false", 1000, 1000),   # recien creados, sin early-stop agresivo
+        ]
 
-        while True:
-            params = {
-                "limit": limit,
-                "offset": offset,
-                "active": "true",
-                "closed": "false",
-                "order": "volume24hr",
-                "ascending": "false",
-            }
-            resp = requests.get(
-                f"{GAMMA_API_URL}/markets",
-                params=params,
-                timeout=(15, 120),
-            )
-            resp.raise_for_status()
-            batch = resp.json()
-
-            if not batch:
-                break
-
-            # Early-stop: si los ultimos 200 mercados no tienen rewards, parar
-            batch_has_rewards = any(
-                bool(m.get("rewards")) for m in batch
-            )
-            if not batch_has_rewards:
-                no_rewards_streak += len(batch)
-            else:
-                no_rewards_streak = 0
-
-            all_markets.extend(batch)
-            offset += limit
-
-            if len(batch) < limit:
-                break
-
-            if len(all_markets) >= max_fetch:
-                logger.info("discover_markets: max_fetch=%d alcanzado", max_fetch)
-                break
-
-            if no_rewards_streak >= 200:
-                logger.info(
-                    "discover_markets: early-stop (%d sin rewards consecutivos)", no_rewards_streak
+        for order_by, ascending, max_fetch_pass, early_stop_threshold in scan_passes:
+            offset = 0
+            no_rewards_streak = 0
+            pass_count = 0
+            while True:
+                params = {
+                    "limit": limit,
+                    "offset": offset,
+                    "active": "true",
+                    "closed": "false",
+                    "order": order_by,
+                    "ascending": ascending,
+                }
+                resp = requests.get(
+                    f"{GAMMA_API_URL}/markets",
+                    params=params,
+                    timeout=(15, 120),
                 )
-                break
+                resp.raise_for_status()
+                batch = resp.json()
+
+                if not batch:
+                    break
+
+                batch_has_rewards = any(bool(m.get("rewards")) for m in batch)
+                if not batch_has_rewards:
+                    no_rewards_streak += len(batch)
+                else:
+                    no_rewards_streak = 0
+
+                # Dedup por conditionId entre pases
+                for m in batch:
+                    cid = m.get("conditionId", "")
+                    if cid and cid not in seen_cids:
+                        seen_cids.add(cid)
+                        all_markets.append(m)
+                        pass_count += 1
+
+                offset += limit
+
+                if len(batch) < limit:
+                    break
+                if pass_count >= max_fetch_pass:
+                    break
+                if no_rewards_streak >= early_stop_threshold:
+                    logger.info(
+                        "discover_markets: early-stop pase=%s (%d sin rewards)",
+                        order_by, no_rewards_streak,
+                    )
+                    break
 
         cutoff = datetime.now(timezone.utc) + timedelta(days=self._min_days_to_resolution)
         eligible = [
@@ -222,9 +243,10 @@ class MarketAnalyzer:
         if category in [c.lower() for c in self._excluded_categories]:
             return False
 
-        volume = _safe_float(market.get("volume24hr", market.get("volume", 0)))
-        if volume < self._small_market_volume:
-            return False
+        if self._small_market_volume > 0:
+            volume = _safe_float(market.get("volume24hr", market.get("volume", 0)))
+            if volume < self._small_market_volume:
+                return False
 
         end_date_str = market.get("endDate", market.get("end_date_iso", ""))
         if end_date_str:
@@ -326,7 +348,6 @@ class MarketAnalyzer:
             )
             return markets
 
-        side_cap = self._rf_max_cap / (2.0 if self._rf_two_sided else 1.0)
         rewarded_count = 0
         skipped_pool = 0
         skipped_viability = 0
@@ -350,11 +371,16 @@ class MarketAnalyzer:
                 continue
 
             # Viability check: podemos cubrir el min_size con nuestro capital?
-            mid = self._get_representative_price(market)
+            # Usar mid_price de Gamma (bestBid/bestAsk) como fuente primaria.
+            # _get_representative_price() devuelve 0 cuando Gamma no incluye
+            # precios por token en el list endpoint, forzando fallback a 0.5 y
+            # rechazando mercados low-mid que son perfectamente viables.
+            mid = market.get("mid_price") or self._get_representative_price(market)
             if mid <= 0:
                 mid = 0.5
+            # Shadow orders: viabilidad contra tope nocional, no contra capital del bot
             required_usd = min_size * mid
-            if required_usd > side_cap:
+            if required_usd > _SHADOW_MAX_NOTIONAL:
                 skipped_viability += 1
                 continue
 
@@ -455,8 +481,7 @@ class MarketAnalyzer:
 
         logger.info(
             "enrich_density: %d/%d conservados (skip_density=%d min=%.4f)",
-            len(kept) - (len(markets) - len(kept) - skipped),
-            len(markets), skipped, self._min_reward_density,
+            len(kept), len(markets), skipped, self._min_reward_density,
         )
         return markets  # retorna todos (score_market filtra por rewards_active)
 
@@ -489,7 +514,16 @@ class MarketAnalyzer:
 
         participation = self._estimate_participation_share(market)
         market["_participation_share"] = participation
-        scores["competition"] = min(participation / 0.20, 1.0)
+        cid = market.get("condition_id", "")
+        if self._reward_tracker and cid:
+            observed = self._reward_tracker.cents_per_min(cid)
+            if observed is not None:
+                scores["competition"] = min(observed / 2.0, 1.0)
+                market["_observed_cents_per_min"] = observed
+            else:
+                scores["competition"] = min(participation / 0.05, 1.0)
+        else:
+            scores["competition"] = min(participation / 0.05, 1.0)
 
         spread = self._get_market_spread(market)
         scores["spread"] = min(spread / 5.0, 1.0) if spread and spread > 0 else 0.0
@@ -508,6 +542,21 @@ class MarketAnalyzer:
         else:
             scores["rewards"] = 0.0
 
+        # Accessibility: mercados con min_size bajo son accesibles a capital chico.
+        # min_size=20 -> 1.0, min_size=50 -> 0.6, min_size=100 -> 0.2, min_size>=200 -> 0
+        # Razon: en Epstein min_size=20 ($2-4 capital) podemos colocar muchos multiplos del minimo.
+        if rewards_active and rewards_min_size > 0:
+            if rewards_min_size <= 20:
+                scores["accessibility"] = 1.0
+            elif rewards_min_size <= 50:
+                scores["accessibility"] = 1.0 - (rewards_min_size - 20) / 75.0  # 50 -> 0.6
+            elif rewards_min_size <= 200:
+                scores["accessibility"] = max(0.0, 0.6 - (rewards_min_size - 50) / 250.0)
+            else:
+                scores["accessibility"] = 0.0
+        else:
+            scores["accessibility"] = 0.5  # neutral si no hay info
+
         if mid_price > 0:
             scores["volatility"] = max(1.0 - abs(mid_price - 0.5) * 2, 0.0)
         else:
@@ -515,16 +564,50 @@ class MarketAnalyzer:
 
         days_left = self._days_to_resolution(market)
         scores["time_to_resolution"] = min(days_left / 30.0, 1.0) if days_left and days_left > 0 else 0.5
-
         total = sum(scores.get(k, 0.0) * w for k, w in self._weights.items())
+
+        # Boost suave por rewards activos. Antes era x2 -> saturaba todos en 1.0
+        # perdiendo diferenciacion entre min_size=200 y min_size=20.
         if market.get("rewards_active") and total > 0:
-            total = min(total * 2.0, 1.0)
+            total = min(total * 1.3, 1.0)
+
+        # Boost por bajo volumen (first-mover, poca competencia LP) y penalizacion
+        # por alto volumen (LPs profesionales dominan el orderbook).
+        volume_24h = float(market.get("volume_24h", 0))
+        if volume_24h <= 0:
+            total *= 1.40       # nuevo/sin trades — ventaja de primer entrante
+        elif volume_24h < 5_000:
+            total *= 1.25
+        elif volume_24h < 50_000:
+            total *= 1.10
+        elif volume_24h > 1_000_000:
+            total *= 0.80
+        elif volume_24h > 500_000:
+            total *= 0.90
+        total = min(total, 1.0)
+
+        # Boost por pool absoluto alto: diferencia $50/d de $300/d.
+        rewards_rate = float(market.get("rewards_rate", 0.0))
+        if market.get("rewards_active"):
+            if rewards_rate >= 300:
+                total *= 1.25
+            elif rewards_rate >= 100:
+                total *= 1.10
+            elif rewards_rate >= 50:
+                total *= 1.05
+        total = min(total, 1.0)
+
+        # Synergy: bajo vol + buen pool = sweet spot del shadow quoting.
+        if volume_24h < 10_000 and rewards_rate >= 100:
+            total *= 1.20
+        total = min(total, 1.0)
 
         logger.debug(
-            "score '%s': comp=%.2f spread=%.2f rewards=%.2f vol=%.2f time=%.2f → %.3f",
+            "score '%s': comp=%.2f spread=%.2f rewards=%.2f acc=%.2f vol=%.2f time=%.2f vol24h=$%.0f -> %.3f",
             market.get("question", "?")[:40],
             scores["competition"], scores["spread"], scores["rewards"],
-            scores["volatility"], scores["time_to_resolution"], total,
+            scores["accessibility"], scores["volatility"], scores["time_to_resolution"],
+            volume_24h, total,
         )
         return total
 
@@ -551,6 +634,8 @@ class MarketAnalyzer:
         markets = self.enrich_density(markets)
         logger.debug("select_top_markets: post-density=%d", len(markets))
 
+        # Solo scorear mercados con rewards activos — los demás no se pueden farmear
+        markets = [m for m in markets if m.get("rewards_active") and m.get("rewards_rate", 0) > 0]
         logger.info("select_top_markets: scoring %d mercados...", len(markets))
         scored = []
         for market in markets:
@@ -567,10 +652,11 @@ class MarketAnalyzer:
         if selected:
             for i, m in enumerate(selected, 1):
                 logger.info(
-                    "  #%d '%s' score=%.3f vol=$%,.0f rewards=%s share=%.1%%",
+                    "  #%d '%s' score=%.3f vol=$%.0f rewards=$%.0f/d min_size=%d share=%.1f%%",
                     i, m.get("question", "?")[:50], m["_score"],
                     m.get("volume_24h", 0),
-                    "SI" if m.get("rewards_active") else "NO",
+                    m.get("rewards_rate", 0),
+                    int(m.get("rewards_min_size", 0)),
                     m.get("_participation_share", 0) * 100,
                 )
 

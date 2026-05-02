@@ -154,12 +154,14 @@ class TestDiscoverMarkets:
             status_code=200,
             json=MagicMock(return_value=[
                 make_gamma_market(condition_id="high", volume=50000),
-                make_gamma_market(condition_id="low", volume=500),  # Below 1000 min
+                make_gamma_market(condition_id="low", volume=10),   # below threshold
             ]),
             raise_for_status=MagicMock(),
         )
 
-        analyzer = MarketAnalyzer(make_client(), make_config())
+        # El filtro real es small_market_volume_usd; min_daily_volume_usd queda como
+        # documentacion. Con el pivot a mercados chicos bajamos el umbral a 50.
+        analyzer = MarketAnalyzer(make_client(), make_config(small_market_volume_usd=50))
         markets = analyzer.discover_markets()
         assert len(markets) == 1
         assert markets[0]["condition_id"] == "high"
@@ -219,14 +221,16 @@ class TestDiscoverMarkets:
 
         analyzer = MarketAnalyzer(make_client(), make_config())
         analyzer.discover_markets()
+        first_calls = mock_get.call_count
         analyzer.discover_markets()
 
-        # Solo una llamada a la API (la segunda usa cache)
-        assert mock_get.call_count == 1
+        # La segunda invocacion no agrega llamadas (cache hit).
+        assert mock_get.call_count == first_calls
+        assert first_calls >= 1
 
     @patch("src.polymarket.markets.requests.get")
     def test_paginates_correctly(self, mock_get) -> None:
-        """Verifica paginacion: dos lotes, segundo incompleto."""
+        """Verifica paginacion: lotes con dedup entre pases."""
         batch_1 = [make_gamma_market(condition_id=f"m{i}") for i in range(100)]
         batch_2 = [make_gamma_market(condition_id=f"m{100 + i}") for i in range(30)]
 
@@ -246,8 +250,10 @@ class TestDiscoverMarkets:
 
         analyzer = MarketAnalyzer(make_client(), make_config())
         markets = analyzer.discover_markets()
+        # 130 unicos (m0-m129). El segundo pase reutiliza los mismos IDs y los dedup.
         assert len(markets) == 130
-        assert mock_get.call_count == 2
+        # Al menos 2 llamadas por paginacion (puede haber mas por el segundo pase).
+        assert mock_get.call_count >= 2
 
 
 # ------------------------------------------------------------------
@@ -426,8 +432,8 @@ class TestCompetitionEstimation:
 # ------------------------------------------------------------------
 
 class TestSelectTopMarkets:
-    @patch("src.polymarket.markets.requests.get")
-    def test_returns_n_markets(self, mock_get) -> None:
+    def test_returns_n_markets(self) -> None:
+        """Verifica que select_top_markets devuelva n mercados con rewards."""
         questions = [
             "Will BTC reach 100k?", "Will ETH flip BTC?", "Will SOL reach 500?",
             "Will DOGE hit 1 dollar?", "Federal Reserve rate decision?",
@@ -443,30 +449,64 @@ class TestSelectTopMarkets:
             for i in range(10)
         ]
 
-        call_count = [0]
+        # Mock del cliente: get_rewards() debe devolver dict real
+        client = make_client()
+        rewards_dict = {}
+        for i in range(10):
+            cid = f"m{i}"  # condition_id que usa discover_markets
+            rewards_dict[cid] = {
+                "rewards_daily_rate": 100.0,
+                "min_size": 20,
+                "max_spread": 4,  # 4 cents (no 400, eso es 4 USD y rompe el score)
+            }
+        client.get_rewards.return_value = rewards_dict
 
-        def side_effect(*args, **kwargs):
-            resp = MagicMock()
-            resp.raise_for_status = MagicMock()
-            url = args[0] if args else kwargs.get("url", "")
-            if "gamma-api" in url:
-                if call_count[0] == 0:
+        # Mock de requests.get para discover_markets()
+        with patch("src.polymarket.markets.requests.get") as mock_get:
+            def side_effect(*args, **kwargs):
+                resp = MagicMock()
+                resp.raise_for_status = MagicMock()
+                url = args[0] if args else kwargs.get("url", "")
+                if "gamma-api" in url:
                     resp.json.return_value = gamma_markets
+                elif "rewards" in url:
+                    # get_reward_markets() usa client.get_rewards(), no requests.get
+                    resp.json.return_value = []
                 else:
                     resp.json.return_value = []
-                call_count[0] += 1
-            elif "rewards" in url:
-                resp.json.return_value = []
-            else:
-                resp.json.return_value = gamma_markets if call_count[0] == 0 else []
-                call_count[0] += 1
-            return resp
+                return resp
+            mock_get.side_effect = side_effect
 
-        mock_get.side_effect = side_effect
-        analyzer = MarketAnalyzer(make_client(), make_config())
+            analyzer = MarketAnalyzer(client, make_config())
+            top_3 = analyzer.select_top_markets(n=3)
+            assert len(top_3) == 3
+            
+            # Debug: check what get_reward_markets returns
+            rewards = analyzer.get_reward_markets()
+            print(f"DEBUG: get_reward_markets() returned {len(rewards)} entries")
+            
+            # Debug: check what enrich_with_rewards does
+            test_markets = analyzer.discover_markets()
+            print(f"DEBUG: discover_markets returned {len(test_markets)} markets")
+            if test_markets:
+                print(f"DEBUG: first market condition_id: {test_markets[0].get('condition_id', 'N/A')}")
+                print(f"DEBUG: first market rewards_active: {test_markets[0].get('rewards_active', False)}")
 
-        top_3 = analyzer.select_top_markets(n=3)
-        assert len(top_3) == 3
+            enriched = analyzer.enrich_with_rewards(test_markets[:])
+            rewarded = [m for m in enriched if m.get("rewards_active")]
+            print(f"DEBUG: after enrich_with_rewards: {len(rewarded)} markets with rewards_active=True")
+            
+            # Debug: check scoring
+            for m in enriched[:3]:
+                if m.get("rewards_active"):
+                    score = analyzer.score_market(m)
+                    print(f"DEBUG: market {m.get('condition_id', '?')} scored {score:.3f}")
+                    print(f"DEBUG:   rewards_rate={m.get('rewards_rate', 0)}, min_size={m.get('rewards_min_size', 0)}")
+                    print(f"DEBUG:   mid_price={m.get('mid_price', 0)}, volume_24h={m.get('volume_24h', 0)}")
+
+            top_3 = analyzer.select_top_markets(n=3)
+            print(f"DEBUG: select_top_markets(n=3) returned {len(top_3)} markets")
+            assert len(top_3) == 3
         # Deben tener _score
         assert all("_score" in m for m in top_3)
         # Ordenados descendente

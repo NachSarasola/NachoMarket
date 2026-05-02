@@ -15,7 +15,24 @@
       "Bash(git push *)",
       "Bash(git commit *)",
       "Bash(rm -f src/backtest/__init__.py src/data/__init__.py)",
-      "Bash(rmdir src/backtest src/data)"
+      "Bash(rmdir src/backtest src/data)",
+      "Bash(ssh -i \"C:/Users/Usuario/Downloads/NachoMarketAWS.pem\" -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@3.252.244.181 \"echo connected\")",
+      "Bash(curl -s --connect-timeout 8 https://3.252.244.181)",
+      "Bash(curl -s --connect-timeout 8 -o /dev/null -w \"%{http_code}\" http://3.252.244.181:22)",
+      "Bash(curl -s --connect-timeout 8 https://api.ipify.org)",
+      "Bash(curl -s --connect-timeout 8 https://ifconfig.me)",
+      "Bash(ssh -i \"C:/Users/Usuario/Downloads/NachoMarketAWS.pem\" -v -o ConnectTimeout=15 -o StrictHostKeyChecking=no ubuntu@3.252.244.181 \"echo ok\")",
+      "Bash(nc -z -w 8 3.252.244.181 22)",
+      "Bash(echo \"port 22 exit: $?\")",
+      "Bash(nc -z -w 8 3.252.244.181 443)",
+      "Bash(echo \"port 443 exit: $?\")",
+      "Bash(nc -z -w 8 3.252.244.181 80)",
+      "Bash(scp -i C:/Users/Usuario/Downloads/NachoMarketAWS.pem -o StrictHostKeyChecking=no C:/Users/Usuario/Desktop/NachoMarket/config/settings.yaml C:/Users/Usuario/Desktop/NachoMarket/config/markets.yaml C:/Users/Usuario/Desktop/NachoMarket/src/polymarket/markets.py ubuntu@3.252.244.181:/home/ubuntu/nachomarket/config/)",
+      "Bash(scp -i C:/Users/Usuario/Downloads/NachoMarketAWS.pem -o StrictHostKeyChecking=no C:/Users/Usuario/Desktop/NachoMarket/src/polymarket/markets.py ubuntu@3.252.244.181:/home/ubuntu/nachomarket/src/polymarket/)",
+      "Bash(bash scripts/deploy.sh ubuntu@3.252.244.181)",
+      "Bash(ssh-add -l)",
+      "Read(//c/Users/Usuario/.ssh/**)",
+      "Bash(scp -i ~/.ssh/dublin-vps.pem src/strategy/reward_tracker.py src/strategy/rewards_farmer.py ubuntu@3.252.244.181:~/nachomarket/src/strategy/)"
     ]
   }
 }

@@ -39,6 +39,7 @@ Referencia: https://docs.polymarket.com/market-makers/liquidity-rewards
 
 import logging
 import math
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -52,7 +53,18 @@ SAFETY_TICKS = 2             # ticks detras del BBO para evitar fills
 DANGER_ZONE_TICKS = 1        # si estamos a ≤1 tick del BBO, huir
 REPRICE_THRESHOLD_RATIO = 0.5  # recolocar si mid se movio >= max_spread * 0.5
 SIZE_DRIFT_THRESHOLD = 0.30  # recolocar si size difiere > 30%
-MIN_MAX_SPREAD_USD = 0.02    # no operar si max_spread < 2¢ (sin room para esconderse)
+MIN_MAX_SPREAD_USD = 0.005   # no operar si max_spread < 0.5¢ (Opción B: captura mercados como Elon Musk ~0.35¢)
+
+# Shadow sizing — orders no se fillean, el tamaño no está limitado por capital real.
+SHADOW_SIZE_MULT = 8         # ordenes en 8× min_size para capturar más % del libro
+MAX_ORDER_NOTIONAL = 150.0   # tope nocional por orden ($150); único freno real
+
+# Yield farming dinámico
+GRACE_PERIOD_SEC = 180       # esperar 3min antes de aplicar non_earning (lag del endpoint ~1-2min)
+MIN_CENTS_PER_MIN = 0.1      # ~$1.44/day — threshold de cancelación por no farmear
+NON_EARNING_BLOCK_HOURS = 1.0  # bloquear mercado 1h tras cancelar por non_earning (mínimo req. usuario)
+EXPLORE_ALLOC_USD = MAX_ORDER_NOTIONAL  # mismo tope que una orden: no recortar mercados explore
+CAP_FRACTION = 0.60          # max 60% del capital total en un solo mercado (solo para earning)
 
 
 def _qualifying_bid(
@@ -60,14 +72,19 @@ def _qualifying_bid(
     max_spread_usd: float,
     tick_size: float,
     best_bid: float,
+    safety_ticks: int | None = None,
 ) -> float | None:
-    """Calcula bid dentro de la ventana de rewards con SAFETY_TICKS de buffer.
+    """Calcula bid dentro de la ventana de rewards.
 
     Ventana valida: [mid - max_spread, mid)
-    Coloca SAFETY_TICKS ticks detras del best_bid para minimizar fills.
+    Coloca safety_ticks ticks detras del best_bid para minimizar fills.
+    Si hay colchón (órdenes entre nosotros y el BBO), safety_ticks=1.
     Returns None si no se puede colocar dentro de la ventana.
     """
-    if max_spread_usd <= 0 or tick_size <= 0 or mid <= 0:
+    if safety_ticks is None:
+        safety_ticks = SAFETY_TICKS
+
+    if max_spread_usd <= 0 or tick_size <=0 or mid <= 0:
         return None
 
     qual_low = round(round((mid - max_spread_usd + tick_size) / tick_size) * tick_size, 4)
@@ -76,8 +93,8 @@ def _qualifying_bid(
     if qual_low > qual_high:
         return None
 
-    if best_bid >= qual_low + SAFETY_TICKS * tick_size:
-        bid = round(round((best_bid - SAFETY_TICKS * tick_size) / tick_size) * tick_size, 4)
+    if best_bid >= qual_low + safety_ticks * tick_size:
+        bid = round(round((best_bid - safety_ticks * tick_size) / tick_size) * tick_size, 4)
     else:
         bid = qual_low
 
@@ -94,14 +111,19 @@ def _qualifying_ask(
     max_spread_usd: float,
     tick_size: float,
     best_ask: float,
+    safety_ticks: int | None = None,
 ) -> float | None:
-    """Calcula ask dentro de la ventana de rewards con SAFETY_TICKS de buffer.
+    """Calcula ask dentro de la ventana de rewards.
 
     Ventana valida: (mid, mid + max_spread]
-    Coloca SAFETY_TICKS ticks por encima del best_ask para minimizar fills.
+    Coloca safety_ticks ticks por encima del best_ask para minimizar fills.
+    Si hay colchon (ordenes entre nosotros y el BBO), safety_ticks=1.
     Returns None si no se puede colocar dentro de la ventana.
     """
-    if max_spread_usd <= 0 or tick_size <= 0 or mid <= 0:
+    if safety_ticks is None:
+        safety_ticks = SAFETY_TICKS
+
+    if max_spread_usd <= 0 or tick_size <=0 or mid <= 0:
         return None
 
     qual_low = round(round((mid + tick_size) / tick_size) * tick_size, 4)
@@ -110,8 +132,8 @@ def _qualifying_ask(
     if qual_low > qual_high:
         return None
 
-    if best_ask > 0 and best_ask <= qual_high - SAFETY_TICKS * tick_size:
-        ask = round(round((best_ask + SAFETY_TICKS * tick_size) / tick_size) * tick_size, 4)
+    if best_ask > 0 and best_ask <= qual_high - safety_ticks * tick_size:
+        ask = round(round((best_ask + safety_ticks * tick_size) / tick_size) * tick_size, 4)
     else:
         ask = qual_high
 
@@ -131,6 +153,40 @@ def _in_danger_zone(order_price: float, side: str, best_bid: float, best_ask: fl
         return best_ask > 0 and order_price <= best_ask + DANGER_ZONE_TICKS * tick_size
 
 
+def _get_dynamic_safety_ticks(
+    book: list[dict],
+    our_price: float,
+    bbo_price: float,
+    tick_size: float,
+) -> int:
+    """Devuelve 1 si hay colchón (órdenes entre nosotros y el BBO), sino SAFETY_TICKS.
+
+    Si hay órdenes entre our_price y bbo_price, esas se ejecutarán primero
+    y podemos usar 1 tick de seguridad. Si no hay colchón, usar 2 ticks.
+    """
+    if not book or bbo_price <= 0:
+        return SAFETY_TICKS
+
+    # Determinar rango a chequear según lado
+    if our_price < bbo_price:  # BUY side: nuestro bid está debajo del best_bid
+        price_low = our_price
+        price_high = bbo_price
+    else:  # SELL side: nuestro ask está arriba del best_ask
+        price_low = bbo_price
+        price_high = our_price
+
+    if price_high - price_low <= tick_size:
+        return SAFETY_TICKS  # No hay espacio para colchón
+
+    # Contar si hay órdenes en el rango (colchón)
+    for level in book:
+        price = float(level.get("price", level.get("p", 0.0)))
+        if price_low < price < price_high:
+            return 1  # Colchón detectado → 1 tick alcanza
+
+    return SAFETY_TICKS
+
+
 class RewardsFarmerStrategy(BaseStrategy):
     """Shadow quoting two-sided (BUY+SELL por token) para maximizar Q_min."""
 
@@ -139,10 +195,14 @@ class RewardsFarmerStrategy(BaseStrategy):
         client: Any,
         config: dict[str, Any],
         circuit_breaker: Any = None,
+        reward_tracker: Any = None,
+        market_filter: Any = None,
         **kwargs: Any,
     ) -> None:
         super().__init__("rewards_farmer", client, config, **kwargs)
         self._circuit_breaker = circuit_breaker
+        self._reward_tracker = reward_tracker
+        self._market_filter = market_filter
         rf_cfg = config.get("rewards_farmer", {})
         markets_cfg = config.get("markets", config)
 
@@ -164,6 +224,7 @@ class RewardsFarmerStrategy(BaseStrategy):
         self._fill_inventory: dict[str, dict[str, float]] = {}
         self._reward_pct: dict[str, float] = {}
         self._pending_orders: dict[str, Signal] = {}
+        self._order_placed_at: dict[str, float] = {}  # order_id → timestamp de colocación
 
         # Tracking de fill rate para auto-widen (si fill_rate > 5%, incrementar safety)
         self._orders_placed_today: int = 0
@@ -177,13 +238,20 @@ class RewardsFarmerStrategy(BaseStrategy):
         )
 
     def _reconcile_open_orders(self) -> None:
-        """Pobla _pending_orders desde el exchange al arrancar."""
+        """Pobla _pending_orders desde el exchange al arrancar con datos reales."""
         try:
             open_orders = self._client.get_positions() or []
             for o in open_orders:
                 oid = o.get("id") or o.get("order_id") or ""
                 if oid:
-                    self._pending_orders[oid] = None  # type: ignore[assignment]
+                    # Guardar datos necesarios para que execute() pueda procesar la orden
+                    self._pending_orders[oid] = {
+                        "market_id": o.get("condition_id", o.get("market_id", "")),
+                        "price": float(o.get("price", 0.0)),
+                        "size": float(o.get("original_size", o.get("size", 0.0))),
+                        "side": o.get("side", ""),
+                        "token_id": o.get("token_id", ""),
+                    }
             if open_orders:
                 self._logger.info("RF reconcilió %d ordenes abiertas del exchange", len(open_orders))
         except Exception:
@@ -205,7 +273,7 @@ class RewardsFarmerStrategy(BaseStrategy):
             )
             return False
 
-        # Gate: max_spread minimo para tener room de esconderse
+        # Gate: max_spread mínimo para tener room de esconderse
         max_spread_usd = float(market_data.get("rewards_max_spread", 0.0)) / 100.0
         if max_spread_usd > 0 and max_spread_usd < MIN_MAX_SPREAD_USD:
             self._logger.info(
@@ -234,7 +302,89 @@ class RewardsFarmerStrategy(BaseStrategy):
         if len(self._active_farms) >= self._max_markets and condition_id not in self._active_farms:
             return False
 
+        # Gate de viabilidad: shadow orders no necesitan capital real — chequeamos contra
+        # el tope nocional por orden, no contra el balance disponible.
+        rewards_min_size = float(market_data.get("rewards_min_size", 0.0))
+        min_shares_check = max(MIN_SHARES_FALLBACK, rewards_min_size)
+        token_data = market_data.get("token_data", {})
+        any_viable = False
+        for tok in tokens:
+            tid_c = tok.get("token_id", "")
+            if not tid_c:
+                continue
+            tmid = float(token_data.get(tid_c, {}).get("mid_price", 0.0))
+            if tmid <= 0:
+                continue
+            if min_shares_check * tmid <= MAX_ORDER_NOTIONAL:
+                any_viable = True
+                break
+        if not any_viable:
+            self._logger.info(
+                "RF skip %s...: min_size=%d × mid supera tope nocional $%.0f",
+                condition_id[:12], int(min_shares_check), MAX_ORDER_NOTIONAL,
+            )
+            return False
+
         return True
+
+    def allocate_capital(self, candidate_cids: list[str], available_cash: float) -> dict[str, float]:
+        """Asigna capital por mercado proporcional al ¢/min observado.
+
+        - Mercados con historia y rate >= MIN_CENTS_PER_MIN → proporcional al rate.
+        - Mercados sin historia (nuevos) → EXPLORE_ALLOC_USD cada uno.
+        - Cap: nunca más de CAP_FRACTION del capital total en un solo mercado.
+        """
+        total = available_cash * 0.95
+        earning: dict[str, float] = {}
+        exploring: list[str] = []
+
+        raw_rates: dict[str, float] = {}
+        stale_count = 0
+        for cid in candidate_cids:
+            if self._reward_tracker is None:
+                exploring.append(cid)
+                continue
+            rate = self._reward_tracker.cents_per_min(cid)
+            if rate is None:
+                # Sin historia → explorar con capital acotado
+                exploring.append(cid)
+            elif rate == 0.0:
+                # Dato stale o mercado activamente ganando 0 → sin capital
+                stale_count += 1
+            elif rate >= MIN_CENTS_PER_MIN:
+                raw_rates[cid] = rate
+            # else: rate > 0 pero < MIN_CENTS_PER_MIN → no asignar capital
+
+        # relative floor: descartar mercados que ganen <10% del mejor observado
+        best_rate = max(raw_rates.values()) if raw_rates else 0.0
+        rel_floor = best_rate * 0.10
+        for cid, rate in raw_rates.items():
+            if rate >= rel_floor:
+                earning[cid] = rate
+            # else: por debajo del relative floor → no asignar (ni explorar)
+
+        explore_total = min(len(exploring) * EXPLORE_ALLOC_USD, total * 0.30)
+        earning_total = max(total - explore_total, 0.0)
+
+        cap_per_market = total * CAP_FRACTION
+        rate_sum = sum(earning.values()) or 1.0
+        alloc: dict[str, float] = {}
+
+        for cid, rate in earning.items():
+            alloc[cid] = min(earning_total * (rate / rate_sum), cap_per_market)
+
+        for cid in exploring:
+            alloc[cid] = EXPLORE_ALLOC_USD
+
+        if earning or exploring:
+            top = sorted(alloc.items(), key=lambda x: x[1], reverse=True)[:4]
+            self._logger.info(
+                "RF capital alloc: %s (earning=%d explore=%d stale/zero=%d)",
+                " ".join(f"{c[:8]}=${v:.0f}" for c, v in top),
+                len(earning), len(exploring), stale_count,
+            )
+
+        return alloc
 
     def evaluate(self, market_data: dict[str, Any]) -> list[Signal]:
         """Genera senales BUY y SELL por token para maximizar Q_min.
@@ -265,7 +415,11 @@ class RewardsFarmerStrategy(BaseStrategy):
             return []
 
         available_cash = float(market_data.get("available_cash", self._max_capital_per_market))
-        max_total_usd = min(self._max_capital_per_market, available_cash * 0.98)
+        dynamic_cap = market_data.get("max_total_capital")
+        if dynamic_cap is not None:
+            max_total_usd = min(float(dynamic_cap), available_cash * 0.98)
+        else:
+            max_total_usd = min(self._max_capital_per_market, available_cash * 0.98)
 
         now_utc = datetime.now(timezone.utc).hour
         size_boost = 1.0
@@ -279,12 +433,39 @@ class RewardsFarmerStrategy(BaseStrategy):
         n_order_slots = 2 if self._two_sided else 1  # BUY + SELL por token
         n_tokens = len(tokens)
 
+        # Pre-pass: detectar tokens viables (donde min_shares * t_mid <= max_total_usd).
+        # Sin esto, el capital se reparte entre todos los tokens del binario aunque
+        # solo quoteamos el barato. Resultado historico: orden de 181 shares cuando
+        # min_size=200 -> no califica para rewards. Fix: dividir solo entre viables.
+        viable_token_ids: set[str] = set()
+        for token in tokens:
+            tid_v = token.get("token_id", "")
+            if not tid_v:
+                continue
+            td_v = token_data.get(tid_v, {})
+            t_mid_v = float(td_v.get("mid_price", 0.0))
+            if t_mid_v <= 0:
+                continue
+            # Shadow orders: viabilidad contra tope nocional, no contra capital
+            if min_shares * t_mid_v <= MAX_ORDER_NOTIONAL:
+                viable_token_ids.add(tid_v)
+
+        n_viable = max(1, len(viable_token_ids))
+
         signals: list[Signal] = []
         token_signal_counts: dict[str, int] = {}  # cuantas senales tiene cada token
 
         for token in tokens:
             tid = token.get("token_id", "")
             if not tid:
+                continue
+
+            # Skipear tokens no viables — no tenemos capital para llegar a min_size
+            if tid not in viable_token_ids:
+                self._logger.debug(
+                    "RF eval %s tid=%s...: skip (capital insuf. p/min_size=%d)",
+                    condition_id[:12], tid[:8], int(min_shares),
+                )
                 continue
 
             td = token_data.get(tid, {})
@@ -314,16 +495,21 @@ class RewardsFarmerStrategy(BaseStrategy):
             else:
                 best_ask = float(td.get("best_ask", 0.0))
 
-            # Capital por token por lado
-            side_capital = max_total_usd / (n_tokens * n_order_slots)
+            # Capital por lado: solo divide entre tokens VIABLES, no entre todos
+            side_capital = max_total_usd / (n_viable * n_order_slots)
 
             token_signal_counts[tid] = 0
 
             # --- BUY side ---
-            bid_price = _qualifying_bid(t_mid, max_spread_usd, tick_size, best_bid)
+            # Calcular safety_ticks dinámico: 1 tick si hay colchón entre nosotros y el BBO
+            our_bid_2t = best_bid - SAFETY_TICKS * tick_size
+            safety_ticks_bid = _get_dynamic_safety_ticks(bids_book, our_bid_2t, best_bid, tick_size)
+            bid_price = _qualifying_bid(t_mid, max_spread_usd, tick_size, best_bid, safety_ticks_bid)
             if bid_price is not None:
                 target_shares = _calc_shares(min_shares, size_boost, side_capital, bid_price)
-                if target_shares >= max(1, int(min_shares * 0.9)):
+                # Threshold ESTRICTO a min_shares (antes era 0.9*min_shares -> ordenes
+                # subnominales que Polymarket NO premia con rewards).
+                if target_shares >= int(min_shares):
                     s_bid = t_mid - bid_price
                     score_bid = ((max_spread_usd - s_bid) / max_spread_usd) ** 2 if max_spread_usd > 0 else 0.0
                     signals.append(Signal(
@@ -346,16 +532,20 @@ class RewardsFarmerStrategy(BaseStrategy):
                     token_signal_counts[tid] += 1
                 else:
                     self._logger.info(
-                        "RF eval %s tid=%s...: BUY target_shares=%d < min (capital insuf.)",
+                        "RF eval %s tid=%s...: BUY skip target=%d < min_size=%d (cap=$%.1f price=%.3f)",
                         condition_id[:12], tid[:8], target_shares,
+                        int(min_shares), side_capital, bid_price,
                     )
 
             # --- SELL side (solo si two_sided) ---
             if self._two_sided:
-                ask_price = _qualifying_ask(t_mid, max_spread_usd, tick_size, best_ask)
+                # Calcular safety_ticks dinámico: 1 tick si hay colchón entre nosotros y el BBO
+                our_ask_2t = best_ask + SAFETY_TICKS * tick_size
+                safety_ticks_ask = _get_dynamic_safety_ticks(asks_book, best_ask, our_ask_2t, tick_size)
+                ask_price = _qualifying_ask(t_mid, max_spread_usd, tick_size, best_ask, safety_ticks_ask)
                 if ask_price is not None:
                     target_shares_ask = _calc_shares(min_shares, size_boost, side_capital, ask_price)
-                    if target_shares_ask >= max(1, int(min_shares * 0.9)):
+                    if target_shares_ask >= int(min_shares):
                         s_ask = ask_price - t_mid
                         score_ask = ((max_spread_usd - s_ask) / max_spread_usd) ** 2 if max_spread_usd > 0 else 0.0
                         signals.append(Signal(
@@ -432,11 +622,26 @@ class RewardsFarmerStrategy(BaseStrategy):
         except Exception:
             self._logger.exception("RF: error obteniendo ordenes abiertas")
 
-        # Indexar por (token_id, side)
+        # Indexar por (token_id, side) — solo órdenes del mercado actual.
+        # Sin este filtro, el cleanup cancela órdenes de otros mercados que
+        # están en _pending_orders pero no en las señales del ciclo actual.
+        current_market_id = signals[0].market_id if signals else ""
         open_by_token_side: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for oo in open_orders:
             oid = oo.get("id") or oo.get("order_id") or ""
-            if oid not in self._pending_orders:
+            pending = self._pending_orders.get(oid)
+            if pending is None:
+                # No está en _pending_orders: podría ser orden huérfana o de otro mercado
+                # Cachear market_id para cleanup posterior
+                oo["_market_id_cache"] = oo.get("condition_id") or oo.get("market_id", "")
+                tid = oo.get("asset_id") or oo.get("token_id") or ""
+                side = str(oo.get("side", "")).upper()
+                if tid and side in ("BUY", "SELL"):
+                    open_by_token_side.setdefault((tid, side), []).append(oo)
+                continue
+            # Usar market_id del pending (reconciliado) o del open order
+            pending_market = pending.get("market_id", "") if isinstance(pending, dict) else ""
+            if pending_market and pending_market != current_market_id:
                 continue
             tid = oo.get("asset_id") or oo.get("token_id") or ""
             side = str(oo.get("side", "")).upper()
@@ -451,6 +656,9 @@ class RewardsFarmerStrategy(BaseStrategy):
             key = (sig.token_id, sig.side)
             existing = open_by_token_side.get(key, [])
             if not existing:
+                # No colocar si el mercado está bloqueado (p.ej. non_earning reciente)
+                if self._market_filter and self._market_filter.is_banned({"condition_id": sig.market_id}):
+                    continue
                 to_place.append(sig)
                 continue
 
@@ -477,7 +685,21 @@ class RewardsFarmerStrategy(BaseStrategy):
             # Criterio 2: danger zone — orden al frente del book
             danger = _in_danger_zone(oo_price, sig.side, best_bid, best_ask, tick_size)
 
-            # Criterio 3: is_order_scoring
+            # Criterio 3: non_earning — la orden lleva >= 3min y no genera ¢/min suficientes
+            non_earning = False
+            order_age_sec = 0.0
+            if oid and self._reward_tracker:
+                placed_at = self._order_placed_at.get(oid, 0.0)
+                order_age_sec = time.time() - placed_at if placed_at > 0 else 0.0
+                if order_age_sec >= GRACE_PERIOD_SEC:
+                    rate = self._reward_tracker.cents_per_min(sig.market_id)
+                    if rate is not None:
+                        best = self._reward_tracker.best_cents_per_min()
+                        rel_floor = best * 0.10
+                        if rate < MIN_CENTS_PER_MIN or rate < rel_floor:
+                            non_earning = True
+
+            # Criterio 4: is_order_scoring
             not_scoring = False
             if oid:
                 try:
@@ -485,18 +707,18 @@ class RewardsFarmerStrategy(BaseStrategy):
                 except Exception:
                     pass
 
-            # Criterio 4: mid se movio >= max_spread / 2
+            # Criterio 5: mid se movio >= max_spread / 2
             repriced = abs(sig.price - oo_price) >= max_spread_usd * REPRICE_THRESHOLD_RATIO
 
-            # Criterio 5: size difiere > 30%
+            # Criterio 6: size difiere > 30%
             size_drift = abs(sig.size - oo_size) / max(oo_size, 1e-9) > SIZE_DRIFT_THRESHOLD
 
-            should_reprice = out_of_window or danger or not_scoring or repriced or size_drift
+            should_reprice = out_of_window or danger or non_earning or not_scoring or repriced or size_drift
 
             if should_reprice:
                 # Evitar churn: si el nuevo precio es igual al existente, no cancelar
                 # (ocurre en ventanas de 1 tick donde danger zone siempre es True)
-                if sig.price == oo_price and not (out_of_window or not_scoring):
+                if sig.price == oo_price and not (out_of_window or not_scoring or non_earning):
                     self._logger.debug(
                         "RF: danger/size en ventana ajustada pero precio no cambia (%s %s @ %.4f) — manteniendo",
                         sig.side, sig.token_id[:8], oo_price,
@@ -506,6 +728,7 @@ class RewardsFarmerStrategy(BaseStrategy):
                 reason = (
                     "out_of_window" if out_of_window
                     else "danger_zone" if danger
+                    else "non_earning" if non_earning
                     else "not_scoring" if not_scoring
                     else "mid_drift" if repriced
                     else "size_drift"
@@ -516,26 +739,73 @@ class RewardsFarmerStrategy(BaseStrategy):
                 )
                 if oid:
                     to_cancel.append(oid)
-                to_place.append(sig)
+
+                if non_earning:
+                    # Bloquear mercado — no re-colocar, liberar capital para reasignación
+                    if self._market_filter:
+                        self._market_filter.block_market_until(sig.market_id, NON_EARNING_BLOCK_HOURS)
+                    self._logger.info(
+                        "RF non_earning cancel oid=%s... cond=%s... c/min=%.4f age=%.0fs block=%.0fmin",
+                        oid[:8] if oid else "?",
+                        sig.market_id[:12],
+                        self._reward_tracker.cents_per_min(sig.market_id) or 0.0,
+                        order_age_sec,
+                        NON_EARNING_BLOCK_HOURS * 60,
+                    )
+                else:
+                    to_place.append(sig)
             else:
                 self._logger.debug(
                     "RF: manteniendo %s %s tid=%s... @ %.4f",
                     sig.side, sig.market_id[:8], sig.token_id[:8], oo_price,
                 )
 
+        # Verificación universal: TODAS las ordenes abiertas deben scorear
+        # Si una orden no scorea (esta fuera de ventana), cancelarla
+        for oo in open_orders:
+            oid_univ = str(oo.get("id", oo.get("order_id", "")))
+            if not oid_univ:
+                continue
+            # Skip si ya está en to_cancel
+            if oid_univ in to_cancel:
+                continue
+            try:
+                if not self._client.is_order_scoring(oid_univ):
+                    to_cancel.append(oid_univ)
+                    self._logger.info(
+                        "RF: orden no scoreando oid=%s... cancelando", oid_univ[:8]
+                    )
+            except Exception:
+                pass
+
         # Limpiar ordenes de tokens/sides que ya no estan en signals
+        # También detectar órdenes huérfanas (mercados que no pasan should_act o ya no se gestionan)
+        active_market_ids = {sig.market_id for sig in signals}
         for (tid, side), oos in open_by_token_side.items():
-            if (tid, side) not in signal_keys:
-                for oo in oos:
-                    oid = str(oo.get("id", oo.get("order_id", "")))
-                    if oid:
-                        to_cancel.append(oid)
-                        self._logger.info("RF: cleanup %s tid=%s...", side, tid[:8])
+            if (tid, side) in signal_keys:
+                continue
+            # Verificar si es una orden huérfana (mercado no activo)
+            for oo in oos:
+                oid = str(oo.get("id", oo.get("order_id", "")))
+                # Determinar market_id de la orden (usar cache o pending)
+                oo_market = oo.get("_market_id_cache", "")
+                if not oo_market:
+                    oo_market = oo.get("condition_id", oo.get("market_id", ""))
+                if not oo_market and isinstance(pending, dict):
+                    oo_market = pending.get("market_id", "") if pending else ""
+                if oo_market and oo_market not in active_market_ids:
+                    to_cancel.append(oid)
+                    self._logger.info("RF: orden huérfana %s tid=%s... market=%s...",
+                                     side, tid[:8], oo_market[:12])
+                elif oid:
+                    to_cancel.append(oid)
+                    self._logger.info("RF: cleanup %s tid=%s...", side, tid[:8])
 
         for oid in to_cancel:
             try:
                 self._client.cancel_order(oid)
                 self._pending_orders.pop(oid, None)
+                self._order_placed_at.pop(oid, None)
                 if self._circuit_breaker:
                     self._circuit_breaker.order_closed()
             except Exception:
@@ -551,6 +821,7 @@ class RewardsFarmerStrategy(BaseStrategy):
                         trades.append(trade)
                         if trade.order_id and trade.status not in ("error", "rejected"):
                             self._pending_orders[trade.order_id] = sig
+                            self._order_placed_at[trade.order_id] = time.time()
                 else:
                     for sig in to_place:
                         res = self._client.place_limit_order(
@@ -564,6 +835,7 @@ class RewardsFarmerStrategy(BaseStrategy):
                         trades.append(trade)
                         if trade.order_id and trade.status not in ("error", "rejected"):
                             self._pending_orders[trade.order_id] = sig
+                            self._order_placed_at[trade.order_id] = time.time()
             except Exception:
                 self._logger.exception("RF: error colocando ordenes")
 
@@ -682,8 +954,12 @@ class RewardsFarmerStrategy(BaseStrategy):
 
 
 def _calc_shares(min_shares: float, size_boost: float, side_capital: float, price: float) -> int:
-    """Calcula shares objetivo respetando capital y minimo de rewards."""
-    target = min_shares * size_boost
-    max_by_cap = side_capital / price if price > 0 else 0
-    target = min(target, max_by_cap)
-    return math.floor(target)
+    """Calcula shares objetivo para shadow orders.
+
+    Shadow orders no se filean → el tamaño no depende del capital disponible.
+    Se dimensiona en SHADOW_SIZE_MULT × min_shares y se acota al tope nocional.
+    side_capital se mantiene en la firma por compatibilidad pero se ignora.
+    """
+    target = min_shares * SHADOW_SIZE_MULT * size_boost
+    max_by_notional = MAX_ORDER_NOTIONAL / price if price > 0 else 0
+    return math.floor(min(target, max_by_notional))

@@ -156,8 +156,8 @@ def test_should_act_multi_outcome(rf):
 
 
 def test_should_act_rejects_tiny_spread(rf):
-    """Mercado con max_spread < 2¢ debe ser rechazado."""
-    assert rf.should_act(_market(max_spread=1.0)) is False
+    """Mercado con max_spread < 0.5¢ debe ser rechazado (nuevo mínimo=0.5¢)."""
+    assert rf.should_act(_market(max_spread=0.4)) is False  # 0.4¢ < 0.5¢ mínimo
 
 
 def test_should_act_rejects_no_rewards(rf):
