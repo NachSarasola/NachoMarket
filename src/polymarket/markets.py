@@ -73,8 +73,9 @@ class MarketAnalyzer:
         self._cache = _Cache(ttl_sec=CACHE_TTL_SEC)
         self._reward_tracker = reward_tracker
 
-        self._min_volume = config.get("min_daily_volume_usd", 500)
-        self._small_market_volume = config.get("small_market_volume_usd", 200)
+        self._min_volume = config.get("min_daily_volume_usd", 0)
+        self._small_market_volume = config.get("small_market_volume_usd", 0)
+        self._max_market_volume: float = config.get("max_market_volume_usd", 50000)
         self._max_markets = config.get("max_markets_simultaneous", 8)
         filters = config.get("filters", {})
         self._min_liquidity = filters.get("min_liquidity_usd", 200)
@@ -105,17 +106,15 @@ class MarketAnalyzer:
         self._rf_min_pool = float(config.get("rewards_farmer", {}).get("min_rewards_pool_usd", 5.0))
         self._rf_two_sided = bool(config.get("rewards_farmer", {}).get("two_sided", True))
 
-        # Pesos recalibrados para pivot a mercados chicos/nuevos.
-        # accessibility (min_size bajo) sube a 0.30 porque es lo que diferencia
-        # Pesos rebalanceados: priorizar rewards y eficiencia sobre accessibility.
-        # accessibility bajado a 0.15: min_size alto ya no penaliza tanto.
-        # rewards subido a 0.35: capturar mercados con buen pool absoluto.
-        # competition bajado a 0.20: evitar sobrepeso en mercados poco profundos.
+        # Pesos recalibrados para small-cap: priorizar baja competencia sobre pool alto.
+        # competition=0.35: si el book está vacío, nuestro $50 captura 100% del share.
+        # accessibility=0.20: min_size bajo es crítico con poco capital.
+        # rewards=0.20: pool grande no ayuda si no capturás share significativo.
         self._weights = {
             "spread": 0.10,
-            "competition": 0.20,
-            "rewards": 0.35,
-            "accessibility": 0.15,
+            "competition": 0.35,
+            "rewards": 0.20,
+            "accessibility": 0.20,
             "volatility": 0.05,
             "time_to_resolution": 0.10,
         }
@@ -243,10 +242,10 @@ class MarketAnalyzer:
         if category in [c.lower() for c in self._excluded_categories]:
             return False
 
-        if self._small_market_volume > 0:
-            volume = _safe_float(market.get("volume24hr", market.get("volume", 0)))
-            if volume < self._small_market_volume:
-                return False
+        # Volumen maximo: rechazar mercados con volumen > max_market_volume (whale territory)
+        volume = _safe_float(market.get("volume24hr", market.get("volume", 0)))
+        if self._max_market_volume > 0 and volume > self._max_market_volume:
+            return False
 
         end_date_str = market.get("endDate", market.get("end_date_iso", ""))
         if end_date_str:
@@ -516,14 +515,23 @@ class MarketAnalyzer:
         market["_participation_share"] = participation
         cid = market.get("condition_id", "")
         if self._reward_tracker and cid:
-            observed = self._reward_tracker.cents_per_min(cid)
-            if observed is not None:
-                scores["competition"] = min(observed / 2.0, 1.0)
-                market["_observed_cents_per_min"] = observed
+            share_pct = self._reward_tracker.last_share_pct(cid)
+            if share_pct is not None and share_pct > 0:
+                # Share real observado: mapeo exponencial
+                if share_pct >= 1.0:
+                    scores["competition"] = 1.0
+                elif share_pct >= 0.10:
+                    scores["competition"] = 0.7 + (share_pct - 0.10) / 0.90 * 0.3
+                elif share_pct >= 0.01:
+                    scores["competition"] = 0.3 + (share_pct - 0.01) / 0.09 * 0.4
+                else:
+                    scores["competition"] = share_pct / 0.01 * 0.3
+                market["_observed_share_pct"] = share_pct
             else:
-                scores["competition"] = min(participation / 0.05, 1.0)
+                # Sin share real: estimar por participación en el book
+                scores["competition"] = _competition_score_from_participation(participation)
         else:
-            scores["competition"] = min(participation / 0.05, 1.0)
+            scores["competition"] = _competition_score_from_participation(participation)
 
         spread = self._get_market_spread(market)
         scores["spread"] = min(spread / 5.0, 1.0) if spread and spread > 0 else 0.0
@@ -571,35 +579,47 @@ class MarketAnalyzer:
         if market.get("rewards_active") and total > 0:
             total = min(total * 1.3, 1.0)
 
-        # Boost por bajo volumen (first-mover, poca competencia LP) y penalizacion
-        # por alto volumen (LPs profesionales dominan el orderbook).
+        # Boost por bajo volumen (first-mover, poca competencia LP).
+        # Low-volume = máxima prioridad. High volume = whale territory, rechazar.
         volume_24h = float(market.get("volume_24h", 0))
         if volume_24h <= 0:
-            total *= 1.40       # nuevo/sin trades — ventaja de primer entrante
+            total *= 2.00       # nuevo/sin trades — ventaja máxima de primer entrante
+        elif volume_24h < 1_000:
+            total *= 1.60       # ultra-bajo volumen: sweet spot
         elif volume_24h < 5_000:
-            total *= 1.25
+            total *= 1.30
         elif volume_24h < 50_000:
-            total *= 1.10
+            total *= 1.00       # neutral
         elif volume_24h > 1_000_000:
-            total *= 0.80
+            total *= 0.40       # whale territory: casi descartado
         elif volume_24h > 500_000:
-            total *= 0.90
+            total *= 0.55
+        elif volume_24h > 100_000:
+            total *= 0.70
+        elif volume_24h > 50_000:
+            total *= 0.85
         total = min(total, 1.0)
 
-        # Boost por pool absoluto alto: diferencia $50/d de $300/d.
+        # Pool boost: entre mercados de baja competencia, preferir los de mayor pool.
+        # $500+/día en un mercado sin volumen es una mina de oro para small-cap.
         rewards_rate = float(market.get("rewards_rate", 0.0))
-        if market.get("rewards_active"):
-            if rewards_rate >= 300:
-                total *= 1.25
+        if market.get("rewards_active") and rewards_rate > 0:
+            if rewards_rate >= 500:
+                total *= 1.30   # pool enorme sin competencia = ideal
+            elif rewards_rate >= 300:
+                total *= 1.20
             elif rewards_rate >= 100:
                 total *= 1.10
             elif rewards_rate >= 50:
                 total *= 1.05
+            # pools <$50: sin boost extra (ya tienen ventaja por volumen bajo)
         total = min(total, 1.0)
 
-        # Synergy: bajo vol + buen pool = sweet spot del shadow quoting.
-        if volume_24h < 10_000 and rewards_rate >= 100:
-            total *= 1.20
+        # Synergy: bajo vol + alto pool = máxima eficiencia.
+        if volume_24h < 5_000 and rewards_rate >= 100:
+            total *= 1.30
+        elif volume_24h < 10_000 and rewards_rate >= 50:
+            total *= 1.15
         total = min(total, 1.0)
 
         logger.debug(
@@ -772,3 +792,14 @@ def _safe_float(value: Any) -> float:
         return float(value)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _competition_score_from_participation(participation: float) -> float:
+    """Score de competencia exponencial: prioriza mercados donde capturamos mucho share."""
+    if participation >= 0.10:
+        return 1.0
+    if participation >= 0.05:
+        return 0.7 + (participation - 0.05) / 0.05 * 0.3
+    if participation >= 0.01:
+        return 0.3 + (participation - 0.01) / 0.04 * 0.4
+    return participation / 0.01 * 0.3

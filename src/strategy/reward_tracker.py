@@ -115,11 +115,9 @@ class RewardTracker:
 
     def _update_ema(self, cid: str) -> None:
         buf = list(self._buffers[cid])
-        if len(buf) < 2:
+        if len(buf) < 4:
             return
 
-        # Usar time.time() como referencia — buf[-1].ts puede ser viejo si el
-        # mercado acaba de volver a aparecer en la API tras una ausencia.
         now = time.time()
         rates: list[float] = []
         for i in range(1, len(buf)):
@@ -127,13 +125,11 @@ class RewardTracker:
             if (now - cur.ts) > self._window_sec + self._sample_interval:
                 continue
             delta_pct = cur.share_pct - prev.share_pct
-            if delta_pct < 0:
-                # Reset diario UTC: contar como 0-rate (no ignorar) para que
-                # el EMA decaiga en lugar de quedarse congelado.
+            if delta_pct <= 0:
                 rates.append(0.0)
                 continue
             delta_min = max((cur.ts - prev.ts) / 60.0, 0.1)
-            delta_usd = (delta_pct / 100.0) * prev.daily_rate
+            delta_usd = (delta_pct / 100.0) * max(prev.daily_rate, cur.daily_rate)
             rates.append((delta_usd * 100.0) / delta_min)
 
         if not rates:
@@ -171,6 +167,18 @@ class RewardTracker:
 
         if (valid[-1].ts - valid[0].ts) < 30:
             return None
+
+        # Share stagnation: si las últimas 3+ muestras tienen el mismo share_pct,
+        # la orden no está scoreando → retornar 0.0 (no None, para que no vaya a explore)
+        last_share = valid[-1].share_pct
+        stagnant_count = 0
+        for s in reversed(valid):
+            if abs(s.share_pct - last_share) < 0.000001:
+                stagnant_count += 1
+            else:
+                break
+        if stagnant_count >= 3:
+            return 0.0
 
         with self._lock:
             return self._ema.get(condition_id)

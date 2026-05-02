@@ -1,30 +1,20 @@
 {
   "mkt1": {
-    "market_id": "mkt1",
+    "total_pnl": 0.30000000000000027,
+    "capital_deployed": 7.5,
+    "buy_prices": [
+      0.5
+    ],
+    "sell_prices": [
+      0.52
+    ],
+    "order_count": 2,
+    "fill_count": 1,
     "question": "",
-    "total_pnl": 0.0,
-    "total_rebates": 0.0,
-    "total_rewards": 0.0,
-    "order_count": 0,
-    "fill_count": 0,
-    "capital_deployed": 0.0,
-    "buy_prices": [],
-    "sell_prices": [],
-    "last_updated": "",
-    "share_below_since": 0.0
-  },
-  "new_market": {
-    "market_id": "new_market",
-    "question": "",
-    "total_pnl": 0.0,
-    "total_rebates": 0.0,
-    "total_rewards": 0.0,
-    "order_count": 0,
-    "fill_count": 0,
-    "capital_deployed": 0.0,
-    "buy_prices": [],
-    "sell_prices": [],
-    "last_updated": "",
-    "share_below_since": 1777445352.8015296
+    "_roi_override": null,
+    "roi": 0.040000000000000036,
+    "avg_spread_captured": 0.0,
+    "share_below_since": null,
+    "last_update": 1777689869.7740264
   }
 }

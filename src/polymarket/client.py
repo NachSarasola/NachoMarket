@@ -91,6 +91,17 @@ def _log_api_call(fn: Callable) -> Callable:
     return wrapper
 
 
+def _extract_order_id(result: dict[str, Any]) -> str:
+    """Extrae order_id de una respuesta de la API, probando múltiples keys."""
+    if not isinstance(result, dict):
+        return "unknown"
+    for key in ("orderID", "id", "order_id", "orderId", "_id"):
+        val = result.get(key, "")
+        if val and isinstance(val, str) and val.strip():
+            return val.strip()
+    return "unknown"
+
+
 class PolymarketClient:
     """Wrapper sobre py-clob-client-v2 con autenticacion, retry y logging completo.
 
@@ -679,6 +690,8 @@ class PolymarketClient:
 
     @_log_api_call
     @retry_with_backoff(max_attempts=3)
+    @_log_api_call
+    @retry_with_backoff(max_attempts=3)
     def get_balance(self) -> float:
         """Obtiene el balance pUSD disponible en la cuenta.
 
@@ -798,7 +811,9 @@ class PolymarketClient:
                 post_only=post_only,
             )
 
-            order_id = result.get("orderID", result.get("id", "unknown"))
+            logger.debug("post_order raw: type=%s keys=%s", type(result).__name__, list(result.keys()) if isinstance(result, dict) else "non-dict")
+
+            order_id = _extract_order_id(result)
             trade_record["status"] = result.get("status", "submitted")
             trade_record["order_id"] = order_id
             self._log_trade(trade_record)
@@ -898,10 +913,29 @@ class PolymarketClient:
                 )
 
             batch_result = self._client.post_orders(orders_with_type, post_only=True)
-            # batch_result puede ser una lista de dicts u objeto
+            logger.debug(
+                "post_orders raw: type=%s keys=%s",
+                type(batch_result).__name__,
+                list(batch_result.keys()) if isinstance(batch_result, dict) else (str(batch_result)[:200] if isinstance(batch_result, list) else "non-dict"),
+            )
+
+            # Determinar la lista de resultados individuales
+            order_dicts: list[dict] = []
             if isinstance(batch_result, list):
-                for sig, res in zip(signals, batch_result):
-                    order_id = res.get("orderID", res.get("id", "unknown")) if isinstance(res, dict) else getattr(res, "orderID", "unknown")
+                order_dicts = batch_result
+            elif isinstance(batch_result, dict):
+                # posibles keys: "orders", "results", "data", "responses"
+                for key in ("orders", "results", "data", "responses"):
+                    if key in batch_result and isinstance(batch_result[key], list):
+                        order_dicts = batch_result[key]
+                        break
+                # Si no encontró lista anidada, tratar el dict como respuesta única
+                if not order_dicts:
+                    order_dicts = [batch_result]
+
+            if order_dicts:
+                for sig, res in zip(signals, order_dicts):
+                    order_id = _extract_order_id(res) if isinstance(res, dict) else getattr(res, "orderID", "unknown")
                     status = res.get("status", "submitted") if isinstance(res, dict) else getattr(res, "status", "submitted")
                     results.append({"status": status, "order_id": order_id})
                     self._log_trade({
@@ -921,21 +955,9 @@ class PolymarketClient:
                         sig.side, sig.size, sig.price, order_id,
                     )
             else:
-                # Fallback: devolver submitted generico si la respuesta no es lista
+                logger.warning("post_orders: respuesta vacía o inesperada — %s", str(batch_result)[:500])
                 for sig in signals:
                     results.append({"status": "submitted", "order_id": "unknown"})
-                    self._log_trade({
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "type": "limit_batch",
-                        "token_id": sig.token_id,
-                        "side": sig.side,
-                        "price": sig.price,
-                        "size": sig.size,
-                        "post_only": True,
-                        "paper_mode": False,
-                        "status": "submitted",
-                        "order_id": "unknown",
-                    })
             return results
         except Exception:
             logger.exception("Error en post_batch_orders")

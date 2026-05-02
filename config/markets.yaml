@@ -2,6 +2,7 @@
 # Pivot estrategico: rewards farming en mercados chicos/nuevos (Epstein-style)
 min_daily_volume_usd: 0            # Sin filtro de volumen: permitir mercados nuevos/sin volume
 small_market_volume_usd: 0         # Sin filtro: guarded con `if > 0` en _passes_gamma_filters
+max_market_volume_usd: 200000      # Hard cap alto; el scoring penaliza >$50k con 0.70x, >$100k con 0.55x
 max_markets_simultaneous: 16       # Pool de candidatos; RF elige los mejores 8
 bot_order_size: 6.0                # Placeholder; RF sizea por shares
 market_refresh_interval_sec: 300

@@ -333,8 +333,8 @@ class NachoMarketBot:
             self._logger.warning("Circuit breaker activo — ciclo salteado")
             return
 
-        # Tip 16: piso absoluto de balance
-        if self._circuit_breaker.check_balance_floor(self._cached_balance):
+        # Tip 16: piso absoluto de balance — solo si el balance es real (>0)
+        if self._cached_balance > 0 and self._circuit_breaker.check_balance_floor(self._cached_balance):
             send_alert(
                 f"🛑 *Loss reserve breach* (tip 16)\n"
                 f"Balance: `${self._cached_balance:.2f}` < piso reservado\n"

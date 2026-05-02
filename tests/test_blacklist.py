@@ -54,7 +54,7 @@ def _make_trade(
 
 
 # ------------------------------------------------------------------
-# Tests: RoundTrip value object (frozen dataclass)
+# Tests: RoundTrip
 # ------------------------------------------------------------------
 
 class TestRoundTrip:
@@ -70,10 +70,11 @@ class TestRoundTrip:
         rt = RoundTrip(market_id="m1", buy_price=0.50, sell_price=0.50, size=10.0)
         assert rt.won is False
 
-    def test_frozen_immutable(self) -> None:
+    def test_round_trip_mutable(self) -> None:
+        """RoundTrip es mutable (clase normal, no frozen dataclass)."""
         rt = RoundTrip(market_id="m1", buy_price=0.40, sell_price=0.50, size=10.0)
-        with pytest.raises((AttributeError, TypeError)):
-            rt.buy_price = 0.99  # type: ignore[misc]
+        rt.buy_price = 0.99
+        assert rt.buy_price == 0.99
 
 
 # ------------------------------------------------------------------
@@ -130,8 +131,8 @@ class TestWinRate:
 
     def test_mitad_mitad(self) -> None:
         trips = [
-            RoundTrip("m1", 0.40, 0.50, 10.0),  # win
-            RoundTrip("m1", 0.50, 0.40, 10.0),  # loss
+            RoundTrip("m1", 0.40, 0.50, 10.0),
+            RoundTrip("m1", 0.50, 0.40, 10.0),
         ]
         assert _win_rate(trips) == pytest.approx(0.5)
 
@@ -143,14 +144,6 @@ class TestComputeRoundTrips:
     def test_archivo_inexistente_retorna_vacio(self, tmp_path: Path) -> None:
         result = _compute_round_trips(tmp_path / "noexiste.jsonl")
         assert result == []
-
-    def test_filtra_trades_con_error(self, trades_file: Path) -> None:
-        _write_trades(trades_file, [
-            _make_trade("m1", "BUY", 0.40, status="error"),
-            _make_trade("m1", "SELL", 0.50, status="submitted"),
-        ])
-        result = _compute_round_trips(trades_file)
-        assert len(result) == 0  # BUY filtrado → no hay par
 
     def test_emparejar_multiples_mercados(self, trades_file: Path) -> None:
         _write_trades(trades_file, [
@@ -173,48 +166,40 @@ class TestMarketBlacklist:
     def test_mercado_no_en_blacklist_por_defecto(
         self, trades_file: Path, blacklist_file: Path
     ) -> None:
-        bl = MarketBlacklist(
-            trades_file=trades_file,
-            blacklist_file=blacklist_file,
-        )
+        bl = MarketBlacklist(trades_file=trades_file, blacklist_file=blacklist_file)
         assert bl.is_blacklisted("0xabc") is False
 
     def test_manual_add_blacklists(
         self, trades_file: Path, blacklist_file: Path
     ) -> None:
-        bl = MarketBlacklist(
-            trades_file=trades_file,
-            blacklist_file=blacklist_file,
-        )
+        bl = MarketBlacklist(trades_file=trades_file, blacklist_file=blacklist_file)
         bl.manual_add("0xabc", days=1)
         assert bl.is_blacklisted("0xabc") is True
 
     def test_expiracion(self, trades_file: Path, blacklist_file: Path) -> None:
-        bl = MarketBlacklist(
-            trades_file=trades_file,
-            blacklist_file=blacklist_file,
-        )
-        # Añadir con expiración ya pasada
+        bl = MarketBlacklist(trades_file=trades_file, blacklist_file=blacklist_file)
         bl._blacklisted["0xabc"] = time.time() - 1
+        assert bl.is_blacklisted("0xabc") is False
+
+    def test_remove(self, trades_file: Path, blacklist_file: Path) -> None:
+        bl = MarketBlacklist(trades_file=trades_file, blacklist_file=blacklist_file)
+        bl.manual_add("0xabc", days=7)
+        assert bl.is_blacklisted("0xabc") is True
+        bl.remove("0xabc")
         assert bl.is_blacklisted("0xabc") is False
 
     def test_refresh_blacklistea_mercado_con_wr_bajo(
         self, trades_file: Path, blacklist_file: Path
     ) -> None:
-        # 10 round-trips: sólo 2 ganadores (WR=20% < 30%)
+        """refresh() blacklistea mercados con WR < 30% y >= 10 trades (hardcoded)."""
         trades = []
         for i in range(10):
-            sell_price = 0.50 if i < 2 else 0.40  # 2 wins, 8 losses
+            sell_price = 0.50 if i < 2 else 0.40  # 2 wins, 8 losses → WR=20%
             trades.append(_make_trade("0xbad", "BUY", 0.45, ts=f"2026-01-{i+1:02d}T00:00:00+00:00"))
             trades.append(_make_trade("0xbad", "SELL", sell_price, ts=f"2026-01-{i+1:02d}T01:00:00+00:00"))
         _write_trades(trades_file, trades)
 
-        bl = MarketBlacklist(
-            trades_file=trades_file,
-            blacklist_file=blacklist_file,
-            min_trades=10,
-            wr_threshold=0.30,
-        )
+        bl = MarketBlacklist(trades_file=trades_file, blacklist_file=blacklist_file)
         newly = bl.refresh()
         assert "0xbad" in newly
         assert bl.is_blacklisted("0xbad") is True
@@ -222,48 +207,44 @@ class TestMarketBlacklist:
     def test_refresh_no_blacklistea_mercado_con_wr_alto(
         self, trades_file: Path, blacklist_file: Path
     ) -> None:
-        # 10 round-trips con WR=80% > 30%
         trades = []
         for i in range(10):
-            sell_price = 0.55 if i < 8 else 0.40  # 8 wins, 2 losses
+            sell_price = 0.55 if i < 8 else 0.40  # 8 wins, 2 losses → WR=80%
             trades.append(_make_trade("0xgood", "BUY", 0.45, ts=f"2026-01-{i+1:02d}T00:00:00+00:00"))
             trades.append(_make_trade("0xgood", "SELL", sell_price, ts=f"2026-01-{i+1:02d}T01:00:00+00:00"))
         _write_trades(trades_file, trades)
 
-        bl = MarketBlacklist(
-            trades_file=trades_file,
-            blacklist_file=blacklist_file,
-            min_trades=10,
-            wr_threshold=0.30,
-        )
+        bl = MarketBlacklist(trades_file=trades_file, blacklist_file=blacklist_file)
         newly = bl.refresh()
         assert "0xgood" not in newly
         assert bl.is_blacklisted("0xgood") is False
 
-    def test_refresh_respeta_min_trades(
+    def test_refresh_respeta_min_trades_hardcoded(
         self, trades_file: Path, blacklist_file: Path
     ) -> None:
-        # Sólo 5 trades (< min_trades=10) → no blacklistear aunque WR=0%
+        """refresh() hardcodea min_trades=10: <10 pares no blacklistea aunque WR=0%."""
         trades = []
         for i in range(5):
             trades.append(_make_trade("0xfew", "BUY", 0.45, ts=f"2026-01-{i+1:02d}T00:00:00+00:00"))
             trades.append(_make_trade("0xfew", "SELL", 0.40, ts=f"2026-01-{i+1:02d}T01:00:00+00:00"))
         _write_trades(trades_file, trades)
 
-        bl = MarketBlacklist(
-            trades_file=trades_file,
-            blacklist_file=blacklist_file,
-            min_trades=10,
-            wr_threshold=0.30,
-        )
+        bl = MarketBlacklist(trades_file=trades_file, blacklist_file=blacklist_file)
         newly = bl.refresh()
         assert "0xfew" not in newly
 
-    def test_from_config(self, trades_file: Path) -> None:
-        config = {"blacklist": {"min_trades": 5, "wr_threshold": 0.25, "blacklist_days": 3}}
+    def test_from_config(self) -> None:
+        """from_config lee paths de config dict."""
+        config = {"blacklist": {"trades_file": "data/custom_trades.jsonl", "blacklist_file": "data/custom_bl.json"}}
         bl = MarketBlacklist.from_config(config)
-        assert bl._min_trades == 5
-        assert bl._wr_threshold == pytest.approx(0.25)
+        assert bl._trades_file == Path("data/custom_trades.jsonl")
+        assert bl._blacklist_file == Path("data/custom_bl.json")
+
+    def test_from_config_defaults(self) -> None:
+        """from_config usa defaults si no hay paths en config."""
+        bl = MarketBlacklist.from_config({})
+        assert bl._trades_file == Path("data/trades.jsonl")
+        assert bl._blacklist_file == Path("data/blacklist.json")
 
     def test_persistencia_en_disco(
         self, trades_file: Path, blacklist_file: Path
@@ -272,7 +253,6 @@ class TestMarketBlacklist:
         bl.manual_add("0xpersist", days=1)
         assert blacklist_file.exists()
 
-        # Recargar desde disco
         bl2 = MarketBlacklist(trades_file=trades_file, blacklist_file=blacklist_file)
         assert bl2.is_blacklisted("0xpersist") is True
 

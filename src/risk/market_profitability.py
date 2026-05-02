@@ -52,11 +52,15 @@ class MarketStats:
         self.order_count: int = kwargs.get("order_count", 0)
         self.fill_count: int = kwargs.get("fill_count", 0)
         self.question: str = kwargs.get("question", "")
-        self.roi: float = kwargs.get("roi", 0.0)
         self.avg_spread_captured: float = kwargs.get("avg_spread_captured", 0.0)
+        self.share_below_since: float | None = kwargs.get("share_below_since", None)
+        self.last_update: float = kwargs.get("last_update", time.time())
+        # _roi_override: permite persistir ROI calculado (None = computar dinámico)
+        self._roi_override: float | None = kwargs.get("_roi_override", None)
 
     def update(self, trade: Trade) -> None:
         """Actualiza stats con un nuevo trade."""
+        self.last_update = time.time()
         if trade.status == "error":
             return
         self.order_count += 1
@@ -69,6 +73,7 @@ class MarketStats:
             if pnl > 0:
                 self.fill_count += 1
             self.total_pnl += pnl
+            self._roi_override = None  # invalidar cache, recomputar dinámico
 
     def _avg_buy(self) -> float:
         """Precio promedio de compra."""
@@ -85,6 +90,8 @@ class MarketStats:
     @property
     def roi(self) -> float:
         """Return on Investment (PnL / capital invertido)."""
+        if self._roi_override is not None:
+            return self._roi_override
         if self.capital_deployed <= 0:
             return 0.0
         return self.total_pnl / self.capital_deployed
@@ -114,8 +121,10 @@ class MarketProfiler:
                     s.order_count = data.get("order_count", 0)
                     s.fill_count = data.get("fill_count", 0)
                     s.question = data.get("question", "")
-                    s.roi = data.get("roi", 0.0)
                     s.avg_spread_captured = data.get("avg_spread_captured", 0.0)
+                    s._roi_override = data.get("_roi_override", data.get("roi", None))
+                    s.share_below_since = data.get("share_below_since", None)
+                    s.last_update = data.get("last_update", time.time())
                     stats[cid] = s
                 logger.info("MarketProfiler: %d mercados cargados", len(stats))
                 return stats
@@ -136,8 +145,11 @@ class MarketProfiler:
                     "order_count": s.order_count,
                     "fill_count": s.fill_count,
                     "question": s.question,
+                    "_roi_override": s._roi_override,
                     "roi": s.roi,
                     "avg_spread_captured": s.avg_spread_captured,
+                    "share_below_since": s.share_below_since,
+                    "last_update": s.last_update,
                 }
             PROFITABILITY_FILE.parent.mkdir(parents=True, exist_ok=True)
             PROFITABILITY_FILE.write_text(
@@ -232,7 +244,7 @@ class MarketProfiler:
         cutoff = time.time() - max_age_days * 86400
         to_remove = [
             cid for cid, s in self._stats.items()
-            if s.last_update < cutoff  # type: ignore[attr-defined]
+            if s.last_update < cutoff
         ]
         for cid in to_remove:
             del self._stats[cid]
