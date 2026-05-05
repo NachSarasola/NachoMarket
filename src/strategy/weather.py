@@ -637,6 +637,9 @@ class WeatherStrategy(BaseStrategy):
         # --- Market quality filters ---
         if market.volume < 100:
             return None
+        # Range buckets requieren más liquidez (spread más amplio, menos participantes)
+        if market.bucket_type == "range" and market.volume < 500:
+            return None
         if market.yes_price < 0.01:
             return None
         if market.yes_price > 0 and market.no_price > 0:
@@ -683,6 +686,23 @@ class WeatherStrategy(BaseStrategy):
         calibrated_prob = max(0.01, min(0.99, calibrated_prob))
         raw_edge = calibrated_prob - mid_price
         if raw_edge <= 0:
+            return None
+
+        # --- Filtro de probabilidad mínima por tipo de bucket ---
+        # Un range al 40% comprado a 2c tiene edge positivo pero exp. negativa a largo plazo.
+        # below/above (cola abierta): necesitan conviccion alta para ser rentables.
+        # range (bucket cerrado): el modelo debe darle >= 50% para que valga la pena.
+        if market.bucket_type == "range" and calibrated_prob < 0.50:
+            self._logger.debug(
+                "Weather: range prob too low — %s %.0f%% < 50%% floor",
+                market.city_name, calibrated_prob * 100,
+            )
+            return None
+        if market.bucket_type in ("below", "above") and calibrated_prob < 0.60:
+            self._logger.debug(
+                "Weather: tail prob too low — %s %.0f%% < 60%% floor",
+                market.city_name, calibrated_prob * 100,
+            )
             return None
 
         # Use calibrated sigma when available, fallback to live ensemble_std
@@ -818,6 +838,7 @@ class WeatherStrategy(BaseStrategy):
                 "target_date": market.target_date.isoformat(),
                 "ens_std": ensemble_std, "calibrated_sigma": calibrated_sigma,
                 "ens_mean": mean_val, "bias": bias, "min_edge": min_edge,
+                "bucket_lower": market.bucket_lower, "bucket_upper": market.bucket_upper,
                 "nws_divergence": nws_divergence,
                 "reasoning": reasoning, "category": "weather",
             },
