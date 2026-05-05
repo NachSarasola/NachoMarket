@@ -342,7 +342,7 @@ class WeatherStrategy(BaseStrategy):
 
     def _generate_signal(self, contract: KalshiWeatherContract, balance: float) -> Signal | None:
         """Genera senal de trading para un contrato de temperatura."""
-        forecast = fetch_ensemble_forecast(contract.city_name, contract.target_date)
+        forecast = fetch_ensemble_forecast(contract.city_name, contract.target_date, platform="kalshi")
         if forecast is None or not forecast.member_highs or not forecast.member_lows:
             return None
 

@@ -605,6 +605,47 @@ STATIONS: Dict[str, dict] = {
     },
 }
 
+KALSHI_STATIONS: Dict[str, dict] = {
+    # Kalshi usa a menudo Central Park en lugar de LaGuardia para NYC
+    "nyc": {
+        "city_name": "New York",
+        "lat": 40.7826, "lon": -73.9656,
+        "icao": "KNYC",
+        "station_name": "Central Park",
+        "wunderground": "",
+        "unit": "F", "timezone": "America/New_York",
+        "verified": True,
+    },
+    # Chicago usa O'Hare al igual que polymarket
+    "chicago": STATIONS["chicago"],
+    "miami": STATIONS["miami"],
+    "los-angeles": {
+        "city_name": "Los Angeles",
+        "lat": 34.0239, "lon": -118.282, # USC Campus station usually for Kalshi downtown, or KLAX. Using KLAX for now if unspecified
+        "icao": "KLAX",
+        "station_name": "Los Angeles Intl Airport",
+        "wunderground": "",
+        "unit": "F", "timezone": "America/Los_Angeles",
+        "verified": False,
+    },
+    "denver": STATIONS["denver"],
+    "houston": STATIONS["houston"],
+    "boston": STATIONS["boston"],
+    "austin": STATIONS["austin"],
+    "phoenix": STATIONS["phoenix"],
+    "las-vegas": STATIONS["las-vegas"],
+    "dallas": STATIONS["dallas"],
+    "minneapolis": STATIONS["minneapolis"],
+    "philadelphia": STATIONS["philadelphia"],
+    "seattle": STATIONS["seattle"],
+    "san-francisco": STATIONS["san-francisco"],
+    "washington-dc": STATIONS["washington-dc"],
+    "san-antonio": STATIONS["san-antonio"],
+    "atlanta": STATIONS["atlanta"],
+    "new-orleans": STATIONS["new-orleans"],
+    "oklahoma-city": STATIONS["oklahoma-city"],
+}
+
 # ---------------------------------------------------------------------------
 # Helpers de lookup
 # ---------------------------------------------------------------------------
@@ -624,25 +665,35 @@ MONTH_MAP: Dict[str, int] = {
 }
 
 
-def resolve_station(city_name: str) -> dict | None:
-    """Resuelve una ciudad a su estacion meteorologica de Polymarket.
+def resolve_station(city_name: str, platform: str = "polymarket") -> dict | None:
+    """Resuelve una ciudad a su estacion meteorologica oficial.
 
-    Busca en STATIONS por key exacta, luego por city_name fuzzy match.
-    Si no encuentra, intenta geocoding como fallback (NO confiable — devuelve
-    centro urbano, no el aeropuerto de resolucion).
+    Args:
+        city_name: Nombre de la ciudad.
+        platform: 'polymarket' o 'kalshi'.
     """
+    station_map = KALSHI_STATIONS if platform == "kalshi" else STATIONS
     key = city_name.lower().replace(" ", "-")
+    
+    if key in station_map:
+        return station_map[key]
+    # Fallback to base STATIONS if not found in KALSHI_STATIONS
     if key in STATIONS:
         return STATIONS[key]
+        
     # Fuzzy match por key alias
     alias_key = city_name.lower()
     if alias_key in _station_alias_cache:
-        return STATIONS[_station_alias_cache[alias_key]]
+        alias = _station_alias_cache[alias_key]
+        if alias in station_map:
+            return station_map[alias]
+        return STATIONS[alias]
+        
     # Geocoding fallback (ultimo recurso, NO confiable para trading)
     logger.error(
         "STATION_NOT_FOUND: '%s' no esta en STATIONS. "
         "Usando geocoding (NO confiable — centro urbano, no aeropuerto de resolucion). "
-        "Verifica la pagina del mercado en Polymarket para la estacion correcta.",
+        "Verifica la pagina del mercado para la estacion correcta.",
         city_name,
     )
     geo = geocode_city(city_name)
@@ -808,9 +859,9 @@ def _local_day_utc_range(station: dict, target_date: date) -> tuple[date, date]:
 
 
 def fetch_ensemble_forecast(
-    city_name: str, target_date: Optional[date] = None
+    city_name: str, target_date: Optional[date] = None, platform: str = "polymarket"
 ) -> Optional["EnsembleForecast"]:
-    """Obtiene forecast del ensemble GFS (31 miembros) para la estacion de resolucion.
+    """Obtiene forecast del ensemble GFS y ECMWF para la estacion de resolucion.
 
     Usa las coordenadas exactas de STATIONS (aeropuerto, no centro urbano).
     Convierte Celsius a Fahrenheit internamente si la estacion usa Celsius,
@@ -819,6 +870,7 @@ def fetch_ensemble_forecast(
     Args:
         city_name: Nombre de ciudad o key de STATIONS (ej: 'New York', 'nyc').
         target_date: Fecha objetivo. Default: hoy.
+        platform: Plataforma objetivo ('polymarket' o 'kalshi').
 
     Returns:
         EnsembleForecast con temps en Fahrenheit, o None si falla.
@@ -826,7 +878,7 @@ def fetch_ensemble_forecast(
     if target_date is None:
         target_date = date.today()
 
-    station = resolve_station(city_name)
+    station = resolve_station(city_name, platform=platform)
     if station is None:
         logger.warning("City not found: %s", city_name)
         return None
@@ -847,71 +899,97 @@ def fetch_ensemble_forecast(
 
     # Timezone-aware date range: ensure we cover the full local calendar day
     utc_start, utc_end = _local_day_utc_range(station, target_date)
-    dates_to_query = [utc_start]
-    if utc_end != utc_start:
-        dates_to_query.append(utc_end)
+    
+    # Set timezone correctly
+    tz_name = station.get("timezone", "UTC")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone.utc
 
     try:
-        all_member_highs: dict[str, list[float]] = {}
-        all_member_lows: dict[str, list[float]] = {}
+        # Peticion de SuperEnsemble (ECMWF + GFS)
+        params = {
+            "latitude": station["lat"],
+            "longitude": station["lon"],
+            "hourly": "temperature_2m",
+            "temperature_unit": "fahrenheit",
+            "start_date": utc_start.isoformat(),
+            "end_date": utc_end.isoformat(),
+            "models": "ecmwf_ifs04,gfs_seamless",
+        }
 
-        for query_date in dates_to_query:
-            params = {
-                "latitude": station["lat"],
-                "longitude": station["lon"],
-                "daily": "temperature_2m_max,temperature_2m_min",
-                "temperature_unit": "fahrenheit",
-                "start_date": query_date.isoformat(),
-                "end_date": query_date.isoformat(),
-                "models": "gfs_seamless",
-            }
+        data = None
+        for attempt in range(3):
+            try:
+                response = requests.get(
+                    "https://ensemble-api.open-meteo.com/v1/ensemble",
+                    params=params,
+                    timeout=20.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                break
+            except requests.RequestException:
+                if attempt < 2:
+                    time.sleep(1.0 * (attempt + 1))
+                else:
+                    raise
 
-            data = None
-            for attempt in range(3):
-                try:
-                    response = requests.get(
-                        "https://ensemble-api.open-meteo.com/v1/ensemble",
-                        params=params,
-                        timeout=15.0,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    break
-                except requests.RequestException:
-                    if attempt < 2:
-                        time.sleep(1.0 * (attempt + 1))
-                    else:
-                        raise
-
-            if data is None:
-                continue
-
-            daily = data.get("daily", {})
-            for key, values in daily.items():
-                if not isinstance(values, list) or not values:
-                    continue
-                val = values[0]
-                if val is None:
-                    continue
-                if key == "temperature_2m_max" or key.startswith("temperature_2m_max_member"):
-                    all_member_highs.setdefault(key, []).append(float(val))
-                elif key == "temperature_2m_min" or key.startswith("temperature_2m_min_member"):
-                    all_member_lows.setdefault(key, []).append(float(val))
-
-        # Combine: daily max = max across UTC dates, daily min = min
-        member_highs: list[float] = [max(vals) for vals in all_member_highs.values() if vals]
-        member_lows: list[float] = [min(vals) for vals in all_member_lows.values() if vals]
-
-        if not member_highs:
+        if data is None:
             logger.warning("No ensemble data for %s on %s", station["city_name"], target_date)
             return None
+
+        hourly = data.get("hourly", {})
+        times_str = hourly.get("time", [])
+        
+        # Filtrar indices correspondientes exactamente a la fecha objetivo en la timezone local
+        valid_indices = []
+        for i, t_str in enumerate(times_str):
+            # Formato: "YYYY-MM-DDTHH:MM" (sin Z, Open-Meteo lo asume UTC por defecto a menos que se use timezone parameter)
+            # Para evitar dudas, forzamos parsing como UTC
+            dt_utc = datetime.fromisoformat(t_str).replace(tzinfo=timezone.utc)
+            dt_local = dt_utc.astimezone(tz)
+            if dt_local.date() == target_date:
+                valid_indices.append(i)
+
+        if not valid_indices:
+            logger.warning("No valid hours found in local day for %s on %s", station["city_name"], target_date)
+            return None
+
+        all_member_highs: list[float] = []
+        all_member_lows: list[float] = []
+
+        # Extraer max y min de los periodos de 24h locales para cada miembro
+        for key, values in hourly.items():
+            if not key.startswith("temperature_2m_member"):
+                continue
+            if not isinstance(values, list):
+                continue
+            
+            valid_vals = [values[i] for i in valid_indices if values[i] is not None]
+            if valid_vals:
+                all_member_highs.append(max(valid_vals))
+                all_member_lows.append(min(valid_vals))
+
+        if not all_member_highs:
+            logger.warning("No ensemble data (all null) for %s on %s", station["city_name"], target_date)
+            return None
+
+        # Fase 3: Nowcasting Intradiario
+        if target_date == date.today():
+            curr_temp = fetch_current_temperature(station)
+            if curr_temp is not None:
+                all_member_highs = [max(h, curr_temp) for h in all_member_highs]
+                all_member_lows = [min(l, curr_temp) for l in all_member_lows]
+                logger.info("Nowcasting %s: current temp %.1fF applied to ensemble", station["city_name"], curr_temp)
 
         forecast = EnsembleForecast(
             city_key=station.get("icao", city_name.lower()),
             city_name=station["city_name"],
             target_date=target_date,
-            member_highs=member_highs,
-            member_lows=member_lows,
+            member_highs=all_member_highs,
+            member_lows=all_member_lows,
         )
 
         _forecast_cache[cache_key] = (now, forecast)
@@ -1049,6 +1127,26 @@ def fetch_observed_temperature(
             "Archive temp not available for %s on %s: %s",
             city_key, target_date, e,
         )
+        return None
+
+
+def fetch_current_temperature(station: dict) -> float | None:
+    """Obtiene la temperatura observada actual via Open-Meteo (Fase 3 Nowcasting)."""
+    try:
+        r = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": station["lat"],
+                "longitude": station["lon"],
+                "current": "temperature_2m",
+                "temperature_unit": "fahrenheit",
+            },
+            timeout=10.0,
+        )
+        r.raise_for_status()
+        return r.json().get("current", {}).get("temperature_2m")
+    except Exception as e:
+        logger.warning("Failed to fetch current temperature for %s: %s", station.get("city_name"), e)
         return None
 
 

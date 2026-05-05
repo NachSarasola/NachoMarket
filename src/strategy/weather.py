@@ -79,6 +79,25 @@ CITY_SLUGS: dict[str, str] = {
     "Wellington": "wellington", "Sydney": "sydney",
 }
 
+CITY_REGIONS: dict[str, list[str]] = {
+    "US_NE": ["New York", "Boston", "Philadelphia", "Washington DC"],
+    "US_SE": ["Miami", "Atlanta"],
+    "US_S": ["Houston", "Dallas", "Austin", "San Antonio", "New Orleans"],
+    "US_MW": ["Chicago", "Minneapolis"],
+    "US_W": ["Los Angeles", "San Francisco", "Seattle"],
+    "US_SW": ["Denver", "Phoenix", "Las Vegas"],
+    "EU_W": ["London", "Paris", "Amsterdam"],
+    "EU_C": ["Berlin", "Munich", "Warsaw"],
+    "EU_S": ["Madrid", "Milan"],
+    "EU_N": ["Helsinki"],
+    "EU_E": ["Moscow", "Ankara", "Istanbul", "Tel Aviv"],
+    "ASIA_E": ["Tokyo", "Seoul", "Beijing", "Shanghai", "Taipei", "Busan", "Hong Kong", "Shenzhen", "Guangzhou", "Qingdao"],
+    "ASIA_SE": ["Singapore", "Manila", "Jakarta", "Kuala Lumpur"],
+    "ASIA_S": ["Delhi", "Lucknow", "Karachi", "Jeddah"],
+    "LATAM": ["Buenos Aires", "Sao Paulo", "Mexico City", "Panama City"],
+    "OTHER": ["Toronto", "Lagos", "Cape Town", "Wellington", "Sydney"],
+}
+
 
 @dataclass
 class WeatherMarket:
@@ -344,6 +363,31 @@ class WeatherStrategy(BaseStrategy):
             if cooldown_key in self._exit_cooldown:
                 hours_since = (time.time() - self._exit_cooldown[cooldown_key]) / 3600.0
                 if hours_since < self._dt["exit_cooldown_hours"]:
+                    continue
+
+            # Phase 5: Spatial Kelly / Correlated Risk
+            region = "UNKNOWN"
+            for r, cities in CITY_REGIONS.items():
+                if city in cities:
+                    region = r
+                    break
+            
+            region_exposure = 0.0
+            for pt in self._pending_trades.values():
+                if pt.get("target_date")[:10] == tgt[:10] and pt.get("metric") == met:
+                    pt_city = pt.get("city_name", "")
+                    if pt_city in CITY_REGIONS.get(region, []):
+                        region_exposure += float(pt.get("size", 0))
+            
+            max_region_exposure = balance * 0.25
+            if region_exposure >= max_region_exposure:
+                self._logger.info("Weather Correlated Kelly: Max exposure reached for %s on %s", region, tgt)
+                continue
+                
+            if region_exposure > 0:
+                discount = 1.0 - (region_exposure / max_region_exposure)
+                sig.size *= discount
+                if sig.size < 5.0:  # Min trade size after discount
                     continue
 
             if running >= 10:
@@ -1020,84 +1064,87 @@ class WeatherStrategy(BaseStrategy):
     def _get_calibration_stats(
         self, city: str, metric: str, lead_days: int, month: int
     ) -> tuple[float, float | None]:
-        """Devuelve (bias_shrunk, calibrated_sigma) desde datos historicos.
-
-        Jerarquia de lookup per-metrica con fallback:
-        1. {city}_{metric}_{lead_days}d_m{month} — granularidad maxima
-        2. {city}_{metric}_{lead_days}d — sin mes
-        3. {city}_{metric}_m{month} — sin lead_days
-        4. {city}_{metric} — solo ciudad+metrica
-        5. {city}_{lead_days}d_m{month} — sin metrica (legacy)
-        6. {city} — solo ciudad (ultimo recurso)
+        """Fase 4: ML Predictive Calibration (K-Nearest Neighbors approach).
+        
+        Utiliza regresión local por vecindad (KNN) basada en features para estimar
+        el bias y la sigma, aprendiendo de ciudades, plazos y métricas similares.
         """
-        keys = [
-            f"{city}_{metric}_{lead_days}d_m{month}",
-            f"{city}_{metric}_{lead_days}d",
-            f"{city}_{metric}_m{month}",
-            f"{city}_{metric}",
-            f"{city}_{lead_days}d_m{month}",
-            city,
-        ]
-        min_n = self._calibration_min_samples
-
-        for key in keys:
-            if key in self._calibration:
-                entry = self._calibration[key]
-                count = int(entry.get("count", 0))
-                raw_bias = float(entry.get("bias", 0.0))
-                shrinkage = min(1.0, count / min_n)
-                bias = raw_bias * shrinkage
-                sigma = entry.get("sigma")
-                if sigma is not None and count >= min_n:
-                    return bias, float(sigma)
-                elif sigma is not None:
-                    blended_sigma = float(sigma) * shrinkage
-                    return bias, blended_sigma if blended_sigma > 0 else None
-                else:
-                    return bias, None
-        return 0.0, None
+        W_CITY = 2.0
+        W_METRIC = 2.0
+        W_LEAD = 1.0
+        W_MONTH = 0.5
+        
+        similar_errors = []
+        similar_bias = []
+        
+        for key, entry in self._calibration.items():
+            if not isinstance(entry, dict) or "count" not in entry:
+                continue
+                
+            e_city = entry.get("city", "")
+            e_metric = entry.get("metric", "")
+            e_lead = float(entry.get("lead_days", lead_days))
+            e_month = float(entry.get("month", month))
+            
+            # Distancia euclidiana ponderada
+            dist = 0.0
+            if e_city != city: dist += W_CITY
+            if e_metric != metric: dist += W_METRIC
+            dist += W_LEAD * abs(e_lead - lead_days)
+            dist += W_MONTH * min(abs(e_month - month), 12 - abs(e_month - month))
+            
+            # Inverse distance weighting
+            weight = 1.0 / (1.0 + dist)
+            
+            # Sesgo probabilístico
+            raw_bias = float(entry.get("bias", 0.0))
+            count = int(entry.get("count", 0))
+            if count > 0:
+                similar_bias.append((weight, count, raw_bias))
+                
+            # Error de temperatura
+            sigma = entry.get("sigma")
+            if sigma is not None:
+                similar_errors.append((weight, count, float(sigma)))
+                
+        total_w_bias = sum(w * min(c, 10) for w, c, _ in similar_bias)
+        weighted_bias = sum(w * min(c, 10) * b for w, c, b in similar_bias) / total_w_bias if total_w_bias > 0 else 0.0
+            
+        total_w_err = sum(w * min(c, 10) for w, c, _ in similar_errors)
+        weighted_sigma = sum(w * min(c, 10) * s for w, c, s in similar_errors) / total_w_err if total_w_err > 0 else None
+            
+        return weighted_bias, weighted_sigma
 
     def _get_calibration_quality(
         self, city: str, metric: str, lead_days: int, month: int
     ) -> float:
-        """0.0 = sin datos, 1.0 = calibracion perfecta para esta estacion."""
-        keys = [
-            f"{city}_{metric}_{lead_days}d_m{month}",
-            f"{city}_{metric}_{lead_days}d",
-            f"{city}_{metric}_m{month}",
-            f"{city}_{metric}",
-            f"{city}_{lead_days}d_m{month}",
-            city,
-        ]
-        for key in keys:
-            if key in self._calibration:
-                entry = self._calibration[key]
-                count = int(entry.get("count", 0))
-                sigma = entry.get("sigma")
-                if count == 0:
-                    continue
-
-                count_score = min(1.0, count / 30.0)
-                if sigma is not None:
-                    accuracy_score = max(0.0, min(1.0, (10.0 - sigma) / 8.5))
-                else:
-                    accuracy_score = 0.3
-
-                quality = 0.6 * count_score + 0.4 * accuracy_score
-
-                # Penalizar datos viejos (>180 dias)
-                last_upd = entry.get("last_updated", "")
-                if last_upd:
-                    try:
-                        last_date = date.fromisoformat(last_upd)
-                        days_old = (date.today() - last_date).days
-                        if days_old > 180:
-                            quality *= 0.7
-                    except (ValueError, TypeError):
-                        pass
-
-                return quality
-        return 0.0
+        """Estima la calidad de la calibración usando densidad local de KNN."""
+        W_CITY = 2.0
+        W_METRIC = 2.0
+        W_LEAD = 1.0
+        W_MONTH = 0.5
+        
+        density = 0.0
+        for key, entry in self._calibration.items():
+            if not isinstance(entry, dict) or "count" not in entry:
+                continue
+            e_city = entry.get("city", "")
+            e_metric = entry.get("metric", "")
+            e_lead = float(entry.get("lead_days", lead_days))
+            e_month = float(entry.get("month", month))
+            
+            dist = 0.0
+            if e_city != city: dist += W_CITY
+            if e_metric != metric: dist += W_METRIC
+            dist += W_LEAD * abs(e_lead - lead_days)
+            dist += W_MONTH * min(abs(e_month - month), 12 - abs(e_month - month))
+            
+            weight = 1.0 / (1.0 + dist)
+            count = min(int(entry.get("count", 0)), 15)
+            density += weight * count
+            
+        # Normalizar a 0-1
+        return min(1.0, density / 30.0)
 
     # --- Phase 5: ensemble shape analysis ---
 

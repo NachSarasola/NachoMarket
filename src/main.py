@@ -179,6 +179,7 @@ class NachoMarketBot:
                 circuit_breaker=self._circuit_breaker,
                 reward_tracker=self._reward_tracker,
                 market_filter=self._market_analyzer.market_filter,
+                ws_feed=self._feed,
             ),
             "safe_compounder": lambda: SafeCompounderStrategy(
                 self._client, merged_strategy_config,

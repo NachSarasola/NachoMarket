@@ -151,38 +151,30 @@ def _in_danger_zone(order_price: float, side: str, best_bid: float, best_ask: fl
         return best_ask > 0 and order_price <= best_ask + DANGER_ZONE_TICKS * tick_size
 
 
-def _get_dynamic_safety_ticks(
+def _get_cushion_usd(
     book: list[dict],
     our_price: float,
     bbo_price: float,
-    tick_size: float,
-) -> int:
-    """Devuelve 1 si hay colchón (órdenes entre nosotros y el BBO), sino SAFETY_TICKS.
-
-    Si hay órdenes entre our_price y bbo_price, esas se ejecutarán primero
-    y podemos usar 1 tick de seguridad. Si no hay colchón, usar 2 ticks.
-    """
+) -> float:
+    """Devuelve el volumen total en USD de las órdenes entre nuestro precio y el BBO."""
     if not book or bbo_price <= 0:
-        return SAFETY_TICKS
+        return 0.0
 
-    # Determinar rango a chequear según lado
-    if our_price < bbo_price:  # BUY side: nuestro bid está debajo del best_bid
+    if our_price < bbo_price:  # BUY side
         price_low = our_price
         price_high = bbo_price
-    else:  # SELL side: nuestro ask está arriba del best_ask
+    else:  # SELL side
         price_low = bbo_price
         price_high = our_price
 
-    if price_high - price_low <= tick_size:
-        return SAFETY_TICKS  # No hay espacio para colchón
-
-    # Contar si hay órdenes en el rango (colchón)
+    cushion_usd = 0.0
     for level in book:
         price = float(level.get("price", level.get("p", 0.0)))
+        size = float(level.get("size", level.get("s", 0.0)))
         if price_low < price < price_high:
-            return 1  # Colchón detectado → 1 tick alcanza
+            cushion_usd += price * size
 
-    return SAFETY_TICKS
+    return cushion_usd
 
 
 class RewardsFarmerStrategy(BaseStrategy):
@@ -195,14 +187,21 @@ class RewardsFarmerStrategy(BaseStrategy):
         circuit_breaker: Any = None,
         reward_tracker: Any = None,
         market_filter: Any = None,
+        ws_feed: Any = None,
         **kwargs: Any,
     ) -> None:
         super().__init__("rewards_farmer", client, config, **kwargs)
         self._circuit_breaker = circuit_breaker
         self._reward_tracker = reward_tracker
         self._market_filter = market_filter
+        self._ws_feed = ws_feed
         self._market_volume: dict[str, float] = {}
         rf_cfg = config.get("rewards_farmer", {})
+        rf_safety = rf_cfg.get("rf_safety", {})
+        self._min_cushion_usd = float(rf_safety.get("min_cushion_usd", 250.0))
+        self._fast_cancel_enabled = bool(rf_safety.get("fast_cancel_enabled", True))
+        self._imbalance_max_ratio = float(rf_safety.get("imbalance_max_ratio", 5.0))
+        self._subscribed_tokens = set()
         markets_cfg = config.get("markets", config)
 
         self._max_capital_per_market = float(rf_cfg.get("max_capital_per_market", 33.0))
@@ -535,6 +534,9 @@ class RewardsFarmerStrategy(BaseStrategy):
 
         for token in [t for t in tokens if t.get("token_id", "") in viable_token_ids]:
             tid = token.get("token_id", "")
+            if tid and self._ws_feed and tid not in self._subscribed_tokens:
+                self._ws_feed.subscribe(tid, self._on_ws_update, condition_id=condition_id)
+                self._subscribed_tokens.add(tid)
             if not tid:
                 continue
             if token not in tokens_to_eval:
@@ -575,13 +577,27 @@ class RewardsFarmerStrategy(BaseStrategy):
 
             token_signal_counts[tid] = 0
 
+
+            # Imbalance Protection
+            bid_vol = sum(float(l.get("price", 0))*float(l.get("size", 0)) for l in bids_book[:5])
+            ask_vol = sum(float(l.get("price", 0))*float(l.get("size", 0)) for l in asks_book[:5])
+            buy_allowed = True
+            sell_allowed = True
+            if ask_vol > 0 and bid_vol / ask_vol > self._imbalance_max_ratio:
+                sell_allowed = False # Too many bids, asks are weak and vulnerable to sweeps
+                self._logger.info(f"Imbalance {tid[:8]}: bid_vol={bid_vol:.0f} ask_vol={ask_vol:.0f} -> SELL prohibido")
+            if bid_vol > 0 and ask_vol / bid_vol > self._imbalance_max_ratio:
+                buy_allowed = False # Too many asks, bids are weak
+                self._logger.info(f"Imbalance {tid[:8]}: bid_vol={bid_vol:.0f} ask_vol={ask_vol:.0f} -> BUY prohibido")
+
             # --- BUY side ---
             # Calcular safety_ticks dinámico: 1 tick si hay colchón entre nosotros y el BBO
             our_bid_2t = best_bid - SAFETY_TICKS * tick_size
-            safety_ticks_bid = _get_dynamic_safety_ticks(bids_book, our_bid_2t, best_bid, tick_size)
-            bid_price = _qualifying_bid(t_mid, max_spread_usd, tick_size, best_bid, safety_ticks_bid)
+            cushion_bid = _get_cushion_usd(bids_book, our_bid_2t, best_bid)
+            safety_ticks_bid = 1 if cushion_bid >= self._min_cushion_usd else SAFETY_TICKS
+            bid_price = _qualifying_bid(t_mid, max_spread_usd, tick_size, best_bid, safety_ticks_bid) if buy_allowed else None
             if bid_price is not None:
-                target_shares = _calc_shares(min_shares, size_boost, side_capital, bid_price)
+                target_shares = _calc_shares(min_shares, size_boost, side_capital, bid_price, cushion_bid)
                 # Threshold ESTRICTO a min_shares (antes era 0.9*min_shares -> ordenes
                 # subnominales que Polymarket NO premia con rewards).
                 if target_shares >= int(min_shares):
@@ -617,10 +633,11 @@ class RewardsFarmerStrategy(BaseStrategy):
             if self._two_sided:
                 # Calcular safety_ticks dinámico: 1 tick si hay colchón entre nosotros y el BBO
                 our_ask_2t = best_ask + SAFETY_TICKS * tick_size
-                safety_ticks_ask = _get_dynamic_safety_ticks(asks_book, best_ask, our_ask_2t, tick_size)
-                ask_price = _qualifying_ask(t_mid, max_spread_usd, tick_size, best_ask, safety_ticks_ask)
+                cushion_ask = _get_cushion_usd(asks_book, best_ask, our_ask_2t)
+                safety_ticks_ask = 1 if cushion_ask >= self._min_cushion_usd else SAFETY_TICKS
+                ask_price = _qualifying_ask(t_mid, max_spread_usd, tick_size, best_ask, safety_ticks_ask) if sell_allowed else None
                 if ask_price is not None:
-                    target_shares_ask = _calc_shares(min_shares, size_boost, side_capital, ask_price)
+                    target_shares_ask = _calc_shares(min_shares, size_boost, side_capital, ask_price, cushion_ask)
                     if target_shares_ask >= int(min_shares):
                         s_ask = ask_price - t_mid
                         score_ask = ((max_spread_usd - s_ask) / max_spread_usd) ** 2 if max_spread_usd > 0 else 0.0
@@ -712,6 +729,43 @@ class RewardsFarmerStrategy(BaseStrategy):
                 self._logger.debug("RF: error cancelando %s...", oid[:12])
         return cancelled
 
+
+    async def _on_ws_update(self, token_id: str, ob_state: Any, change_type: str) -> None:
+        if not self._fast_cancel_enabled:
+            return
+            
+        bids = [{"price": p, "size": s} for p, s in ob_state.bids]
+        asks = [{"price": p, "size": s} for p, s in ob_state.asks]
+        best_bid = bids[0]["price"] if bids else 0.0
+        best_ask = asks[0]["price"] if asks else 0.0
+        
+        # Buscar ordenes nuestras en este token
+        for oid, order in list(self._pending_orders.items()):
+            if order.get("token_id") != token_id:
+                continue
+            
+            side = order.get("side")
+            price = order.get("price")
+            
+            cancel = False
+            if side == "BUY" and best_bid > 0:
+                cushion = _get_cushion_usd(bids, price, best_bid)
+                if cushion < self._min_cushion_usd and best_bid - price <= 0.02:
+                    cancel = True
+            elif side == "SELL" and best_ask > 0:
+                cushion = _get_cushion_usd(asks, best_ask, price)
+                if cushion < self._min_cushion_usd and price - best_ask <= 0.02:
+                    cancel = True
+                    
+            if cancel:
+                try:
+                    self._client.cancel_order(oid)
+                    self._logger.warning(f"FAST CANCEL {oid[:8]}: cushion={cushion:.1f} < min {self._min_cushion_usd}")
+                    self._pending_orders.pop(oid, None)
+                    if self._circuit_breaker:
+                        self._circuit_breaker.order_closed()
+                except Exception as e:
+                    self._logger.debug(f"FAST CANCEL fallo: {e}")
     def execute(self, signals: list[Signal]) -> list[Trade]:
         trades: list[Trade] = []
         if not signals:
@@ -1078,13 +1132,20 @@ class RewardsFarmerStrategy(BaseStrategy):
         return "standard"
 
 
-def _calc_shares(min_shares: float, size_boost: float, side_capital: float, price: float) -> int:
-    """Calcula shares objetivo para shadow orders.
-
-    Limitado por: SHADOW_SIZE_MULT × min_shares, MAX_ORDER_NOTIONAL,
-    y el capital disponible por lado (side_capital).
+def _calc_shares(min_shares: float, size_boost: float, side_capital: float, price: float, cushion_usd: float = 0.0) -> int:
+    """Calcula shares objetivo usando Dynamic Yield Scaling.
+    Si el colchón es alto, somos agresivos (yield máximo). Si es bajo, conservadores.
     """
-    target = min_shares * SHADOW_SIZE_MULT * size_boost
+    if cushion_usd >= 1000.0:
+        multiplier = SHADOW_SIZE_MULT  # 12x
+    elif cushion_usd >= 250.0:
+        multiplier = SHADOW_SIZE_MULT / 2  # 6x
+    else:
+        multiplier = 1.1  # Apenas el mínimo para farmear
+
+    target = min_shares * multiplier * size_boost
+    # El capital real se respeta (max_capital_per_market = 999.0 asegura que haya lugar,
+    # pero el balance real nos limita).
     max_by_notional = MAX_ORDER_NOTIONAL / price if price > 0 else 0
     max_by_capital = side_capital / price if price > 0 else 0
     cap = min(max_by_notional, max_by_capital) if max_by_capital > 0 else max_by_notional

@@ -20,6 +20,7 @@ review_model: claude-haiku-4-5-20251001
 # Estrategias activas
 strategies_enabled:
   - rewards_farmer
+  - weather
 
 # Weather trading via Polymarket — ensemble forecasting con Open-Meteo (GFS 31 miembros)
 weather:
