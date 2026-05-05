@@ -644,6 +644,62 @@ class PolymarketClient:
         logger.info("get_daily_real_rewards(%s): $%.4f", date_str, total)
         return total
 
+    def get_user_earnings_markets(self, date_str: str = None) -> list[dict[str, Any]]:
+        """Obtiene earnings REALES por mercado via GET /rewards/user/markets.
+
+        Mismo dato que la columna 'Ingresos' en polymarket.com/rewards.
+        Incluye condition_id, earnings, earning_percentage, rate_per_day, etc.
+
+        Args:
+            date_str: Fecha YYYY-MM-DD. Default: hoy UTC.
+
+        Returns:
+            Lista de dicts con earnings reales por mercado.
+        """
+        if self.paper_mode or self._client is None:
+            return []
+
+        from datetime import datetime, timezone
+        if date_str is None:
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        signer = self._client.signer
+        creds = self._client.creds
+        if signer is None or creds is None:
+            logger.warning("get_user_earnings_markets: sin signer/creds L2")
+            return []
+
+        all_data: list[dict[str, Any]] = []
+        cursor = None
+        max_pages = 3  # max 1500 mercados
+
+        for _ in range(max_pages):
+            path = f"/rewards/user/markets?date={date_str}&limit=500"
+            if cursor:
+                path += f"&next_cursor={cursor}"
+            request_args = RequestArgs(method="GET", request_path=path)
+            headers = create_level_2_headers(signer, creds, request_args)
+            url = f"{CLOB_HOST}/rewards/user/markets?date={date_str}&limit=500"
+            if cursor:
+                url += f"&next_cursor={cursor}"
+
+            try:
+                resp = requests.get(url, headers=headers, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                logger.warning("get_user_earnings_markets error: %s", e)
+                break
+
+            items = data.get("data", []) if isinstance(data, dict) else []
+            all_data.extend(items)
+            cursor = data.get("next_cursor", "") if isinstance(data, dict) else ""
+            if not cursor or len(items) < 500:
+                break
+
+        logger.info("get_user_earnings_markets(%s): %d mercados con earnings", date_str, len(all_data))
+        return all_data
+
     @_log_api_call
     @retry_with_backoff(max_attempts=3)
     def is_order_scoring(self, order_id: str) -> bool:

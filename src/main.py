@@ -26,12 +26,19 @@ from dotenv import load_dotenv
 from src.polymarket.client import PolymarketClient
 from src.polymarket.markets import MarketAnalyzer
 from src.polymarket.websocket import OrderbookFeed, OrderbookState
+from src.risk.cash_reserves import CashReserves
 from src.risk.circuit_breaker import CircuitBreaker
+from src.risk.edge_filter import EdgeFilter
 from src.risk.inventory import InventoryManager
+from src.risk.position_limits import PositionLimitsManager
 from src.risk.position_sizer import PositionSizer
 from src.review.self_review import SelfReviewer
+from src.strategy.category_scorer import CategoryScorer
 from src.strategy.reward_tracker import RewardTracker
 from src.strategy.rewards_farmer import RewardsFarmerStrategy
+from src.strategy.safe_compounder import SafeCompounderStrategy
+from src.strategy.amm_strategy import AMMStrategy
+from src.strategy.weather import WeatherStrategy
 from src.telegram.bot import TelegramBot, send_alert
 from src.utils.geo_check import verify_geo_access
 from src.utils.logger import setup_logger
@@ -131,6 +138,9 @@ class NachoMarketBot:
 
         # --- e. Strategies habilitadas en settings ---
         enabled = self._settings.get("strategies_enabled", ["rewards_farmer"])
+        self._capital_alloc = self._settings.get("capital_allocation", {})
+        if self._capital_alloc:
+            self._logger.info("Capital allocation: %s", self._capital_alloc)
         # Merged config: las estrategias necesitan acceso a markets.yaml
         # (time_windows, min_mid_change_to_reposition, bot_order_size, competition,
         # loss_reserve_usdc) y a risk.yaml (cost_model, position_sizing).
@@ -146,6 +156,12 @@ class NachoMarketBot:
         self._position_sizer = PositionSizer(self._risk_config)
         self._inventory = InventoryManager(self._risk_config)
 
+        # --- f2. Nuevos modulos de riesgo v4 ---
+        self._edge_filter = EdgeFilter(self._risk_config)
+        self._cash_reserves = CashReserves(self._risk_config)
+        self._position_limits = PositionLimitsManager(self._risk_config)
+        self._category_scorer = CategoryScorer(self._settings)
+
         # Balance cacheado: arranca con capital_total del config, se actualiza cada ciclo
         self._cached_balance: float = float(self._settings.get("capital_total", 50.0))
 
@@ -153,7 +169,7 @@ class NachoMarketBot:
         # Merge RF config into markets_config para que enrich_with_rewards lo use
         if "rewards_farmer" in self._settings:
             self._markets_config["rewards_farmer"] = self._settings["rewards_farmer"]
-        self._market_analyzer = MarketAnalyzer(self._client, self._markets_config, reward_tracker=self._reward_tracker)
+        self._market_analyzer = MarketAnalyzer(self._client, self._markets_config, reward_tracker=self._reward_tracker, category_scorer=self._category_scorer)
         self._active_markets: list[dict[str, Any]] = []
 
         merged_strategy_config = {**self._settings, **self._markets_config, **self._risk_config}
@@ -163,6 +179,19 @@ class NachoMarketBot:
                 circuit_breaker=self._circuit_breaker,
                 reward_tracker=self._reward_tracker,
                 market_filter=self._market_analyzer.market_filter,
+            ),
+            "safe_compounder": lambda: SafeCompounderStrategy(
+                self._client, merged_strategy_config,
+                circuit_breaker=self._circuit_breaker,
+                position_sizer=self._position_sizer,
+                market_filter=self._market_analyzer.market_filter,
+                inventory=self._inventory,
+            ),
+            "weather": lambda: WeatherStrategy(
+                self._client, merged_strategy_config,
+                position_sizer=self._position_sizer,
+                circuit_breaker=self._circuit_breaker,
+                inventory=self._inventory,
             ),
         }
         self._strategies = [
@@ -246,6 +275,14 @@ class NachoMarketBot:
         # Monitorear reward percentages en tiempo real (API /rewards/user/percentages)
         schedule.every(5).minutes.do(self._monitor_rewards_pct)
 
+        # Weather trading — scan independiente cada N minutos
+        self._setup_weather_schedule()
+        # SafeCompounder — market scan independiente
+        self._setup_safe_compounder_schedule()
+        # Take-profit transversal — cada 5 min
+        schedule.every(5).minutes.do(self._check_take_profit)
+        self._logger.info("Take-profit schedule: cada 5 min")
+
         # Notificar arranque exitoso
         strat_names = ", ".join(s.name for s in self._strategies)
         mode_label = "PAPER" if self._paper_mode else "LIVE 🔴"
@@ -319,14 +356,15 @@ class NachoMarketBot:
 
         self._cycle_count = getattr(self, '_cycle_count', 0) + 1
 
-        # Actualizar balance cacheado (una vez por ciclo para no saturar la API)
-        try:
-            self._cached_balance = self._client.get_balance()
-        except Exception:
-            self._logger.debug(
-                "No se pudo actualizar balance; usando valor cacheado $%.2f",
-                self._cached_balance,
-            )
+        # Balance desde config (evita bloquear el loop con llamadas API lentas)
+        # Solo actualizar cada 20 ciclos desde el CLOB
+        if self._cycle_count == 1:
+            self._cached_balance = float(self._settings.get("capital_total", 162))
+        elif self._cycle_count % 20 == 0:
+            try:
+                self._cached_balance = self._client.get_balance()
+            except Exception:
+                pass
 
         # Circuit breaker: si está activo, skip del ciclo.
         if self._circuit_breaker.is_triggered():
@@ -342,6 +380,26 @@ class NachoMarketBot:
             )
             self.pause()
             return
+
+        # Cash reserves check: halt si cash < emergency threshold
+        if self._cached_balance > 0:
+            total_capital = self._cached_balance + self._inventory.get_total_exposure()
+            cash_available = self._cached_balance
+            ok, reason = self._cash_reserves.check(total_capital, cash_available)
+            if not ok:
+                send_alert(f"🛑 *Cash Reserve Emergency*\n{reason}")
+                self.pause()
+                return
+            if "WARNING" in reason and self._cycle_count % 60 == 0:
+                self._logger.warning("Cash reserves: %s", reason)
+
+        # Position limits: auto-close worst if over limit
+        positions = self._inventory.get_positions()
+        if len(positions) > self._position_limits.max_positions and self._position_limits.auto_close_enabled:
+            self._logger.warning(
+                "Position limits: %d positions (max %d) — evaluando auto-close",
+                len(positions), self._position_limits.max_positions,
+            )
 
         # Cancelar órdenes en mercados que superaron la pérdida horaria
         for market_id in self._circuit_breaker.get_markets_to_cancel():
@@ -377,7 +435,10 @@ class NachoMarketBot:
         capital_alloc: dict[str, float] = {}
         if rf_strategy is not None and hasattr(rf_strategy, "allocate_capital"):
             candidate_cids = [m.get("condition_id", "") for m in markets if m.get("condition_id")]
-            capital_alloc = rf_strategy.allocate_capital(candidate_cids, self._cached_balance)
+            try:
+                capital_alloc = rf_strategy.allocate_capital(candidate_cids, self._cached_balance)
+            except Exception as e:
+                self._logger.warning("RF allocate_capital error: %s", e)
             if capital_alloc:
                 top = sorted(capital_alloc.items(), key=lambda x: x[1], reverse=True)[:3]
                 self._logger.info(
@@ -415,6 +476,14 @@ class NachoMarketBot:
             for strategy in self._strategies:
                 if not strategy.is_active:
                     continue
+                # Capital allocation enforcement
+                if self._capital_alloc and strategy.name in ("weather", "safe_compounder"):
+                    alloc_key = f"{strategy.name}_max_pct"
+                    max_pct = self._capital_alloc.get(alloc_key, 0.0)
+                    if max_pct > 0:
+                        strategy_exposure = self._get_strategy_exposure(strategy.name)
+                        if strategy_exposure >= self._cached_balance * max_pct:
+                            continue
                 try:
                     trades = self._run_strategy(strategy, market_data)
                     for trade in trades:
@@ -521,6 +590,20 @@ class NachoMarketBot:
                     "Risk filter: límite de órdenes abiertas alcanzado — descartando resto"
                 )
                 break
+
+            # Edge filter: aplica a estrategias que tienen estimated_prob y confidence
+            if sig.strategy_name in ("safe_compounder", "amm"):
+                estimated_prob = sig.metadata.get("estimated_prob", 0.0)
+                if estimated_prob > 0:
+                    passes, edge = self._edge_filter.has_sufficient_edge(
+                        estimated_prob, sig.price, sig.confidence
+                    )
+                    if not passes:
+                        self._logger.debug(
+                            "Edge filter: %s edge=%.3f < threshold — descartada",
+                            sig.strategy_name, edge,
+                        )
+                        continue
 
             # Shadow orders (rewards_farmer) no tienen exposure real:
             # - safety_ticks=2 las aleja del BBO → fill probability ~0
@@ -635,6 +718,10 @@ class NachoMarketBot:
             if pnl is not None:
                 self._circuit_breaker.record_trade(pnl)
                 self._circuit_breaker.record_market_pnl(trade.market_id, pnl)
+                # Actualizar CategoryScorer con PnL real
+                category = str(market.get("category", ""))
+                if category:
+                    self._category_scorer.update_from_trade(category, pnl)
 
         # Actualizar contador de ordenes abiertas para circuit breaker
         if trade.status not in ("error", "rejected"):
@@ -1236,6 +1323,152 @@ class NachoMarketBot:
                 )
 
     # ------------------------------------------------------------------
+    # Weather + SafeCompounder trading cycles (schedule jobs)
+    # ------------------------------------------------------------------
+
+    def _setup_weather_schedule(self) -> None:
+        """Configura schedule job para weather si la estrategia esta habilitada."""
+        ws = next((s for s in self._strategies if s.name == "weather"), None)
+        if ws is None or not ws.is_enabled:
+            return
+        interval = ws.scan_interval_min
+        schedule.every(interval).minutes.do(self._weather_trading_cycle)
+        self._logger.info("Weather trading schedule: cada %d min", interval)
+        # Primer scan inmediato al arrancar
+        self._logger.info("Weather: ejecutando primer scan...")
+        self._weather_trading_cycle()
+
+    def _setup_safe_compounder_schedule(self) -> None:
+        """Configura schedule job para safe_compounder market scan."""
+        sc = next((s for s in self._strategies if s.name == "safe_compounder"), None)
+        if sc is None or not sc.is_active:
+            return
+        schedule.every(5).minutes.do(self._sc_trading_cycle)
+        self._logger.info("SafeCompounder trading schedule: cada 5 min")
+        # Primer scan inmediato al arrancar
+        self._logger.info("SafeCompounder: ejecutando primer scan...")
+        self._sc_trading_cycle()
+
+    def _weather_trading_cycle(self) -> None:
+        """Ciclo de weather trading: descubrir mercados, senales, ejecutar."""
+        ws = next((s for s in self._strategies if s.name == "weather"), None)
+        if ws is None or not ws.is_active:
+            return
+
+        if self._circuit_breaker.is_triggered():
+            return
+
+        try:
+            trades = ws.run_scan(self._cached_balance)
+            for trade in trades:
+                self._handle_trade(trade, {"condition_id": trade.market_id, "category": "weather", "tokens": []})
+        except Exception:
+            self._logger.exception("Error en weather trading cycle")
+
+    def _sc_trading_cycle(self) -> None:
+        """Ciclo de safe_compounder: market scan, evaluar, ejecutar, exits."""
+        sc = next((s for s in self._strategies if s.name == "safe_compounder"), None)
+        if sc is None or not sc.is_active:
+            return
+
+        if self._circuit_breaker.is_triggered():
+            return
+
+        try:
+            # Track fills on existing orders (updates inventory before scan)
+            for trade in sc._track_fills():
+                self._handle_trade(trade, {"condition_id": trade.market_id, "category": "safe_compounder", "tokens": []})
+
+            trades = sc.run_scan(self._cached_balance)
+            for trade in trades:
+                market = {
+                    "condition_id": trade.market_id,
+                    "category": "safe_compounder",
+                    "tokens": [],
+                }
+                self._handle_trade(trade, market)
+        except Exception:
+            self._logger.exception("Error en safe_compounder trading cycle")
+
+    def _check_take_profit(self) -> None:
+        """Transversal TP/SL: vende posiciones filleadas si alcanzan objetivo."""
+        import json
+        trades_file = Path("data/trades.jsonl")
+        if not trades_file.exists():
+            return
+
+        # Build entry prices from trades.jsonl
+        entries: dict[str, dict[str, list[tuple[float, float]]]] = {}  # mid -> {token_id: [(price, size), ...]}
+        try:
+            for line in trades_file.read_text(encoding="utf-8").splitlines()[-1000:]:
+                if not line.strip():
+                    continue
+                try:
+                    t = json.loads(line)
+                except Exception:
+                    continue
+                if t.get("side") != "BUY":
+                    continue
+                if t.get("status") in ("error", "rejected", "cancelled"):
+                    continue
+                mid = t.get("market_id", "")
+                tid = t.get("token_id", "")
+                price = float(t.get("price", 0))
+                size = float(t.get("size", 0))
+                if not mid or not tid or price <= 0:
+                    continue
+                if mid not in entries:
+                    entries[mid] = {}
+                if tid not in entries[mid]:
+                    entries[mid][tid] = []
+                entries[mid][tid].append((price, size))
+        except Exception:
+            return
+
+        if not entries:
+            return
+
+        # Check each market's current price vs entry
+        for mid, tokens in entries.items():
+            for tid, buys in tokens.items():
+                avg_entry = sum(p * s for p, s in buys) / max(sum(s for _, s in buys), 0.001)
+                try:
+                    mid_price = self._client.get_midpoint(tid)
+                    if mid_price <= 0:
+                        continue
+                except Exception:
+                    continue
+
+                profit_pct = (mid_price - avg_entry) / avg_entry if avg_entry > 0 else 0
+
+                should_sell = False
+                reason = ""
+                if profit_pct <= -0.10:  # Only stop-loss, no take-profit
+                    should_sell = True
+                    reason = "SL"
+
+                if should_sell:
+                    try:
+                        total_size = sum(s for _, s in buys)
+                        shares = max(1, round(total_size / mid_price)) if mid_price > 0 else 1
+                        result = self._client.place_limit_order(
+                            token_id=tid, side="SELL", price=mid_price,
+                            size=shares, post_only=False,
+                        )
+                        self._logger.info(
+                            "TP[%s]: %s SELL %s shares @ %.4f (entry=%.4f profit=%.0f%%)",
+                            reason, tid[:12], shares, mid_price, avg_entry, profit_pct * 100,
+                        )
+                        # Clear inventory for this market
+                        if self._inventory:
+                            try:
+                                self._inventory.clear_market(mid)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        self._logger.warning("TP error selling %s: %s", tid[:12], e)
+
+    # ------------------------------------------------------------------
     # Actualización de mercados (schedule + startup)
     # ------------------------------------------------------------------
 
@@ -1427,6 +1660,18 @@ class NachoMarketBot:
         inventory_exposure = self._inventory.get_total_exposure()
         total_exposure = inventory_exposure + open_exposure
 
+        # Weather strategy status
+        weather_status: dict[str, Any] | None = None
+        ws = next((s for s in self._strategies if s.name == "weather"), None)
+        if ws is not None:
+            weather_status = ws.get_weather_status()
+
+        # SafeCompounder strategy status
+        sc_status: dict[str, Any] | None = None
+        sc = next((s for s in self._strategies if s.name == "safe_compounder"), None)
+        if sc is not None:
+            sc_status = sc.get_status()
+
         return {
             "state": self._state,
             "paper_mode": self._paper_mode,
@@ -1446,6 +1691,8 @@ class NachoMarketBot:
             "killed_strategies": killed_strategies,
             "rolling_drawdown": cb.get("rolling_drawdown", {}),
             "start_time": self._start_time,
+            "weather": weather_status,
+            "safe_compounder": sc_status,
         }
 
     def get_positions(self) -> dict[str, dict[str, float]]:
@@ -1516,6 +1763,87 @@ class NachoMarketBot:
             strategy.resume()
         self._logger.info("Bot REANUDADO")
         send_alert("▶️ *Bot REANUDADO* — Trading activo nuevamente.")
+
+    def enable_strategy(self, name: str) -> str:
+        """Activa una estrategia por nombre. Retorna mensaje."""
+        for s in self._strategies:
+            if s.name == name.lower():
+                if s.is_active:
+                    return f"Estrategia '{name}' ya esta activa."
+                s.resume()
+                self._logger.info("Estrategia %s ACTIVADA via Telegram", name)
+                send_alert(f"✅ Estrategia `{name}` ACTIVADA")
+                return f"Estrategia '{name}' activada."
+        return f"Estrategia '{name}' no encontrada. Usar: weather, safe_compounder, rewards_farmer."
+
+    def disable_strategy(self, name: str) -> str:
+        """Desactiva una estrategia por nombre. Cancela sus ordenes."""
+        for s in self._strategies:
+            if s.name == name.lower():
+                if not s.is_active:
+                    return f"Estrategia '{name}' ya esta inactiva."
+                s.pause()
+                # Cancel only this strategy's orders
+                pending = getattr(s, '_pending_orders', {})
+                cancelled = 0
+                for oid in list(pending.keys()):
+                    try:
+                        self._client.cancel_order(oid)
+                        cancelled += 1
+                    except Exception:
+                        pass
+                self._logger.info("Estrategia %s DESACTIVADA (%d ordenes canceladas)", name, cancelled)
+                send_alert(f"⏸️ Estrategia `{name}` DESACTIVADA ({cancelled} ordenes canceladas)")
+                return f"Estrategia '{name}' desactivada. {cancelled} ordenes canceladas."
+        return f"Estrategia '{name}' no encontrada."
+
+    def _get_strategy_exposure(self, name: str) -> float:
+        """Calcula exposicion en USDC de una estrategia especifica."""
+        total = 0.0
+        try:
+            positions = self._inventory.get_positions()
+            for mid, tokens in positions.items():
+                for tid, val in tokens.items():
+                    if name in str(mid) or name in str(tid):
+                        total += abs(val)
+        except Exception:
+            pass
+        # Also count open orders from trades.jsonl for this strategy
+        import json
+        trades_file = Path("data/trades.jsonl")
+        if trades_file.exists():
+            try:
+                for line in trades_file.read_text(encoding="utf-8").splitlines()[-200:]:
+                    if not line.strip():
+                        continue
+                    try:
+                        t = json.loads(line)
+                    except Exception:
+                        continue
+                    if t.get("strategy_name") == name and t.get("status") in ("live", "submitted"):
+                        total += float(t.get("size", 0))
+            except Exception:
+                pass
+        return total
+
+    def get_orderbook_for(self, token_id: str) -> dict[str, Any]:
+        """Consulta orderbook para un token especifico."""
+        try:
+            ob = self._client.get_orderbook(token_id)
+            bids = ob.get("bids", [])[:5]
+            asks = ob.get("asks", [])[:5]
+            mid = (float(bids[0][0]) + float(asks[0][0])) / 2 if bids and asks else 0
+            return {"bids": bids, "asks": asks, "mid": mid}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def place_manual_order(self, token_id: str, side: str, price: float, size: float) -> dict[str, Any]:
+        """Orden manual via Telegram."""
+        try:
+            result = self._client.place_limit_order(token_id, side, price, size, post_only=False)
+            return {"status": result.get("status", "unknown"), "order_id": result.get("order_id", ""), "price": price, "size": size}
+        except Exception as e:
+            return {"status": "error", "reason": str(e)}
 
     def kill(self) -> None:
         """Cancela todo y detiene el bot. Llamado por Telegram /kill."""

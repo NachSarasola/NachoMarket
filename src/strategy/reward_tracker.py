@@ -1,45 +1,33 @@
-"""RewardTracker — mide ¢/min realmente farmeados por mercado.
+"""RewardTracker v2 — mide centavos/minuto REALES farmeados por mercado.
 
-Muestrea client.get_reward_percentages() cada 60s. El share% devuelto por
-Polymarket es una foto instantánea de tu participación en el libro.
-
-Cálculo correcto (integración real, sin extrapolar):
-  Para cada par de muestras consecutivas:
-    - avg_share = (share_prev + share_cur) / 2
-    - elapsed_min = (ts_cur - ts_prev) / 60
-    - earned_cents = avg_share% × daily_rate × (elapsed_min / 1440) × 100
-  Sumar todos los intervalos → cents ganados REALMENTE en ese periodo.
-
-El c/min es earned_total / minutos_totales de los intervalos.
+Usa GET /rewards/user/markets de Polymarket (datos server-side, mismos que
+la columna 'Ingresos' de la web). Sin estimaciones: earnings reales por mercado.
 """
 
 import json
 import logging
 import threading
 import time
-from collections import defaultdict, deque
+from collections import deque
 from pathlib import Path
 from typing import Any, NamedTuple
 
 logger = logging.getLogger("nachomarket.reward_tracker")
 
 SAMPLE_INTERVAL_SEC = 60
-WINDOW_SEC = 300        # ventana de 5 min para capturar tendencia reciente
+WINDOW_SEC = 300
 EMA_ALPHA = 0.6
-STALE_FACTOR = 2.5      # si buf[-1].ts > STALE_FACTOR * interval → dato muerto
 PERSIST_INTERVAL_SEC = 300
 PERSIST_PATH = "data/reward_tracker.json"
-MINUTES_PER_DAY = 1440.0
 
 
 class _Sample(NamedTuple):
     ts: float
-    share_pct: float
-    daily_rate: float
+    earnings: float       # USDC reales acumulados del dia
 
 
 class RewardTracker:
-    """Thread daemon que muestrea reward percentages y calcula ¢/min por mercado."""
+    """Thread daemon que consulta earnings reales cada 60s."""
 
     def __init__(
         self,
@@ -52,187 +40,211 @@ class RewardTracker:
         self._sample_interval = sample_interval_sec
         self._window_sec = window_sec
         self._persist_path = Path(persist_path)
-        self._buffers: dict[str, deque[_Sample]] = defaultdict(lambda: deque(maxlen=128))
+        self._lock = threading.Lock()
+        self._buffers: dict[str, deque[_Sample]] = {}
         self._ema: dict[str, float] = {}
-        self._lock = threading.RLock()
-        self._stop_event = threading.Event()
-        self._last_persist = time.monotonic()
+        self._ema_share: dict[str, float] = {}
+        self._ema_n: dict[str, int] = {}
+        self._share_pct: dict[str, float] = {}
         self._daily_rates: dict[str, float] = {}
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._load_state()
+
+    # --- Control ---
 
     def start(self) -> None:
-        thread = threading.Thread(target=self._run, daemon=True, name="reward-tracker")
-        thread.start()
-        logger.info(
-            "RewardTracker iniciado (interval=%ds window=%ds)",
-            self._sample_interval, self._window_sec,
-        )
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        logger.info("RewardTracker v2 iniciado (interval=%ds window=%ds)", self._sample_interval, self._window_sec)
 
     def stop(self) -> None:
-        self._stop_event.set()
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+        self._save_state()
 
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                self._sample()
-            except Exception:
-                logger.debug("RewardTracker: error en sample", exc_info=True)
-            self._stop_event.wait(self._sample_interval)
+    # --- Loop ---
+
+    def _loop(self) -> None:
+        last_persist = time.time()
+        while not self._stop.is_set():
+            self._sample()
+            if time.time() - last_persist > PERSIST_INTERVAL_SEC:
+                self._save_state()
+                last_persist = time.time()
+            self._stop.wait(self._sample_interval)
 
     def _sample(self) -> None:
-        percentages = self._client.get_reward_percentages()
-        if not percentages:
+        """Consulta earnings reales por mercado via /rewards/user/markets."""
+        if self._client.paper_mode:
             return
-
-        # Actualizar daily_rates desde get_rewards (best-effort)
         try:
-            rewards_map = self._client.get_rewards()
-            with self._lock:
-                for cid, r in rewards_map.items():
-                    self._daily_rates[cid] = float(r.get("rewards_daily_rate", 0.0))
-        except Exception:
-            pass
+            markets = self._client.get_user_earnings_markets()
+        except Exception as e:
+            logger.warning("RT sample error: %s", e)
+            return
 
-        now = time.time()
-        with self._lock:
-            for cid, share_pct in percentages.items():
-                daily_rate = self._daily_rates.get(cid, 0.0)
-                self._buffers[cid].append(_Sample(ts=now, share_pct=float(share_pct), daily_rate=daily_rate))
-                self._update_ema(cid)
-
-        if time.monotonic() - self._last_persist >= PERSIST_INTERVAL_SEC:
-            self._persist()
-            self._last_persist = time.monotonic()
-
-        # Log conciso cada sample
-        active = {cid: self._ema[cid] for cid in self._ema if self._ema[cid] is not None}
-        if active:
-            top = sorted(active.items(), key=lambda x: x[1], reverse=True)[:3]
-            logger.info(
-                "RT sample: %d mercados tracked | top: %s",
-                len(active),
-                " ".join(f"{cid[:8]}={r:.3f}¢/m" for cid, r in top),
-            )
-
-    def _update_ema(self, cid: str) -> None:
-        """Integra earned cents sobre los intervalos en la ventana."""
-        buf = list(self._buffers[cid])
-        if len(buf) < 2:
+        if not markets:
+            logger.debug("RT sample: 0 markets returned")
             return
 
         now = time.time()
-        total_earned_cents = 0.0
-        total_min = 0.0
-        for i in range(1, len(buf)):
-            prev, cur = buf[i - 1], buf[i]
-            if now - cur.ts > self._window_sec + self._sample_interval:
+        tracked = 0
+        total_earnings = 0.0
+        for m in markets:
+            cid = m.get("condition_id", "")
+            if not cid:
                 continue
-            elapsed_min = max((cur.ts - prev.ts) / 60.0, 0.1)
-            avg_share = (prev.share_pct + cur.share_pct) / 2.0
-            daily_rate = max(prev.daily_rate, cur.daily_rate)
-            earned = (avg_share / 100.0) * daily_rate * (elapsed_min / MINUTES_PER_DAY) * 100.0
-            total_earned_cents += earned
-            total_min += elapsed_min
 
-        if total_min <= 0:
-            return
+            # Parse earnings (puede venir como string JSON)
+            earnings_raw = m.get("earnings", [])
+            if isinstance(earnings_raw, str):
+                try:
+                    earnings_raw = json.loads(earnings_raw)
+                except json.JSONDecodeError:
+                    continue
+            earnings = 0.0
+            if isinstance(earnings_raw, list):
+                for e in earnings_raw:
+                    if isinstance(e, dict):
+                        earnings += float(e.get("earnings", 0))
 
-        cpm = total_earned_cents / total_min
-        current = self._ema.get(cid)
-        if current is None:
-            self._ema[cid] = cpm
-        else:
-            self._ema[cid] = EMA_ALPHA * cpm + (1 - EMA_ALPHA) * current
+            # Parse rewards_config para daily_rate
+            cfg_raw = m.get("rewards_config", [])
+            if isinstance(cfg_raw, str):
+                try:
+                    cfg_raw = json.loads(cfg_raw)
+                except json.JSONDecodeError:
+                    cfg_raw = []
+            daily_rate = 0.0
+            if isinstance(cfg_raw, list):
+                for r in cfg_raw:
+                    if isinstance(r, dict):
+                        daily_rate += float(r.get("rate_per_day", 0))
+
+            pct_raw = m.get("earning_percentage", 0)
+            try:
+                share_pct = float(pct_raw)
+            except (ValueError, TypeError):
+                share_pct = 0.0
+
+            sample = _Sample(ts=now, earnings=earnings)
+
+            with self._lock:
+                if cid not in self._buffers:
+                    self._buffers[cid] = deque(maxlen=100)
+                buf = self._buffers[cid]
+                buf.append(sample)
+                self._share_pct[cid] = share_pct
+                self._daily_rates[cid] = daily_rate
+                tracked += 1
+
+        if tracked:
+            with self._lock:
+                top = self.best_cents_per_min()
+            logger.info("RT sample: %d mercados tracked | top: %.3f cent/min", tracked, top)
+
+    # --- Queries ---
 
     def cents_per_min(self, condition_id: str) -> float | None:
-        """¢/min observado para el mercado.
-
-        Returns:
-            None   — sin historia suficiente (mercado nuevo → exploring)
-            0.0    — dato stale o mercado que dejó de aparecer en la API
-            float  — EMA reciente
-        """
-        with self._lock:
-            buf = list(self._buffers.get(condition_id, deque()))
-
-        if len(buf) < 2:
+        """Centavos/minuto REALES basados en earnings del servidor."""
+        buf = self._buffers.get(condition_id)
+        if not buf or len(buf) < 2:
             return None
 
-        # Staleness guard
-        if time.time() - buf[-1].ts > STALE_FACTOR * self._sample_interval:
-            return 0.0
-
+        buf_list = list(buf)
         now = time.time()
-        valid = [s for s in buf if now - s.ts <= self._window_sec + self._sample_interval]
-        if len(valid) < 2:
+        recent = [s for s in buf_list if now - s.ts <= self._window_sec]
+        if len(recent) < 2:
             return None
 
-        if (valid[-1].ts - valid[0].ts) < 30:
+        first, last = recent[0], recent[-1]
+        elapsed_min = (last.ts - first.ts) / 60.0
+        if elapsed_min <= 0:
             return None
 
-        # Share stagnation: si las últimas 5+ muestras tienen el mismo share_pct,
-        # la orden no está scoreando → retornar 0.0
-        last_share = valid[-1].share_pct
-        stagnant_count = 0
-        for s in reversed(valid):
-            if abs(s.share_pct - last_share) < 0.000001:
-                stagnant_count += 1
-            else:
-                break
-        if stagnant_count >= 5:
-            return 0.0
+        earned_cents = (last.earnings - first.earnings) * 100.0
+        if earned_cents < 0:
+            earned_cents = 0
 
-        with self._lock:
-            return self._ema.get(condition_id)
+        cpm = earned_cents / elapsed_min
+        prev = self._ema.get(condition_id, cpm)
+        n = self._ema_n.get(condition_id, 0) + 1
+        smoothed = EMA_ALPHA * cpm + (1 - EMA_ALPHA) * prev if n > 1 else cpm
+        self._ema[condition_id] = smoothed
+        self._ema_n[condition_id] = n
+        return smoothed
 
     def best_cents_per_min(self) -> float:
-        """Retorna el mayor ¢/min observado entre todos los mercados tracked."""
-        with self._lock:
-            rates = [v for v in self._ema.values() if v is not None]
-        return max(rates) if rates else 0.0
-
-    def last_share_pct(self, condition_id: str) -> float | None:
-        with self._lock:
-            buf = self._buffers.get(condition_id)
-            if buf:
-                return buf[-1].share_pct
-        return None
+        """Mayor c/min entre todos los mercados trackeados."""
+        best = 0.0
+        ema = self._ema
+        for cid in self._buffers:
+            cpm = ema.get(cid, 0)
+            if cpm > best:
+                best = cpm
+        return best
 
     def realized_cents_since(self, condition_id: str, since_ts: float) -> float | None:
-        """Centavos USD farmeados REALMENTE desde since_ts."""
-        with self._lock:
-            buf = list(self._buffers.get(condition_id, deque()))
+        """Centavos REALES acumulados desde since_ts."""
+        buf = list(self._buffers.get(condition_id, deque()))
         relevant = [s for s in buf if s.ts >= since_ts]
         if len(relevant) < 2:
             return None
+        return (relevant[-1].earnings - relevant[0].earnings) * 100.0
 
-        total_earned_cents = 0.0
-        for i in range(1, len(relevant)):
-            prev, cur = relevant[i - 1], relevant[i]
-            elapsed_min = max((cur.ts - prev.ts) / 60.0, 0.1)
-            avg_share = (prev.share_pct + cur.share_pct) / 2.0
-            daily_rate = max(prev.daily_rate, cur.daily_rate)
-            earned = (avg_share / 100.0) * daily_rate * (elapsed_min / MINUTES_PER_DAY) * 100.0
-            total_earned_cents += earned
-        return total_earned_cents
+    def last_share_pct(self, condition_id: str) -> float | None:
+        return self._share_pct.get(condition_id)
 
-    def snapshot(self) -> dict[str, Any]:
-        with self._lock:
-            return {
-                cid: {
-                    "cents_per_min": self._ema.get(cid),
-                    "last_share_pct": buf[-1].share_pct if buf else None,
-                    "last_daily_rate": buf[-1].daily_rate if buf else None,
-                    "sample_count": len(buf),
-                }
-                for cid, buf in self._buffers.items()
+    def last_daily_rate(self, condition_id: str) -> float | None:
+        return self._daily_rates.get(condition_id)
+
+    def snapshot(self) -> dict[str, dict[str, Any]]:
+        """Snapshot sin lock (dict reads son seguros si writes son infrecuentes)."""
+        result = {}
+        buffers = self._buffers  # referencia local
+        ema = self._ema
+        share = self._share_pct
+        rates = self._daily_rates
+        for cid in buffers:
+            buf = buffers[cid]
+            result[cid] = {
+                "cents_per_min": ema.get(cid, 0),
+                "last_share_pct": share.get(cid, 0),
+                "last_daily_rate": rates.get(cid, 0),
+                "sample_count": len(buf),
             }
+        return result
 
-    def _persist(self) -> None:
+    def get_share_pct_map(self) -> dict[str, float]:
+        return dict(self._share_pct)
+
+    def get_daily_rate_map(self) -> dict[str, float]:
+        return dict(self._daily_rates)
+
+    # --- Persistence ---
+
+    def _save_state(self) -> None:
+        with self._lock:
+            data = {"ema": self._ema, "share_pct": self._share_pct, "daily_rates": self._daily_rates}
         try:
             self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-            self._persist_path.write_text(
-                json.dumps({"timestamp": time.time(), "markets": self.snapshot()}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except OSError:
+            self._persist_path.write_text(json.dumps(data), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_state(self) -> None:
+        if not self._persist_path.exists():
+            return
+        try:
+            data = json.loads(self._persist_path.read_text(encoding="utf-8"))
+            with self._lock:
+                self._ema = data.get("ema", {})
+                self._share_pct = data.get("share_pct", {})
+                self._daily_rates = data.get("daily_rates", {})
+        except Exception:
             pass

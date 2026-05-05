@@ -11,7 +11,7 @@ inventory_management:
   merge_threshold: 5  # Merge posiciones si hay mas de 5 en un mercado
 
 circuit_breakers:
-  max_daily_loss_usdc: 8.3   # 5% de $166 — parar si pierdes $8.3 en un dia
+  max_daily_loss_usdc: 8.10  # 5% de $162 — parar si pierdes $8.10 en un dia
   max_consecutive_losses: 5  # Parar despues de 5 perdidas seguidas
   max_single_trade_loss_usdc: 4.15  # Alerta si un trade pierde >$4.15 (2.5% cap)
   max_market_loss_1h_usdc: 2.075  # Cancelar ordenes si mercado pierde >1.25% cap en 1h
@@ -55,3 +55,28 @@ strategy_monitor:
 
 # Tip 16: reserva de capital — no operar si bankroll cae debajo de este umbral
 loss_reserve_usdc: 20.0
+
+# Edge filter — thresholds adaptativos por confidence
+edge_filter:
+  min_confidence: 0.40
+  high_confidence_edge: 0.04
+  medium_confidence_edge: 0.05
+  low_confidence_edge: 0.08
+
+# Cash reserves — piso de liquidez para gas y emergencias
+cash_reserves:
+  min_reserve_pct: 0.005   # 0.5% reserva normal
+  emergency_pct: 0.002     # 0.2% halt total
+
+# Position limits — max concurrentes y auto-cierre
+position_limits:
+  max_positions: 15
+  max_pct_per_position: 0.05
+  auto_close_worst: true
+
+# Stop-loss multi-dimensional por mercado
+stop_loss:
+  market_stop_loss_usdc: 2.0
+  volatility_threshold_3h: 0.80
+  spread_exec_threshold_pct: 5.0
+  risk_off_hours: 6

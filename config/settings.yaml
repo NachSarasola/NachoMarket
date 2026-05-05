@@ -3,10 +3,15 @@ mode: live
 signature_type: 2
 
 # Capital y riesgo
-capital_total: 50
+capital_total: 162
 max_risk_per_market: 0.25
-max_daily_drawdown: 10.0
+max_daily_drawdown: 8.10
 kelly_fraction: 0.15
+
+# Capital allocation maxima por estrategia
+capital_allocation:
+  weather_max_pct: 0.10       # $5 de $50 max en weather
+  safe_compounder_max_pct: 0.20  # $10 de $50 max en SC
 
 # Self-review
 review_interval_hours: 8
@@ -16,16 +21,113 @@ review_model: claude-haiku-4-5-20251001
 strategies_enabled:
   - rewards_farmer
 
+# Weather trading via Polymarket — ensemble forecasting con Open-Meteo (GFS 31 miembros)
+weather:
+  enabled: true
+  scan_interval_minutes: 5
+  min_edge_threshold: 0.08       # 8% edge minimo (weather tiene mas senal que mercados 50/50)
+  max_entry_price: 0.85          # No entrar si el precio > 85c
+  max_trade_size_usdc: 25.0      # Maximo por trade (escalado para capital $50-$166)
+  max_total_allocation: 50.0     # Exposicion total maxima en weather
+  max_trades_per_scan: 3         # Maximos trades nuevos por scan
+  kelly_fraction: 0.15           # Kelly fraccional 15%
+  min_edge_taker: 0.30           # Usar market order si edge > 30%
+  # Phase 3: verification pipeline + data quality guardrails
+  nws_cross_check: true          # Cross-check GFS vs NWS forecast para US (gratis, sin API key)
+  nws_max_divergence: 10.0       # Saltar trade si NWS vs GFS difiere >10F
+  min_ensemble_members: 20       # Minimo de miembros GFS requeridos (de 31)
+  max_ensemble_std: 20.0         # Saltar si std del ensemble >20F
+  calibration_min_samples: 20    # Muestras minimas para shrinkage completo
+  # Phase 4: adaptive edge + calibration quality
+  dynamic_thresholds:
+    edge_base_narrow: 0.12       # Buckets de 2F
+    edge_base_mid: 0.07          # Buckets estandar
+    edge_base_wide: 0.04         # Above/below (cola abierta)
+    edge_std_penalty_rate: 0.02  # Sumar por cada F de sigma > 2.0
+    edge_quality_discount: 0.05  # Max descuento por baja calidad (0.0-1.0)
+    edge_min_floor: 0.02         # Floor absoluto de min_edge
+    edge_max_ceiling: 0.25       # Ceiling absoluto de min_edge
+    confidence_min: 0.55         # Minimo agreement para operar
+    confidence_cap: 0.90         # Cap de confidence
+    nws_confidence_penalty: 0.70 # Multiplicador si NWS diverge moderadamente
+    uncertainty_penalty_num: 2.0 # Numerador en penalty de incertidumbre
+    uncertainty_penalty_off: 0.5 # Offset en penalty de incertidumbre
+    kelly_cap: 0.05              # Cap de Kelly fraccional
+    kelly_floor: 0.0             # Floor de Kelly
+    outlier_sigma_mult: 3.0      # Rechazar errores > N*sigma
+    outlier_abs_max: 25.0        # Rechazar errores > N F absolutos
+    sanity_temp_min: -50.0
+    sanity_temp_max: 130.0
+    # Phase 5: repositioning + boundary risk + recency + ensemble shape
+    reposition_enabled: true
+    reposition_prob_delta: 0.15   # Exit si prob cambia >15%
+    boundary_risk_rate: 0.04      # Penalizacion por borde de bucket (<1.5s)
+    forecast_max_age_hours: 2.0   # Maxima edad del forecast antes de penalizar
+    forecast_age_penalty_rate: 0.005  # Penalizacion por hora de edad extra
+    lead_time_penalty_rate: 0.003 # Penalizacion por dia de lead > 2
+    # Phase 6: exit strategy — take-profit, stop-loss, trailing, partials
+    exit_take_profit_threshold: 0.90  # Exit si YES > 90%
+    exit_stop_loss_ratio: 0.35        # Exit si precio < entry * 35%
+    exit_temp_stop_loss: 8.0          # Exit si |forecast - bucket_center| > 8F
+    exit_max_hold_hours: 72           # Maximo horas abierto sin resolver
+    exit_cooldown_hours: 4            # No re-entrar por N horas post-exit
+    exit_partial_fraction: 0.5        # Fraccion a vender en exit parcial
+    exit_trailing_enabled: true       # Tightening del threshold por tiempo
+    skew_penalty: 0.02            # Penalizacion por skew > 1.0
+
 # LP Rewards Farming v2 - Pivot a mercados chicos/nuevos
 rewards_farmer:
-  max_capital_per_market: 50.0       # Antes 40. Mas capital en mercado dominado = mas rewards (scoring cuadratico)
-  min_rewards_pool_usd: 15.0         # Minimo $15/dia para evitar capital muerto en pools diminutos
-  max_markets_simultaneous: 1       # Concentrar todo el capital en un solo mercado
+  max_capital_per_market: 999.0     # Sin cap real: shadow orders nunca se llenan
+  min_rewards_pool_usd: 10.0
+  max_markets_simultaneous: 3       # 3 mercados en paralelo para testear mas rapido
   two_sided: false
   spread_pct_of_max: 0.80
   inventory_merge_threshold: 5
-  competition_share_min: 0.02        # Antes 0.01. Trump nos dio 0.01% real, el filtro debe ser mas estricto
+  competition_share_min: 0.02
   max_mid_deviation: 0.45
+
+# Safe Compounder — apuesta matematica al NO sin IA
+safe_compounder:
+  min_yes_price: 0.01
+  max_yes_price: 0.20
+  min_no_ask: 0.80
+  min_edge: 0.01
+  max_position_pct: 0.05         # Reducido: $2.50 max por posicion en $50 capital
+  kelly_fraction: 0.5
+  min_order_usdc: 5.0
+  min_volume: 5000
+  min_market_age_hours: 24
+  skip_categories: [sports, entertainment, awards]
+  skip_keywords: [mention]
+  top_n_candidates: 200
+  refresh_interval_sec: 300
+
+# AMM — liquidez concentrada estilo Uniswap v3 sobre CLOB
+amm:
+  enabled: false
+  p_min: 0.05
+  p_max: 0.95
+  spread: 0.01
+  delta: 0.01
+  depth: 0.10
+  max_collateral: 50.0
+  sync_interval_sec: 30
+  min_size: 15.0
+
+# Category scoring
+category_scorer:
+  block_threshold: 30
+  min_trades_to_recalculate: 10
+  seed_scores:
+    sports: 35
+    politics: 65
+    crypto: 60
+    economics: 15
+    entertainment: 25
+
+# Prometheus metrics
+metrics_enabled: false
+metrics_port: 9008
 
 # Loop principal
 main_loop_interval_sec: 15

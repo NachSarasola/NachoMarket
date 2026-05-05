@@ -56,12 +56,12 @@ SIZE_DRIFT_THRESHOLD = 0.30  # recolocar si size difiere > 30%
 MIN_MAX_SPREAD_USD = 0.001   # no operar si max_spread < 0.1¢ (captura mercados de alto pool con spread ajustado)
 
 # Shadow sizing — orders no se fillean, el tamaño no está limitado por capital real.
-SHADOW_SIZE_MULT = 8         # ordenes en 8× min_size para capturar más % del libro
-MAX_ORDER_NOTIONAL = 75.0    # tope nocional por orden ($75); ajustado a capital $55
+SHADOW_SIZE_MULT = 12         # ordenes en 12x min_size para capturar mas % del libro (capital $162)
+MAX_ORDER_NOTIONAL = 500.0    # tope nocional por orden ($500); shadow orders no bloquean capital real
 
 # Yield farming dinámico
 GRACE_PERIOD_SEC = 360       # esperar 6min antes de aplicar non_earning (lag del endpoint ~1-2min + tiempo para que share crezca)
-MIN_CENTS_PER_MIN = 0.025    # ~$0.36/day — mínimo aceptable para capital $50
+MIN_CENTS_PER_MIN = 0.05     # ~$0.72/day — mínimo aceptable para capital $162
 NON_EARNING_BLOCK_HOURS = 1.0  # bloquear mercado 1h tras cancelar por non_earning (mínimo req. usuario)
 
 
@@ -226,6 +226,11 @@ class RewardsFarmerStrategy(BaseStrategy):
         self._order_placed_at: dict[str, float] = {}  # order_id → timestamp de colocación
         self._market_entry_ts: dict[str, float] = {}  # condition_id → timestamp primera orden
 
+        # Exploration: rotar entre top candidates para medir c/min real
+        self._exploration_results: dict[str, float] = {}  # cid → best_estimated_cpm
+        self._explore_minutes: float = 5.0   # tiempo minimo antes de permitir rotacion
+        self._last_reeval: float = time.time()  # inicializar con tiempo actual (no 0.0 que dispara re-eval inmediato)
+
         # Tracking de fill rate para auto-widen (si fill_rate > 5%, incrementar safety)
         self._orders_placed_today: int = 0
         self._orders_filled_today: int = 0
@@ -288,9 +293,11 @@ class RewardsFarmerStrategy(BaseStrategy):
 
         tokens = market_data.get("tokens", [])
         if not tokens or len(tokens) < 2:
+            self._logger.info("RF skip %s: tokens=%d", condition_id[:12], len(tokens))
             return False
 
         if mid_price <= 0.0:
+            self._logger.info("RF skip %s: mid=%.4f", condition_id[:12], mid_price)
             return False
 
         if len(tokens) == 2 and abs(mid_price - 0.50) > self._max_mid_deviation:
@@ -303,7 +310,7 @@ class RewardsFarmerStrategy(BaseStrategy):
         if self._detect_market_phase(market_data) == "live":
             return False
 
-        if len(self._active_farms) >= self._max_markets and condition_id not in self._active_farms:
+        if len(self._active_farms) >= self._max_markets and condition_id not in self._active_farms and condition_id not in self._market_entry_ts:
             return False
 
         # Gate de viabilidad: shadow orders no necesitan capital real — chequeamos contra
@@ -332,7 +339,13 @@ class RewardsFarmerStrategy(BaseStrategy):
         return True
 
     def allocate_capital(self, candidate_cids: list[str], available_cash: float) -> dict[str, float]:
-        total = available_cash * 0.95
+        """Asigna capital a los mejores mercados usando earnings reales de la API.
+
+        Usa share_pct * daily_rate como proxy de c/min (tiempo real, sin lag).
+        Solo rota un mercado si el actual rinde < 50% del mejor observado.
+        Exploration perpetua: cada 2h re-evalua todos los candidatos.
+        """
+        per_market_cap = available_cash * 0.95
         alloc: dict[str, float] = {}
         active_cids = [
             cid for cid in candidate_cids
@@ -341,35 +354,92 @@ class RewardsFarmerStrategy(BaseStrategy):
         if not active_cids:
             return alloc
 
-        # Realized cents desde la primera orden en cada mercado
-        realized: dict[str, float] = {}
-        for cid in active_cids:
-            entry_ts = self._market_entry_ts.get(cid)
-            if entry_ts is None or self._reward_tracker is None:
-                continue
-            cents = self._reward_tracker.realized_cents_since(cid, entry_ts)
-            if cents is not None and cents > 0:
-                realized[cid] = cents
+        now = time.time()
+        rt = self._reward_tracker
 
-        if realized:
-            best_cid = max(realized, key=realized.get)
-            alloc[best_cid] = total
-            elapsed_min = (time.time() - self._market_entry_ts[best_cid]) / 60
-            self._logger.info(
-                "RF capital alloc: %s...=$%.0f | %.2f¢ farmeados en %.1fmin → 100%% capital",
-                best_cid[:8], total, realized[best_cid], elapsed_min,
-            )
+        # Compute estimated cpm for each candidate using RewardTracker data
+        estimated: dict[str, float] = {}
+        all_share = rt.get_share_pct_map() if rt else {}
+        all_rate = rt.get_daily_rate_map() if rt else {}
+        for cid in active_cids:
+            share = all_share.get(cid, 0)
+            rate = all_rate.get(cid, 0)
+            if share and rate:
+                estimated[cid] = share * rate / 1440 * 100  # cents/min estimado
+            else:
+                estimated[cid] = 0.0
+
+        # Track best ever observed
+        for cid, cpm in estimated.items():
+            prev = self._exploration_results.get(cid, 0)
+            self._exploration_results[cid] = max(prev, cpm)
+
+        best_cpm = max(self._exploration_results.values()) if self._exploration_results else 0
+
+        # Get currently active markets
+        current = [c for c in active_cids if c in self._market_entry_ts]
+        min_explore = self._explore_minutes * 60  # seconds
+
+        # Fill empty slots with best untested candidates
+        if len(current) < self._max_markets:
+            candidates = [c for c in active_cids if c not in self._market_entry_ts]
+            candidates.sort(key=lambda c: estimated.get(c, 0), reverse=True)
+            for c in candidates[:self._max_markets - len(current)]:
+                self._market_entry_ts[c] = now
+                current.append(c)
+                self._logger.info("RF explore: +%s (est=%.1f¢/m)", c[:8], estimated.get(c, 0))
+
+        # Rotate underperforming markets that had enough time
+        for cid in list(current):
+            entry = self._market_entry_ts.get(cid, now)
+            if (now - entry) < min_explore:
+                continue  # still warming up
+
+            est = estimated.get(cid, 0)
+            if best_cpm > 0.001 and est < best_cpm * 0.5:
+                replacement = next((c for c in active_cids
+                                    if c not in self._market_entry_ts
+                                    and estimated.get(c, 0) > est), None)
+                if replacement:
+                    del self._market_entry_ts[cid]
+                    self._market_entry_ts[replacement] = now
+                    current.remove(cid)
+                    current.append(replacement)
+                    self._logger.info(
+                        "RF rotate: %s=%.2f¢ -> %s=%.2f¢",
+                        cid[:8], est, replacement[:8], estimated.get(replacement, 0),
+                    )
+
+        # Allocate to active markets (up to max_markets)
+        # Cuando best_cpm == 0 (sin datos de earnings), usar el orden de
+        # candidate_cids (que preserva el sort por score de select_top_markets)
+        if best_cpm > 0.001:
+            chosen = sorted(current, key=lambda c: estimated.get(c, 0), reverse=True)[:self._max_markets]
         else:
-            # Sin earnings medidos aún → explorar el top scored (max_markets=1)
-            exploring = active_cids[:self._max_markets]
-            per_market = total / len(exploring) if exploring else 0
-            for cid in exploring:
-                alloc[cid] = per_market
+            # Sin earnings: preservar orden original de candidate_cids (scoring)
+            cid_order = {c: i for i, c in enumerate(active_cids)}
+            chosen = sorted(current, key=lambda c: cid_order.get(c, 999))[:self._max_markets]
+        for c in chosen:
+            alloc[c] = per_market_cap
+
+        # Sync _active_farms: droppear mercados no elegidos, cancelar sus ordenes
+        chosen_set = set(chosen)
+        for cid in list(self._active_farms.keys()):
+            if cid not in chosen_set:
+                n = self._cancel_market_orders(cid)
+                self._active_farms.pop(cid, None)
+                self._logger.info(
+                    "RF drop %s: %d orders cancelled, removed from active_farms", cid[:12], n,
+                )
+
+        if chosen:
             self._logger.info(
-                "RF capital alloc: %d explore → $%.0f c/u (sin realized aún)",
-                len(exploring), per_market,
+                "RF alloc: %d mkts x $%.0f | best=%.1f¢ | %s",
+                len(chosen), per_market_cap, best_cpm,
+                " ".join(f"{c[:8]}={estimated.get(c,0):.1f}¢" for c in chosen),
             )
         return alloc
+
 
     def evaluate(self, market_data: dict[str, Any]) -> list[Signal]:
         """Genera senales BUY y SELL por token para maximizar Q_min.
@@ -452,17 +522,22 @@ class RewardsFarmerStrategy(BaseStrategy):
         signals: list[Signal] = []
         token_signal_counts: dict[str, int] = {}  # cuantas senales tiene cada token
 
-        for token in tokens:
+        # BUY only: priorizar el token mas barato (YES). Todo el capital a un solo lado.
+        if not self._two_sided:
+            # Ordenar tokens por precio ascendente
+            sorted_tokens = sorted(
+                [t for t in tokens if t.get("token_id", "") in viable_token_ids],
+                key=lambda t: float(token_data.get(t.get("token_id", ""), {}).get("mid_price", 0.5)),
+            )
+            tokens_to_eval = sorted_tokens[:1]  # solo el mas barato
+        else:
+            tokens_to_eval = [t for t in tokens if t.get("token_id", "") in viable_token_ids]
+
+        for token in [t for t in tokens if t.get("token_id", "") in viable_token_ids]:
             tid = token.get("token_id", "")
             if not tid:
                 continue
-
-            # Skipear tokens no viables — no tenemos capital para llegar a min_size
-            if tid not in viable_token_ids:
-                self._logger.debug(
-                    "RF eval %s tid=%s...: skip (capital insuf. p/min_size=%d)",
-                    condition_id[:12], tid[:8], int(min_shares),
-                )
+            if token not in tokens_to_eval:
                 continue
 
             td = token_data.get(tid, {})
@@ -492,8 +567,11 @@ class RewardsFarmerStrategy(BaseStrategy):
             else:
                 best_ask = float(td.get("best_ask", 0.0))
 
-            # Capital por lado: solo divide entre tokens VIABLES, no entre todos
-            side_capital = max_total_usd / (n_viable * n_order_slots)
+            # Capital por lado: two_sided=false -> todo al token mas barato
+            if not self._two_sided:
+                side_capital = max_total_usd  # $80 completo al YES
+            else:
+                side_capital = max_total_usd / (n_viable * n_order_slots)
 
             token_signal_counts[tid] = 0
 
@@ -524,6 +602,7 @@ class RewardsFarmerStrategy(BaseStrategy):
                             "t_mid": t_mid,
                             "best_bid": best_bid,
                             "best_ask": best_ask,
+                            "tick_size": tick_size,
                         },
                     ))
                     token_signal_counts[tid] += 1
@@ -560,6 +639,7 @@ class RewardsFarmerStrategy(BaseStrategy):
                                 "t_mid": t_mid,
                                 "best_bid": best_bid,
                                 "best_ask": best_ask,
+                                "tick_size": tick_size,
                             },
                         ))
                         token_signal_counts[tid] += 1
@@ -607,6 +687,31 @@ class RewardsFarmerStrategy(BaseStrategy):
         )
         return signals
 
+    def _cancel_market_orders(self, condition_id: str) -> int:
+        """Cancela todas las ordenes abiertas de un mercado especifico."""
+        cancelled = 0
+        try:
+            open_orders = self._client.get_positions() or []
+        except Exception:
+            return 0
+        for oo in open_orders:
+            oo_market = oo.get("condition_id") or oo.get("market_id") or ""
+            if oo_market != condition_id:
+                continue
+            oid = str(oo.get("id") or oo.get("order_id") or "")
+            if not oid:
+                continue
+            try:
+                self._client.cancel_order(oid)
+                self._pending_orders.pop(oid, None)
+                self._order_placed_at.pop(oid, None)
+                if self._circuit_breaker:
+                    self._circuit_breaker.order_closed()
+                cancelled += 1
+            except Exception:
+                self._logger.debug("RF: error cancelando %s...", oid[:12])
+        return cancelled
+
     def execute(self, signals: list[Signal]) -> list[Trade]:
         trades: list[Trade] = []
         if not signals:
@@ -626,8 +731,8 @@ class RewardsFarmerStrategy(BaseStrategy):
         open_by_token_side: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for oo in open_orders:
             oid = oo.get("id") or oo.get("order_id") or ""
-            pending = self._pending_orders.get(oid)
-            if pending is None:
+            curr_pending = self._pending_orders.get(oid)
+            if curr_pending is None:
                 # No está en _pending_orders: podría ser orden huérfana o de otro mercado
                 # Cachear market_id para cleanup posterior
                 oo["_market_id_cache"] = oo.get("condition_id") or oo.get("market_id", "")
@@ -637,7 +742,7 @@ class RewardsFarmerStrategy(BaseStrategy):
                     open_by_token_side.setdefault((tid, side), []).append(oo)
                 continue
             # Usar market_id del pending (reconciliado) o del open order
-            pending_market = pending.get("market_id", "") if isinstance(pending, dict) else ""
+            pending_market = curr_pending.get("market_id", "") if isinstance(curr_pending, dict) else ""
             if pending_market and pending_market != current_market_id:
                 continue
             tid = oo.get("asset_id") or oo.get("token_id") or ""
@@ -670,12 +775,12 @@ class RewardsFarmerStrategy(BaseStrategy):
             t_mid = float(sig.metadata.get("t_mid", sig.price))
             best_bid = float(sig.metadata.get("best_bid", 0.0))
             best_ask = float(sig.metadata.get("best_ask", 0.0))
-            tick_size = 0.01
+            tick_size = float(sig.metadata.get("tick_size", 0.01))
 
             # Criterio 1: fuera de ventana de rewards
             # Redondear a 4dp para evitar falsos positivos por floating point (0.52-0.04=0.4800...004)
-            win_low = round(t_mid - max_spread_usd, 4)
-            win_high = round(t_mid + max_spread_usd, 4)
+            win_low = max(0.0, round(t_mid - max_spread_usd, 4))
+            win_high = min(1.0, round(t_mid + max_spread_usd, 4))
             if sig.side == "BUY":
                 out_of_window = oo_price < win_low or oo_price >= t_mid
             else:
@@ -689,16 +794,23 @@ class RewardsFarmerStrategy(BaseStrategy):
             order_age_sec = 0.0
             vol_zero = self._market_volume.get(sig.market_id, 0.0) == 0.0
             if vol_zero:
-                danger = False
-                non_earning = False
+                non_earning = False  # sin volumen no hay rewards que medir
+                # danger se mantiene activo: si el mercado despierta, no queremos
+                # ordenes en el frente del book que puedan ser filleadas
             elif oid and self._reward_tracker:
                 placed_at = self._order_placed_at.get(oid, 0.0)
                 order_age_sec = time.time() - placed_at if placed_at > 0 else 0.0
                 if order_age_sec >= GRACE_PERIOD_SEC:
                     rate = self._reward_tracker.cents_per_min(sig.market_id)
                     if rate is not None:
-                        best = self._reward_tracker.best_cents_per_min()
-                        rel_floor = best * 0.10
+                        # Track peak for this market (decay detection)
+                        peak_key = f"_peak_{sig.market_id}"
+                        current_peak = getattr(self, peak_key, 0.0)
+                        if rate > current_peak:
+                            setattr(self, peak_key, rate)
+                            current_peak = rate
+                        # non_earning: below absolute minimum OR decayed to <10% of peak
+                        rel_floor = current_peak * 0.10 if current_peak > 0 else MIN_CENTS_PER_MIN
                         if rate < MIN_CENTS_PER_MIN or rate < rel_floor:
                             non_earning = True
 
@@ -799,8 +911,12 @@ class RewardsFarmerStrategy(BaseStrategy):
                 oo_market = oo.get("_market_id_cache", "")
                 if not oo_market:
                     oo_market = oo.get("condition_id", oo.get("market_id", ""))
-                if not oo_market and isinstance(pending, dict):
-                    oo_market = pending.get("market_id", "") if pending else ""
+                if not oo_market:
+                    lookup_oid = str(oo.get("id", oo.get("order_id", "")))
+                    if lookup_oid:
+                        curr_pend = self._pending_orders.get(lookup_oid)
+                        if curr_pend and isinstance(curr_pend, dict):
+                            oo_market = curr_pend.get("market_id", "")
                 # Solo cancelar si pertenece al mercado actual — no tocar otros
                 if oo_market != current_market_id:
                     continue

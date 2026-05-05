@@ -12,7 +12,7 @@ Comandos disponibles:
     /start          — Lista de comandos
     /status         — Dashboard principal: balance, rewards hoy, top mercados
     /balance        — Detalle financiero + desglose de rewards
-    /markets        — Mercados activos: ¢/min, share%, daily_rate, ordenes
+    /markets        — Mercados activos: Â¢/min, share%, daily_rate, ordenes
     /rewards        — Vista detallada del RewardTracker por mercado
     /orders         — Ordenes abiertas con mercado, precio, tamaño, edad
     /pnl            — Rewards acumulados hoy + stats de trades
@@ -155,6 +155,15 @@ class TelegramBot:
             ("pnl", self._cmd_pnl),
             ("health", self._cmd_health),
             ("logs", self._cmd_logs),
+            ("weather", self._cmd_weather),
+            ("sc", self._cmd_sc),
+            ("fills", self._cmd_fills),
+            ("enable", self._cmd_enable),
+            ("disable", self._cmd_disable),
+            ("book", self._cmd_book),
+            ("buy", self._cmd_buy),
+            ("sell", self._cmd_sell),
+            ("positions", self._cmd_positions),
             ("pause", self._cmd_pause),
             ("resume", self._cmd_resume),
             ("kill", self._cmd_kill),
@@ -192,9 +201,11 @@ class TelegramBot:
     # ------------------------------------------------------------------
 
     async def _send_message(self, message: str, parse_mode: str = "Markdown") -> None:
-        """Envia un mensaje al chat configurado."""
+        """Envia un mensaje al chat configurado. Trunca a 4000 chars."""
         if not self._app or not self._chat_id:
             return
+        if len(message) > 4000:
+            message = message[:3997] + "..."
         try:
             await self._app.bot.send_message(
                 chat_id=self._chat_id,
@@ -244,27 +255,17 @@ class TelegramBot:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _fmt_money(val: float, decimals: int = 2) -> str:
-        sign = "+" if val > 0 else ""
-        return f"`${sign}{val:,.{decimals}f}`"
-
-    @staticmethod
-    def _fmt_pct(val: float, decimals: int = 1) -> str:
-        sign = "+" if val > 0 else ""
-        return f"`{sign}{val:.{decimals}f}%`"
-
-    @staticmethod
     def _section_header(title: str) -> str:
-        return f"*{title}*\n{'─' * 22}"
+        return f"*{title}*\n{'-' * 22}"
 
     @staticmethod
     def _rate_bar(value: float, max_value: float, width: int = 5) -> str:
-        """Barra visual de proporcion: ░░░█░"""
+        """Barra visual ASCII: [###  ]"""
         if max_value <= 0:
-            return "░" * width
+            return "[" + " " * width + "]"
         ratio = min(value / max_value, 1.0)
         filled = round(ratio * width)
-        return "█" * filled + "░" * (width - filled)
+        return "[" + "#" * filled + " " * (width - filled) + "]"
 
     # ------------------------------------------------------------------
     # Guard helper para reducir boilerplate en comandos
@@ -363,7 +364,7 @@ class TelegramBot:
         for market in markets:
             if market.get("condition_id") == condition_id:
                 question = market.get("question", "")
-                return question[:32] if question else condition_id[:12]
+                return question.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")[:32] if question else condition_id[:12]
         return condition_id[:12]
 
     # ------------------------------------------------------------------
@@ -375,35 +376,46 @@ class TelegramBot:
             return
 
         text = (
-            "*NachoMarket — LP Rewards Farmer*\n"
-            "─────────────────────\n"
+            "*NachoMarket — Trading Bot*\n"
+            "---------------------\n"
             "\n"
             "*Monitoreo*\n"
-            "· /status   — Dashboard principal\n"
-            "· /balance  — Detalle financiero\n"
-            "· /markets  — Mercados activos\n"
-            "· /rewards  — RewardTracker por mercado\n"
-            "· /orders   — Ordenes abiertas\n"
-            "· /pnl      — Rewards + trades del dia\n"
-            "· /health   — Sistema, WS, errores\n"
-            "· /logs     — Ultimas lineas del log\n"
+            "- /status   - Dashboard principal\n"
+            "- /balance  - Detalle financiero\n"
+            "- /markets  - Mercados activos\n"
+            "- /rewards  - RewardTracker\n"
+            "- /orders   - Ordenes abiertas\n"
+            "- /pnl      - P&L por estrategia\n"
+            "- /weather  - Weather trading\n"
+            "- /sc       - SafeCompounder\n"
+            "- /fills    - Ultimos fills\n"
+            "- /positions - Exposicion\n"
+            "- /health   - Sistema, WS, errores\n"
+            "- /logs     - Ultimas lineas\n"
+            "\n"
+            "*Trading Manual*\n"
+            "- /book <token_id>       - Ver orderbook\n"
+            "- /buy <token_id> <price> <size_usdc> - Comprar\n"
+            "- /sell <token_id> <price> <size_usdc> - Vender\n"
             "\n"
             "*Control*\n"
-            "· /pause    — Pausar trading\n"
-            "· /resume   — Reanudar trading\n"
-            "· /kill     — Parar el bot\n"
-            "· /review   — Self-review inmediato\n"
-            "· /force\\_reconcile — Reconciliacion on-chain\n"
+            "- /enable <w|sc|rf>     - Activar (w=weather, sc=SC, rf=RF)\n"
+            "- /disable <w|sc|rf>    - Desactivar (solo sus ordenes)\n"
+            "- /pause    - Pausar todo\n"
+            "- /resume   - Reanudar\n"
+            "- /kill     - Parar bot\n"
+            "- /review   - Self-review\n"
+            "- /force\\_reconcile - Reconciliar\n"
             "\n"
             "*Seguridad*\n"
-            "· /blacklist          — Ver blacklist\n"
-            "· /block <id> <horas> — Bloquear mercado\n"
-            "· /unblock <id>       — Desbloquear\n"
+            "- /blacklist          - Ver blacklist\n"
+            "- /block <id> <horas> - Bloquear\n"
+            "- /unblock <id>       - Desbloquear\n"
         )
         await update.message.reply_text(text, parse_mode="Markdown")
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Dashboard principal: balance, rewards hoy, top mercados por ¢/min."""
+        """Dashboard principal: balance, rewards hoy, top mercados por Â¢/min."""
         if not await self._guard(update):
             return
         if not self._controller:
@@ -415,7 +427,7 @@ class TelegramBot:
         today_trades = self._count_today_trades()
 
         state = status.get("state", "?")
-        state_icon = {"running": "●", "paused": "○", "stopped": "×"}.get(state, "?")
+        state_icon = {"running": "â—", "paused": "â—‹", "stopped": "Ã—"}.get(state, "?")
         cb_active = status.get("circuit_breaker", False)
 
         balance = status.get("balance_usdc", 0.0)
@@ -429,32 +441,46 @@ class TelegramBot:
         real_label = "(real)" if is_real else "(estimado)"
         lines = [
             f"*NachoMarket* [{state_icon} {state.upper()}{'  CB ACTIVO' if cb_active else ''}]",
-            "─────────────────────",
-            f"· Balance:  `${balance:.2f}` USDC",
-            f"· Rewards hoy {real_label}: `${total_rewards:.4f}`",
-            f"· Mercados activos: `{len(active_markets)}`",
-            f"· Ordenes abiertas: `{open_orders}`",
-            f"· Trades hoy: `{today_trades}`",
+            "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€",
+            f"- Balance:  `${balance:.2f}` USDC",
+            f"- Rewards hoy {real_label}: `${total_rewards:.4f}`",
+            f"- Mercados activos: `{len(active_markets)}`",
+            f"- Ordenes abiertas: `{open_orders}`",
+            f"- Trades hoy: `{today_trades}`",
         ]
 
         if snap:
-            # Ordenar por ¢/min descendente
+            # Ordenar por Â¢/min descendente
             ranked = sorted(
                 snap.items(),
                 key=lambda kv: kv[1].get("cents_per_min") or 0.0,
                 reverse=True,
             )
             max_cpm = (ranked[0][1].get("cents_per_min") or 0.0) if ranked else 0.0
-            lines.append("\n*Top mercados (¢/min)*")
+            lines.append("\n*Top mercados (Â¢/min)*")
             for cid, data in ranked[:4]:
                 cpm = data.get("cents_per_min") or 0.0
                 share = data.get("last_share_pct") or 0.0
                 bar = self._rate_bar(cpm, max_cpm)
                 name = self._get_market_name(cid)
-                lines.append(f"· `{bar}` {name[:26]}  `{cpm:.2f}¢`  `{share:.1f}%`")
+                lines.append(f"- `{bar}` {name[:26]}  `{cpm:.2f}Â¢`  `{share:.1f}%`")
 
         if cb_active and status.get("trigger_reason"):
             lines.append(f"\n_CB: {status['trigger_reason']}_")
+
+        # Weather strategy summary
+        wstatus = status.get("weather")
+        if wstatus and wstatus.get("active"):
+            lines.append(f"\n*Weather*  `{', '.join(wstatus['cities'])}`")
+            lines.append(f"- Señales: `{wstatus['signals_generated']}` | Trades: `{wstatus['trades_executed']}` | Abiertas: `{wstatus['open_positions']}`")
+
+        # SafeCompounder summary
+        scstatus = status.get("safe_compounder")
+        if scstatus and scstatus.get("active"):
+            sc_stats = scstatus.get("stats", {})
+            lines.append(f"\n*SafeCompounder*")
+            lines.append(f"- Posiciones: `{scstatus['positions']}` | Trades: `{sc_stats.get('trades', 0)}` | Exits: `{sc_stats.get('exits', 0)}`")
+            lines.append(f"- Scans: `{sc_stats.get('scans', 0)}` | Señales: `{sc_stats.get('signals', 0)}`")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -480,19 +506,34 @@ class TelegramBot:
         real_label = "(real)" if is_real else "(estimado)"
         lines = [
             self._section_header("Balance"),
-            f"· USDC disponible: `${balance:.2f}`",
-            f"· Exposure total:  `${exposure:.2f}`  (`{util_pct:.1f}%`)",
+            f"- USDC disponible: `${balance:.2f}`",
+            f"- Exposure total:  `${exposure:.2f}`  (`{util_pct:.1f}%`)",
         ]
         if open_exposure > 0:
-            lines.append(f"  ↳ en ordenes:    `${open_exposure:.2f}`")
+            lines.append(f"  â†³ en ordenes:    `${open_exposure:.2f}`")
         if inventory_exposure > 0:
-            lines.append(f"  ↳ en inventory:  `${inventory_exposure:.2f}`")
+            lines.append(f"  â†³ en inventory:  `${inventory_exposure:.2f}`")
         lines.extend([
-            f"· Ordenes abiertas: `{open_orders}`",
-            f"· PnL intradiario:  `${daily_pnl:+.4f}`",
+            f"- Ordenes abiertas: `{open_orders}`",
+            f"- PnL intradiario:  `${daily_pnl:+.4f}`",
+        ])
+
+        # Exposure por estrategia
+        scstatus = status.get("safe_compounder")
+        if scstatus and scstatus.get("active"):
+            sc_pos = scstatus.get("positions", 0)
+            if sc_pos > 0:
+                lines.append(f"- SC posiciones: `{sc_pos}`")
+        wstatus = status.get("weather")
+        if wstatus and wstatus.get("active"):
+            w_open = wstatus.get("open_positions", 0)
+            if w_open > 0:
+                lines.append(f"- Weather abiertas: `{w_open}`")
+
+        lines.extend([
             "",
             self._section_header("Rewards hoy"),
-            f"· Total {real_label}: `${total_rewards:.4f}`",
+            f"- Total {real_label}: `${total_rewards:.4f}`",
         ])
 
         # Top 5 por rewards
@@ -500,12 +541,12 @@ class TelegramBot:
             ranked = sorted(per_market.items(), key=lambda kv: kv[1], reverse=True)
             for cid, usd in ranked[:5]:
                 name = self._get_market_name(cid)
-                lines.append(f"  · {name[:28]}  `${usd:.4f}`")
+                lines.append(f"  - {name[:28]}  `${usd:.4f}`")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def _cmd_markets(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Mercados activos: ¢/min observado, share%, daily_rate, ordenes abiertas."""
+        """Mercados activos: Â¢/min observado, share%, daily_rate, ordenes abiertas."""
         if not await self._guard(update):
             return
         if not self._controller:
@@ -524,9 +565,15 @@ class TelegramBot:
 
         lines = [self._section_header(f"Mercados activos ({len(active_markets)})")]
 
+        count = 0
         for m in active_markets:
+            if count >= 25:
+                lines.append(f"\n... y {len(active_markets) - 25} mas.")
+                break
+            count += 1
             cid = m.get("condition_id", "?")
-            question = (m.get("question") or cid)[:34]
+            name = self._get_market_name(cid)
+            question = name[:34]
             rewards_rate = m.get("rewards_rate") or m.get("rewards_min_size", 0)
             max_spread = m.get("rewards_max_spread", 0)
 
@@ -537,8 +584,8 @@ class TelegramBot:
             samples = data.get("sample_count") or 0
 
             lines.append(
-                f"\n· *{question}*\n"
-                f"  ¢/min: `{cpm:.2f}`  share: `{share:.1f}%`  rate: `${daily_rate:.2f}/d`\n"
+                f"\n- *{question}*\n"
+                f"  Â¢/min: `{cpm:.2f}`  share: `{share:.1f}%`  rate: `${daily_rate:.2f}/d`\n"
                 f"  spread max: `{max_spread}`  samples: `{samples}`"
             )
 
@@ -564,7 +611,7 @@ class TelegramBot:
 
         total_rewards, per_market, is_real = self._get_today_rewards()
 
-        # Ordenar por ¢/min
+        # Ordenar por Â¢/min
         ranked = sorted(
             snap.items(),
             key=lambda kv: kv[1].get("cents_per_min") or 0.0,
@@ -572,14 +619,19 @@ class TelegramBot:
         )
         max_cpm = (ranked[0][1].get("cents_per_min") or 0.0) if ranked else 0.0
 
+        # Limit to top 25 to avoid message overflow
+        display = ranked[:25]
+        if len(ranked) > 25:
+            display.append(("...", {"cents_per_min": 0, "last_share_pct": 0, "sample_count": 0, "last_daily_rate": 0}))
+
         real_label = "(real)" if is_real else "(estimado)"
         lines = [
-            self._section_header("RewardTracker"),
-            f"· Total hoy {real_label}: `${total_rewards:.4f}`",
+            self._section_header(f"RewardTracker ({len(snap)} mkts)"),
+            f"- Total hoy {real_label}: `${total_rewards:.4f}`",
             "",
         ]
 
-        for cid, data in ranked:
+        for cid, data in display:
             cpm = data.get("cents_per_min") or 0.0
             share = data.get("last_share_pct") or 0.0
             daily_rate = data.get("last_daily_rate") or 0.0
@@ -590,7 +642,7 @@ class TelegramBot:
 
             lines.append(
                 f"*{name[:32]}*\n"
-                f"  `{bar}` `{cpm:.2f}¢/min`  share `{share:.1f}%`\n"
+                f"  `{bar}` `{cpm:.2f}Â¢/min`  share `{share:.1f}%`\n"
                 f"  rate `${daily_rate:.2f}/d`  est. hoy `${est_today:.4f}`  ({samples} samples)\n"
             )
 
@@ -603,7 +655,7 @@ class TelegramBot:
                 now = time.time()
                 for mid, exp in active_bl.items():
                     h = (exp - now) / 3600
-                    lines.append(f"  · `{mid[:14]}...`  expira `{h:.1f}h`")
+                    lines.append(f"  - `{mid[:14]}...`  expira `{h:.1f}h`")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -660,7 +712,7 @@ class TelegramBot:
                     pass
             name = self._get_market_name(cid)
             lines.append(
-                f"· *{name[:28]}*\n"
+                f"- *{name[:28]}*\n"
                 f"  {side}  `{size:.1f}` @ `{price:.4f}`  edad `{age_str}`"
             )
 
@@ -686,31 +738,31 @@ class TelegramBot:
             self._section_header("PnL / Rewards"),
             "",
             f"*Rewards hoy {real_label}*",
-            f"· Total: `${total_rewards:.4f}`",
+            f"- Total: `${total_rewards:.4f}`",
         ]
 
         if per_market:
             ranked = sorted(per_market.items(), key=lambda kv: kv[1], reverse=True)
             for cid, usd in ranked[:5]:
                 name = self._get_market_name(cid)
-                lines.append(f"  · {name[:28]}  `${usd:.4f}`")
+                lines.append(f"  - {name[:28]}  `${usd:.4f}`")
 
         lines.extend([
             "",
             "*Trades — hoy*",
-            f"· Cantidad: `{stats_today['count']}`  errores: `{stats_today['errors']}`",
-            f"· Fees pagados: `${stats_today['fees']:.4f}`",
-            f"· Rewards en trades.jsonl: `${stats_today['rewards']:.4f}`",
+            f"- Cantidad: `{stats_today['count']}`  errores: `{stats_today['errors']}`",
+            f"- Fees pagados: `${stats_today['fees']:.4f}`",
+            f"- Rewards en trades.jsonl: `${stats_today['rewards']:.4f}`",
             "",
             "*Trades — 7 dias*",
-            f"· Cantidad: `{stats_week['count']}`  errores: `{stats_week['errors']}`",
-            f"· Fees pagados: `${stats_week['fees']:.4f}`",
-            f"· Rewards en trades.jsonl: `${stats_week['rewards']:.4f}`",
+            f"- Cantidad: `{stats_week['count']}`  errores: `{stats_week['errors']}`",
+            f"- Fees pagados: `${stats_week['fees']:.4f}`",
+            f"- Rewards en trades.jsonl: `${stats_week['rewards']:.4f}`",
         ])
 
         if self._controller:
             cb_pnl = self._controller.get_status().get("daily_pnl", 0.0)
-            lines.append(f"\n· PnL intradiario (CB): `${cb_pnl:+.4f}`")
+            lines.append(f"\n- PnL intradiario (CB): `${cb_pnl:+.4f}`")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -750,19 +802,19 @@ class TelegramBot:
             uptime_str = "n/a"
 
         consecutive = status.get("consecutive_errors", 0)
-        err_icon = "●" if consecutive >= 5 else ("○" if consecutive >= 1 else "·")
+        err_icon = "â—" if consecutive >= 5 else ("â—‹" if consecutive >= 1 else "-")
 
         recent_errors = self._get_recent_log_errors(n=3)
 
         lines = [
             self._section_header("Health"),
-            f"· WS:      {'conectado' if ws_connected else 'DESCONECTADO'}",
-            f"· API:     {'ok' if api_ok else 'ERROR'}",
-            f"· Uptime:  `{uptime_str}`",
-            f"· Ultimo trade: `{last_trade_str}` atras",
-            f"· Errores consec: {err_icon} `{consecutive}`",
-            f"· Mercados activos: `{len(getattr(self._controller, '_active_markets', []))}`",
-            f"· Loop interval: `{getattr(self._controller, '_loop_interval', '?')}s`",
+            f"- WS:      {'conectado' if ws_connected else 'DESCONECTADO'}",
+            f"- API:     {'ok' if api_ok else 'ERROR'}",
+            f"- Uptime:  `{uptime_str}`",
+            f"- Ultimo trade: `{last_trade_str}` atras",
+            f"- Errores consec: {err_icon} `{consecutive}`",
+            f"- Mercados activos: `{len(getattr(self._controller, '_active_markets', []))}`",
+            f"- Loop interval: `{getattr(self._controller, '_loop_interval', '?')}s`",
         ]
 
         if recent_errors:
@@ -778,8 +830,11 @@ class TelegramBot:
             return
 
         args = context.args or []
-        n = int(args[0]) if args else 20
-        n = max(1, min(n, 100))
+        try:
+            n = int(args[0]) if args else 20
+        except (ValueError, IndexError):
+            n = 20
+        n = max(1, min(n, 40))  # max 40 para no exceder 4000 chars
         lines_raw = self._get_recent_log_lines(n)
         text = (
             self._section_header(f"Log (ultimas {n} lineas)")
@@ -879,9 +934,9 @@ class TelegramBot:
                     cost = result.get("estimated_cost_usd", 0)
                     await update.message.reply_text(
                         f"*Review completado*\n"
-                        f"· Risk: `{risk}`\n"
-                        f"· Costo: `${cost:.5f}`\n"
-                        f"· _{summary}_",
+                        f"- Risk: `{risk}`\n"
+                        f"- Costo: `${cost:.5f}`\n"
+                        f"- _{summary}_",
                         parse_mode="Markdown",
                     )
                 else:
@@ -962,7 +1017,7 @@ class TelegramBot:
         lines = [self._section_header(f"Blacklist ({len(active)} mercados)")]
         for mid, expire in sorted(active.items(), key=lambda x: x[1]):
             h = (expire - now) / 3600
-            lines.append(f"· `{mid[:16]}...`  expira `{h:.1f}h`")
+            lines.append(f"- `{mid[:16]}...`  expira `{h:.1f}h`")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -989,10 +1044,324 @@ class TelegramBot:
         icon = "DESYNC" if desync else "OK"
         await update.message.reply_text(
             f"*Reconciliacion {icon}*\n"
-            f"· Balance: `${result.get('balance_onchain', 0):.2f}`\n"
-            f"· Ordenes: `{result.get('open_orders_onchain', 0)}`",
+            f"- Balance: `${result.get('balance_onchain', 0):.2f}`\n"
+            f"- Ordenes: `{result.get('open_orders_onchain', 0)}`",
             parse_mode="Markdown",
         )
+
+    async def _cmd_weather(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Estado de la estrategia weather: señales, posiciones, ciudades."""
+        if not await self._guard(update):
+            return
+        if not self._controller:
+            await update.message.reply_text("Bot controller no conectado.")
+            return
+
+        status = self._controller.get_status()
+        wstatus = status.get("weather")
+
+        if wstatus is None:
+            await update.message.reply_text("Weather strategy no inicializada.")
+            return
+
+        if not wstatus.get("active"):
+            await update.message.reply_text(
+                f"Weather strategy: INACTIVA\n"
+                f"- Enabled: `{wstatus.get('enabled', False)}`\n"
+                f"- Ciudades: `{', '.join(wstatus.get('cities', []))}`",
+                parse_mode="Markdown",
+            )
+            return
+
+        lines = [
+            self._section_header("Weather Strategy"),
+            f"- Ciudades: `{', '.join(wstatus.get('cities', []))}`",
+            f"- Edge mínimo: `{wstatus.get('min_edge', 0):.1%}`",
+            f"- Max trade: `${wstatus.get('max_trade_size', 0):.0f}` | Max alloc: `${wstatus.get('max_allocation', 0):.0f}`",
+            "",
+            f"- Posiciones abiertas: `{wstatus.get('open_positions', 0)}`",
+            f"- Señales generadas: `{wstatus.get('signals_generated', 0)}`",
+            f"- Trades ejecutados: `{wstatus.get('trades_executed', 0)}`",
+            f"- Mercados pendientes: `{wstatus.get('pending_markets', 0)}`",
+        ]
+
+        # Últimos trades de weather desde trades.jsonl
+        weather_trades = self._get_recent_weather_trades(5)
+        if weather_trades:
+            lines.append(f"\n*Últimos trades*")
+            for t in weather_trades:
+                side_icon = "ðŸŸ¢" if t.get("side") == "BUY" else "ðŸ”´"
+                ts = t.get("timestamp", "")[:16].replace("T", " ")
+                lines.append(
+                    f"- {side_icon} `{t.get('size', 0):.0f}` USDC @ `{t.get('price', 0):.3f}` "
+                    f"| `{ts}`"
+                )
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    def _get_recent_weather_trades(self, n: int = 5) -> list[dict[str, Any]]:
+        """Lee los últimos N trades de weather desde trades.jsonl."""
+        import json
+        from pathlib import Path
+
+        trades_file = Path("data/trades.jsonl")
+        if not trades_file.exists():
+            return []
+
+        weather_trades: list[dict[str, Any]] = []
+        try:
+            with open(trades_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        trade = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if trade.get("strategy_name") == "weather":
+                        weather_trades.append(trade)
+        except OSError:
+            return []
+
+        return weather_trades[-n:]
+
+    async def _cmd_sc(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Estado de SafeCompounder: posiciones, trades, exits, params."""
+        if not await self._guard(update):
+            return
+        if not self._controller:
+            await update.message.reply_text("Bot controller no conectado.")
+            return
+
+        status = self._controller.get_status()
+        scstatus = status.get("safe_compounder")
+        if scstatus is None:
+            await update.message.reply_text("SafeCompounder no inicializada.")
+            return
+
+        if not scstatus.get("active"):
+            await update.message.reply_text("SafeCompounder: INACTIVA.", parse_mode="Markdown")
+            return
+
+        sc_stats = scstatus.get("stats", {})
+        params = scstatus.get("params", {})
+        lines = [
+            self._section_header("SafeCompounder"),
+            f"- Posiciones: `{scstatus['positions']}`",
+            f"- Trades: `{sc_stats.get('trades', 0)}` | Exits: `{sc_stats.get('exits', 0)}`",
+            f"- Scans: `{sc_stats.get('scans', 0)}` | Señales: `{sc_stats.get('signals', 0)}`",
+            "",
+            f"- YES: `{params.get('min_yes', 0):.0%}-{params.get('max_yes', 0):.0%}` | NO ask >= `{params.get('min_no_ask', 0):.0%}`",
+            f"- Edge min: `{params.get('min_edge', 0):.1%}` | TP: `{params.get('tp', 0):.0%}` | SL: `{params.get('sl', 0):.0%}`",
+            f"- Kelly: `{params.get('kelly', 0):.0%}` | Max pos: `{params.get('max_pct', 0):.0%}`",
+        ]
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _cmd_fills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Ultimos fills/trades completados de todas las estrategias."""
+        if not await self._guard(update):
+            return
+        import json
+        from pathlib import Path
+
+        trades_file = Path("data/trades.jsonl")
+        if not trades_file.exists():
+            await update.message.reply_text("Sin datos de trades.")
+            return
+
+        fills: list[dict] = []
+        try:
+            with open(trades_file, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        t = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    s = t.get("status", "")
+                    if s in ("ORDER_STATUS_MATCHED", "matched", "filled", "filled_paper", "settled"):
+                        fills.append(t)
+        except OSError:
+            await update.message.reply_text("Error leyendo trades.")
+            return
+
+        if not fills:
+            await update.message.reply_text("Sin fills registrados aun.")
+            return
+
+        fills = fills[-10:]
+        lines = [self._section_header("Ultimos fills")]
+        for t in fills:
+            ts = t.get("timestamp", "")[:16].replace("T", " ")
+            sn = t.get("strategy_name", "")[:6]
+            side = t.get("side", "")[:4]
+            size = t.get("size", 0)
+            price = t.get("price", 0)
+            lines.append(f"- `{ts}` {sn:6s} {side:4s} `${size:.0f}` @ `{price:.4f}`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    # ------------------------------------------------------------------
+    # Control de estrategias y ordenes manuales
+    # ------------------------------------------------------------------
+
+    async def _cmd_enable(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Activa una estrategia: /enable weather|sc|rf"""
+        if not await self._guard(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Uso: /enable <estrategia>\nEj: /enable weather, /enable sc, /enable rf")
+            return
+        name = context.args[0].lower()
+        name_map = {"w": "weather", "weather": "weather", "sc": "safe_compounder", "safe_compounder": "safe_compounder", "rf": "rewards_farmer", "rewards_farmer": "rewards_farmer"}
+        result = self._controller.enable_strategy(name_map.get(name, name))
+        await update.message.reply_text(result)
+
+    async def _cmd_disable(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Desactiva una estrategia: /disable weather|sc|rf"""
+        if not await self._guard(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Uso: /disable <estrategia>\nEj: /disable sc")
+            return
+        name = context.args[0].lower()
+        name_map = {"w": "weather", "weather": "weather", "sc": "safe_compounder", "safe_compounder": "safe_compounder", "rf": "rewards_farmer", "rewards_farmer": "rewards_farmer"}
+        result = self._controller.disable_strategy(name_map.get(name, name))
+        await update.message.reply_text(result)
+
+    async def _cmd_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Orderbook de un token: /book <token_id>"""
+        if not await self._guard(update):
+            return
+        if not self._controller:
+            await update.message.reply_text("Bot controller no conectado.")
+            return
+        if not context.args:
+            await update.message.reply_text("Uso: /book <token_id>")
+            return
+        token_id = context.args[0]
+        try:
+            ob = self._controller.get_orderbook_for(token_id)
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+            return
+        if "error" in ob:
+            await update.message.reply_text(f"Error: {ob['error']}")
+            return
+        bids = ob.get("bids", [])
+        asks = ob.get("asks", [])
+        mid = ob.get("mid", 0)
+        lines = [f"*Orderbook* `{token_id[:16]}...`", f"Mid: `{mid:.4f}`", "", "*Asks (sell)*"]
+        for a in asks[:5]:
+            lines.append(f"  `{float(a[0]):.4f}` x `{float(a[1]):.0f}`")
+        lines.append("")
+        if bids:
+            lines.append("*Bids (buy)*")
+            for b in bids[:5]:
+                lines.append(f"  `{float(b[0]):.4f}` x `{float(b[1]):.0f}`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Compra manual: /buy <token> <price> <size_usdc>"""
+        if not await self._guard(update):
+            return
+        if not self._controller:
+            await update.message.reply_text("Bot controller no conectado.")
+            return
+        if len(context.args) < 3:
+            await update.message.reply_text("Uso: /buy <token_id> <price> <size_usdc>")
+            return
+        token_id = context.args[0]
+        try:
+            price = float(context.args[1])
+            size = float(context.args[2])
+        except ValueError:
+            await update.message.reply_text("Precio y size deben ser numeros.")
+            return
+        result = self._controller.place_manual_order(token_id, "BUY", price, size)
+        await update.message.reply_text(
+            f"*BUY* `${size:.0f}` @ `{price:.4f}`\n"
+            f"Status: `{result.get('status')}` | Order: `{str(result.get('order_id',''))[:16]}`",
+            parse_mode="Markdown",
+        )
+
+    async def _cmd_sell(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Vende manual: /sell <token> <price> <size_usdc>"""
+        if not await self._guard(update):
+            return
+        if not self._controller:
+            await update.message.reply_text("Bot controller no conectado.")
+            return
+        if len(context.args) < 3:
+            await update.message.reply_text("Uso: /sell <token_id> <price> <size_usdc>")
+            return
+        token_id = context.args[0]
+        try:
+            price = float(context.args[1])
+            size = float(context.args[2])
+        except ValueError:
+            await update.message.reply_text("Precio y size deben ser numeros.")
+            return
+        result = self._controller.place_manual_order(token_id, "SELL", price, size)
+        await update.message.reply_text(
+            f"*SELL* `${size:.0f}` @ `{price:.4f}`\n"
+            f"Status: `{result.get('status')}` | Order: `{str(result.get('order_id',''))[:16]}`",
+            parse_mode="Markdown",
+        )
+
+    async def _cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Posiciones con mid price actual."""
+        if not await self._guard(update):
+            return
+        if not self._controller:
+            await update.message.reply_text("Bot controller no conectado.")
+            return
+
+        import json
+        from pathlib import Path
+
+        # Get filled positions from inventory
+        inventory = self._controller._inventory.get_positions() if hasattr(self._controller, "_inventory") else {}
+        lines = [self._section_header("Posiciones")]
+
+        trades_file = Path("data/trades.jsonl")
+        # Get strategy exposure from trades
+        strategy_exp: dict[str, float] = {}
+        if trades_file.exists():
+            try:
+                for line in trades_file.read_text(encoding="utf-8").splitlines()[-500:]:
+                    if not line.strip():
+                        continue
+                    try:
+                        t = json.loads(line)
+                    except Exception:
+                        continue
+                    sn = t.get("strategy_name", "")
+                    if t.get("status") in ("live", "submitted", "ORDER_STATUS_MATCHED", "matched"):
+                        strategy_exp[sn] = strategy_exp.get(sn, 0) + float(t.get("size", 0))
+            except Exception:
+                pass
+
+        for sn, exp in sorted(strategy_exp.items()):
+            lines.append(f"*{sn}*: `${exp:.2f}` deployed")
+
+        if inventory:
+            lines.append(f"\n*Posiciones ({len(inventory)} mkts):*")
+            for mid, tokens in list(inventory.items())[:10]:
+                for tid, val in tokens.items():
+                    if abs(val) > 0.01:
+                        try:
+                            mid_price = self._controller.get_midpoint(tid) if hasattr(self._controller, 'get_midpoint') else 0
+                        except Exception:
+                            mid_price = 0
+                        pnl = f" (mid={mid_price:.4f})" if mid_price > 0 else ""
+                        lines.append(f"  `{tid[:14]}...` `${val:+.2f}`{pnl}")
+        else:
+            lines.append("\nSin posiciones en inventory.")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     # ------------------------------------------------------------------
     # Loops de fondo
@@ -1013,13 +1382,32 @@ class TelegramBot:
                         up_m = int((delta.total_seconds() % 3600) // 60)
                         up_d = int(delta.total_seconds() // 86400)
                         uptime = f"{up_d}d {up_h}h {up_m}m" if up_d > 0 else f"{up_h}h {up_m}m"
-                        send_alert(
+
+                        msg = (
                             f"Heartbeat\n"
-                            f"· Uptime: `{uptime}`\n"
-                            f"· Balance: `${status.get('balance_usdc', 0):.2f}`\n"
-                            f"· Rewards hoy: `${total_rewards:.4f}`\n"
-                            f"· Estado: `{status.get('state', '?')}`"
+                            f"- Uptime: `{uptime}`\n"
+                            f"- Balance: `${status.get('balance_usdc', 0):.2f}`\n"
+                            f"- PnL: `${status.get('daily_pnl', 0):+.4f}` | Rewards: `${total_rewards:.4f}`\n"
+                            f"- Estado: `{status.get('state', '?')}`"
                         )
+
+                        wstatus = status.get("weather")
+                        if wstatus and wstatus.get("active"):
+                            msg += (
+                                f"\n- Weather: `{wstatus.get('open_positions', 0)}` abiertas | "
+                                f"`{wstatus.get('trades_executed', 0)}` trades"
+                            )
+
+                        scstatus = status.get("safe_compounder")
+                        if scstatus and scstatus.get("active"):
+                            sc_stats = scstatus.get("stats", {})
+                            msg += (
+                                f"\n- SC: `{scstatus.get('positions', 0)}` pos | "
+                                f"`{sc_stats.get('trades', 0)}` trades | "
+                                f"`{sc_stats.get('exits', 0)}` exits"
+                            )
+
+                        send_alert(msg)
                     except Exception:
                         logger.exception("Error en heartbeat loop")
 
@@ -1045,12 +1433,22 @@ class TelegramBot:
 
         msg = (
             f"*Resumen Diario*\n"
-            f"─────────────────────\n"
-            f"· Rewards LP: `${total_rewards:.4f}`\n"
-            f"· Trades: `{int(stats['count'])}`  errores: `{int(stats['errors'])}`\n"
-            f"· Fees pagados: `${stats['fees']:.4f}`\n"
-            f"· Rewards en log: `${stats['rewards']:.4f}`"
+            f"{'—' * 22}\n"
+            f"- Rewards LP: `${total_rewards:.4f}`\n"
+            f"- Trades: `{int(stats['count'])}`  errores: `{int(stats['errors'])}`\n"
+            f"- Fees: `${stats['fees']:.4f}`\n"
         )
+
+        if self._controller:
+            status = self._controller.get_status()
+            scstatus = status.get("safe_compounder")
+            if scstatus and scstatus.get("active"):
+                sc = scstatus.get("stats", {})
+                msg += f"- SC: `{sc.get('trades',0)}` trades | `{sc.get('exits',0)}` exits | `{scstatus.get('positions',0)}` pos\n"
+            wstatus = status.get("weather")
+            if wstatus and wstatus.get("active"):
+                msg += f"- Weather: `{wstatus.get('trades_executed',0)}` trades | `{wstatus.get('open_positions',0)}` abiertas\n"
+
         send_alert(msg)
 
     # ------------------------------------------------------------------
@@ -1200,13 +1598,4 @@ class TelegramBot:
             pass
         return list(lines)
 
-    # ------------------------------------------------------------------
-    # API de compatibilidad con main.py
-    # ------------------------------------------------------------------
 
-    async def start(self) -> None:
-        await self._run_async()
-
-    async def stop_async(self) -> None:
-        if self._stop_event:
-            self._stop_event.set()

@@ -1,17 +1,17 @@
-"""
+﻿"""
 Seleccion inteligente de mercados para NachoMarket.
 
 Fuentes de datos:
-- Gamma API (https://gamma-api.polymarket.com) — mercados activos, metadata
-- CLOB API (https://clob.polymarket.com) — rewards, orderbook, spreads
+- Gamma API (https://gamma-api.polymarket.com) ÔÇö mercados activos, metadata
+- CLOB API (https://clob.polymarket.com) ÔÇö rewards, orderbook, spreads
 
 Pipeline de select_top_markets:
-  1. discover_markets()      — Gamma API, filtros iniciales
-  2. filter.apply_all()      — ban, dedup, news-risk
-  3. enrich_with_rewards()   — marca rewards_active, rate, min_size (SIN depth aun)
-  4. _prefetch_orderbooks()  — batch fetch de todos los orderbooks
-  5. enrich_density()        — reward_density real con depth cacheado, aplica filtros
-  6. score_market()          — puntua con datos completos
+  1. discover_markets()      ÔÇö Gamma API, filtros iniciales
+  2. filter.apply_all()      ÔÇö ban, dedup, news-risk
+  3. enrich_with_rewards()   ÔÇö marca rewards_active, rate, min_size (SIN depth aun)
+  4. _prefetch_orderbooks()  ÔÇö batch fetch de todos los orderbooks
+  5. enrich_density()        ÔÇö reward_density real con depth cacheado, aplica filtros
+  6. score_market()          ÔÇö puntua con datos completos
   7. category cap + top n
 
 Todos los resultados se cachean por CACHE_TTL_SEC (15 min).
@@ -36,7 +36,7 @@ GAMMA_API_URL = "https://gamma-api.polymarket.com"
 CLOB_API_URL = "https://clob.polymarket.com"
 CACHE_TTL_SEC = 900  # 15 minutos
 MIN_DAYS_TO_RESOLUTION = 7
-# Shadow orders no necesitan capital real → viabilidad se chequea contra el tope nocional
+# Shadow orders no necesitan capital real ÔåÆ viabilidad se chequea contra el tope nocional
 _SHADOW_MAX_NOTIONAL = 150.0
 
 
@@ -68,10 +68,11 @@ class _Cache:
 class MarketAnalyzer:
     """Seleccion y scoring de mercados para rewards farming."""
 
-    def __init__(self, client: PolymarketClient, config: dict[str, Any], reward_tracker: Any = None) -> None:
+    def __init__(self, client: PolymarketClient, config: dict[str, Any], reward_tracker: Any = None, category_scorer: Any = None) -> None:
         self._client = client
         self._cache = _Cache(ttl_sec=CACHE_TTL_SEC)
         self._reward_tracker = reward_tracker
+        self._category_scorer = category_scorer
 
         self._min_volume = config.get("min_daily_volume_usd", 0)
         self._small_market_volume = config.get("small_market_volume_usd", 0)
@@ -96,26 +97,22 @@ class MarketAnalyzer:
         self._max_per_category: int = diversification.get("max_per_category", 3)
 
         competition = config.get("competition", {})
-        self._max_book_depth_per_side = competition.get("max_book_depth_per_side", 5000.0)
-        self._min_participation_share = competition.get("min_participation_share", 0.005)
         self._bot_order_size = config.get("bot_order_size", 7.5)
 
         self._filter = MarketFilter(config)
 
         self._rf_min_pool = float(config.get("rewards_farmer", {}).get("min_rewards_pool_usd", 5.0))
 
-        # Pesos recalibrados para small-cap: priorizar baja competencia sobre pool alto.
-        # competition=0.35: si el book está vacío, nuestro $50 captura 100% del share.
-        # accessibility=0.20: min_size bajo es crítico con poco capital.
-        # rewards=0.20: pool grande no ayuda si no capturás share significativo.
-        self._weights = {
+        # Pesos: competencia 0 es lo mas importante (garantiza 100% share del pool)
+        # share% x pool = earnings reales > pool grande con mucha competencia
+        self._weights = config.get("scoring_weights", {
             "spread": 0.10,
-            "competition": 0.35,
-            "rewards": 0.20,
-            "accessibility": 0.20,
-            "volatility": 0.05,
-            "time_to_resolution": 0.10,
-        }
+            "competition": 0.60,
+            "rewards": 0.15,
+            "accessibility": 0.15,
+            "volatility": 0.00,
+            "time_to_resolution": 0.05,
+        })
 
     # ------------------------------------------------------------------
     # 1. Discover
@@ -225,7 +222,7 @@ class MarketAnalyzer:
         except OSError:
             pass
 
-        logger.info("discover_markets: %d total → %d elegibles", len(all_markets), len(eligible))
+        logger.info("discover_markets: %d total ÔåÆ %d elegibles", len(all_markets), len(eligible))
         return eligible
 
     def _passes_gamma_filters(self, market: dict[str, Any], cutoff: datetime) -> bool:
@@ -335,7 +332,7 @@ class MarketAnalyzer:
     def enrich_with_rewards(self, markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Marca rewards_active, rate, min_size, max_spread.
 
-        NO calcula reward_density aqui — se hace en enrich_density() despues
+        NO calcula reward_density aqui ÔÇö se hace en enrich_density() despues
         del prefetch de orderbooks para tener depth real.
         Aplica filtro de min_rewards_pool_usd.
         """
@@ -492,7 +489,7 @@ class MarketAnalyzer:
 
         Gate de mid-price: descarta si la ventana de rewards sale de [0,1].
         Para binarios: si mid < max_spread + tick o mid > 1 - max_spread - tick,
-        no hay room para la ventana → score 0.
+        no hay room para la ventana ÔåÆ score 0.
         """
         tokens = market.get("tokens", [])
         is_binary = len(tokens) == 2
@@ -504,7 +501,7 @@ class MarketAnalyzer:
             max_spread_usd = float(market.get("rewards_max_spread", 0.0)) / 100.0
             if max_spread_usd <= 0:
                 max_spread_usd = 0.04
-            # Ventana de rewards: [mid - max_spread, mid) — si sale de [0,1], sin valor
+            # Ventana de rewards: [mid - max_spread, mid) ÔÇö si sale de [0,1], sin valor
             if mid_price < max_spread_usd + tick_size or mid_price > 1.0 - max_spread_usd - tick_size:
                 return 0.0
 
@@ -513,22 +510,33 @@ class MarketAnalyzer:
         participation = self._estimate_participation_share(market)
         market["_participation_share"] = participation
         cid = market.get("condition_id", "")
+        share_pct = None
         if self._reward_tracker and cid:
-            share_pct = self._reward_tracker.last_share_pct(cid)
-            if share_pct is not None and share_pct > 0:
-                # Share real observado: mapeo exponencial
-                if share_pct >= 1.0:
-                    scores["competition"] = 1.0
-                elif share_pct >= 0.10:
-                    scores["competition"] = 0.7 + (share_pct - 0.10) / 0.90 * 0.3
-                elif share_pct >= 0.01:
-                    scores["competition"] = 0.3 + (share_pct - 0.01) / 0.09 * 0.4
-                else:
-                    scores["competition"] = share_pct / 0.01 * 0.3
-                market["_observed_share_pct"] = share_pct
+            try:
+                share_pct = self._reward_tracker.last_share_pct(cid)
+            except Exception:
+                share_pct = None
+
+        # _share_estimate: mejor proxy del % del pool que capturamos
+        if share_pct is not None and share_pct > 0:
+            market["_share_estimate"] = share_pct
+        else:
+            market["_share_estimate"] = participation
+
+        # Competition score: premia mercados con competencia 0 (alta participacion)
+        if share_pct is not None and share_pct > 0:
+            if share_pct >= 0.50:
+                scores["competition"] = 1.0       # 50%+ share = practicamente solo
+            elif share_pct >= 0.10:
+                scores["competition"] = 0.7 + (share_pct - 0.10) / 0.40 * 0.3
+            elif share_pct >= 0.01:
+                scores["competition"] = 0.3 + (share_pct - 0.01) / 0.09 * 0.4
             else:
-                # Sin share real: estimar por participación en el book
-                scores["competition"] = _competition_score_from_participation(participation)
+                scores["competition"] = share_pct / 0.01 * 0.3
+        elif participation >= 0.80:
+            scores["competition"] = 1.0            # orderbook vacio = sin competidores
+        elif participation >= 0.50:
+            scores["competition"] = 0.7 + (participation - 0.50) / 0.30 * 0.3
         else:
             scores["competition"] = _competition_score_from_participation(participation)
 
@@ -612,24 +620,38 @@ class MarketAnalyzer:
         markets = self.enrich_density(markets)
         logger.debug("select_top_markets: post-density=%d", len(markets))
 
-        # Solo scorear mercados con rewards activos — los demás no se pueden farmear
+        # Solo scorear mercados con rewards activos
         markets = [m for m in markets if m.get("rewards_active") and m.get("rewards_rate", 0) > 0]
         logger.info("select_top_markets: scoring %d mercados...", len(markets))
         scored = []
-        for market in markets:
-            s = self.score_market(market)
-            market["_score"] = s
-            if s > 0:
-                scored.append(market)
+        start_time = time.time()
+        # Temporarily disable RT during scoring to avoid lock contention with daemon
+        rt_backup = self._reward_tracker
+        self._reward_tracker = None
+        try:
+            for market in markets:
+                if time.time() - start_time > 30.0:
+                    logger.warning("select_top_markets: timeout tras %.0fs (%d/%d scored)",
+                                  time.time() - start_time, len(scored), len(markets))
+                    break
+                try:
+                    s = self.score_market(market)
+                    market["_score"] = s
+                    if s > 0:
+                        scored.append(market)
+                except Exception as e:
+                    logger.warning("select_top_markets: error scoring market %s: %s",
+                                  market.get("condition_id", "?")[:12], e)
+        finally:
+            self._reward_tracker = rt_backup
 
         logger.info("select_top_markets: %d/%d con score>0", len(scored), len(markets))
 
-        # Sort: vol=0 primero absoluto, luego MAYOR pool, luego MENOR volumen, score DESC
+        # Sort v3: share_estimate x pool = earnings reales estimados > score x pool
+        # Prioriza competencia 0 sobre pool grande: $50/d x 100% share > $300/d x 5% share
         scored.sort(key=lambda m: (
-            0 if float(m.get("volume_24h", 0)) == 0 else 1,
-            -float(m.get("rewards_rate", 0)),
-            float(m.get("volume_24h", 0)),
-            -float(m.get("_score", 0)),
+            -float(m.get("_share_estimate", 0.01)) * float(m.get("rewards_rate", 0)),  # -real_est_earnings
+            -float(m.get("_score", 0)),  # -score como tiebreaker
         ))
 
         if scored:
@@ -637,8 +659,8 @@ class MarketAnalyzer:
             logger.info(
                 "select_top_markets sort top-5: %s",
                 " | ".join(
-                    f"#{i+1} vol=${m.get('volume_24h', 0):.0f} pool=${m.get('rewards_rate', 0):.0f} score={m.get('_score', 0):.3f}"
-                    for i, m in enumerate(top5)
+                    f"#{j+1} pool=${m.get('rewards_rate', 0):.0f} share={m.get('_share_estimate', 0)*100:.0f}% est=${m.get('_share_estimate', 0.01)*m.get('rewards_rate', 0):.0f}/d score={m.get('_score', 0):.3f}"
+                    for j, m in enumerate(top5)
                 ),
             )
         selected = self._apply_category_cap(scored, n)
@@ -646,12 +668,13 @@ class MarketAnalyzer:
         if selected:
             for i, m in enumerate(selected, 1):
                 logger.info(
-                    "  #%d '%s' score=%.3f vol=$%.0f rewards=$%.0f/d min_size=%d share=%.1f%%",
-                    i, m.get("question", "?")[:50], m["_score"],
-                    m.get("volume_24h", 0),
+                    "  #%d '%s' share=%.0f%% est=$%.0f/d pool=$%.0f/d min=%d score=%.3f",
+                    i, m.get("question", "?")[:50],
+                    m.get("_share_estimate", 0) * 100,
+                    m.get("_share_estimate", 0.01) * m.get("rewards_rate", 0),
                     m.get("rewards_rate", 0),
                     int(m.get("rewards_min_size", 0)),
-                    m.get("_participation_share", 0) * 100,
+                    m["_score"],
                 )
 
         return selected
@@ -769,11 +792,15 @@ def _safe_float(value: Any) -> float:
 
 
 def _competition_score_from_participation(participation: float) -> float:
-    """Score de competencia exponencial: prioriza mercados donde capturamos mucho share."""
-    if participation >= 0.10:
+    """Score de competencia: prioriza mercados donde capturamos mucho share.
+
+    Participacion es un estimado generoso (bot_order_size / book_depth), por lo
+    que los thresholds son mas estrictos que el path con share_pct observado.
+    """
+    if participation >= 0.50:
         return 1.0
-    if participation >= 0.05:
-        return 0.7 + (participation - 0.05) / 0.05 * 0.3
+    if participation >= 0.10:
+        return 0.3 + (participation - 0.10) / 0.40 * 0.4
     if participation >= 0.01:
-        return 0.3 + (participation - 0.01) / 0.04 * 0.4
-    return participation / 0.01 * 0.3
+        return 0.15 + (participation - 0.01) / 0.09 * 0.15
+    return participation / 0.01 * 0.15

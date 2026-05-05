@@ -312,8 +312,6 @@ class OrderbookFeed:
                 # El backoff lo manejamos manualmente para tener control total.
                 async with connect(
                     WS_URL,
-                    ping_interval=30,
-                    ping_timeout=10,
                     open_timeout=15,
                     max_size=2 * 1024 * 1024,  # 2 MB por mensaje
                 ) as ws:
@@ -325,8 +323,18 @@ class OrderbookFeed:
                     # Suscribir a todos los tokens configurados
                     await self._subscribe_all(ws)
 
+                    # Lanzar ping loop (PING cada 10s como texto plano)
+                    ping_task = asyncio.create_task(self._ping_loop(ws))
+
                     # Loop de mensajes
-                    await self._message_loop(ws)
+                    try:
+                        await self._message_loop(ws)
+                    finally:
+                        ping_task.cancel()
+                        try:
+                            await ping_task
+                        except asyncio.CancelledError:
+                            pass
 
             except ConnectionClosedOK:
                 logger.info("WebSocket cerrado correctamente")
@@ -357,6 +365,18 @@ class OrderbookFeed:
 
         logger.info("OrderbookFeed detenido")
 
+    async def _ping_loop(self, ws: Any) -> None:
+        """Envía PING como texto plano cada 10s (requerido por Polymarket)."""
+        while self._running:
+            await asyncio.sleep(10)
+            if not self._running:
+                break
+            async with self._ws_lock:
+                try:
+                    await ws.send("PING")
+                except Exception:
+                    break
+
     async def stop(self) -> None:
         """Senaliza el stop y cierra la conexion activa."""
         self._running = False
@@ -378,13 +398,25 @@ class OrderbookFeed:
     # ------------------------------------------------------------------
 
     async def _subscribe_all(self, ws: Any) -> None:
-        """Envia mensajes de suscripcion para todos los tokens registrados."""
+        """Envia un solo mensaje con todos los tokens (formato Polymarket)."""
         with self._lock:
             tokens = list(self._subscriptions.keys())
 
-        for token_id in tokens:
-            condition_id = self._get_condition_id(token_id)
-            await self._send_subscribe_ws(ws, token_id, condition_id)
+        if not tokens:
+            return
+
+        msg: dict[str, Any] = {
+            "type": "market",
+            "assets_ids": tokens,
+            "custom_feature_enabled": True,
+        }
+
+        async with self._ws_lock:
+            try:
+                await ws.send(json.dumps(msg))
+                logger.info(f"Suscripcion enviada para {len(tokens)} tokens")
+            except Exception:
+                logger.exception("Error enviando suscripcion masiva")
 
     async def _send_subscribe(self, token_id: str, condition_id: str) -> None:
         """Envia suscripcion a la conexion activa (usado para suscripciones en caliente)."""
@@ -392,23 +424,25 @@ class OrderbookFeed:
             await self._send_subscribe_ws(self._ws_ref, token_id, condition_id)
 
     async def _send_subscribe_ws(self, ws: Any, token_id: str, condition_id: str) -> None:
-        """Envia el mensaje de suscripcion al WebSocket.
+        """Envia el mensaje de suscripcion con todos los tokens."""
+        with self._lock:
+            tokens = list(self._subscriptions.keys())
 
-        Formato oficial Polymarket:
-        {"type": "market", "assets_ids": [token_id], "custom_feature_enabled": true}
-        """
+        if not tokens:
+            return
+
         msg: dict[str, Any] = {
             "type": "market",
-            "assets_ids": [token_id],
+            "assets_ids": tokens,
             "custom_feature_enabled": True,
         }
 
         async with self._ws_lock:
             try:
                 await ws.send(json.dumps(msg))
-                logger.debug("Suscripcion enviada: %s...", token_id[:8])
+                logger.info(f"Suscripcion enviada para {len(tokens)} tokens (incluye {token_id[:8]}...)")
             except Exception:
-                logger.exception("Error enviando suscripcion para %s...", token_id[:8])
+                logger.exception("Error enviando suscripcion masiva")
 
     def _get_condition_id(self, token_id: str) -> str:
         """Busca el condition_id para un token_id."""
@@ -441,6 +475,16 @@ class OrderbookFeed:
         """Parsea y despacha un mensaje del WebSocket."""
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8")
+
+        # Manejar mensajes de texto plano de Polymarket
+        if isinstance(raw, str):
+            if raw == "PONG":
+                logger.debug("PONG recibido")
+                self.mark_message_received()
+                return
+            if raw == "INVALID OPERATION":
+                logger.warning("INVALID OPERATION del servidor - revisar suscripcion")
+                return
 
         # Dead man's switch: marcar que recibimos un mensaje valido
         self.mark_message_received()
