@@ -1559,8 +1559,14 @@ class WeatherStrategy(BaseStrategy):
             lower = float(bucket_lower) if bucket_lower is not None else None
             upper = float(bucket_upper) if bucket_upper is not None else None
         except (ValueError, TypeError):
-            lower = threshold
+            lower = None
+            upper = None
+
+        # Inferir límites faltantes desde threshold y bucket_type (legacy trades)
+        if bucket_type == "below" and upper is None:
             upper = threshold
+        if bucket_type == "above" and lower is None:
+            lower = threshold
 
         if bucket_type == "below" and upper is not None:
             prob = len([m for m in members if m <= upper]) / len(members)

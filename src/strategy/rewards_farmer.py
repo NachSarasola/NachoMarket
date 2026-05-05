@@ -741,11 +741,20 @@ class RewardsFarmerStrategy(BaseStrategy):
         
         # Buscar ordenes nuestras en este token
         for oid, order in list(self._pending_orders.items()):
-            if order.get("token_id") != token_id:
+            # order puede ser Signal o dict (legacy)
+            if isinstance(order, dict):
+                o_tid = order.get("token_id", "")
+                o_side = order.get("side", "")
+                o_price = order.get("price", 0)
+            else:
+                o_tid = getattr(order, "token_id", "")
+                o_side = getattr(order, "side", "")
+                o_price = getattr(order, "price", 0)
+            if o_tid != token_id:
                 continue
             
-            side = order.get("side")
-            price = order.get("price")
+            side = o_side
+            price = o_price
             
             cancel = False
             if side == "BUY" and best_bid > 0:

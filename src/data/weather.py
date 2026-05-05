@@ -916,7 +916,7 @@ def fetch_ensemble_forecast(
             "temperature_unit": "fahrenheit",
             "start_date": utc_start.isoformat(),
             "end_date": utc_end.isoformat(),
-            "models": "ecmwf_ifs04,gfs_seamless",
+            "models": "ecmwf_ifs04,gfs_seamless,icon_seamless",
         }
 
         data = None
