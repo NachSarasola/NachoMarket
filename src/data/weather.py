@@ -977,7 +977,8 @@ def fetch_ensemble_forecast(
             return None
 
         # Fase 3: Nowcasting Intradiario
-        if target_date == date.today():
+        dt_local_now = datetime.now(timezone.utc).astimezone(tz)
+        if target_date == dt_local_now.date():
             curr_temp = fetch_current_temperature(station)
             if curr_temp is not None:
                 all_member_highs = [max(h, curr_temp) for h in all_member_highs]

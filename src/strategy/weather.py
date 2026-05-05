@@ -647,29 +647,34 @@ class WeatherStrategy(BaseStrategy):
         if entry_price > self._max_entry_price:
             return None
 
-        # --- Ensemble probability ---
-        if market.bucket_type == "below" and market.bucket_upper is not None:
-            model_prob = len([m for m in members if m <= market.bucket_upper]) / len(members)
-        elif market.bucket_type == "above" and market.bucket_lower is not None:
-            model_prob = len([m for m in members if m >= market.bucket_lower]) / len(members)
-        elif market.bucket_type == "range" and market.bucket_lower is not None and market.bucket_upper is not None:
-            model_prob = len([m for m in members if market.bucket_lower <= m <= market.bucket_upper]) / len(members)
-        else:
-            return None
-
-        model_prob = max(0.01, min(0.99, model_prob))
-        raw_edge = model_prob - entry_price
-        if raw_edge <= 0:
-            return None
-
         # --- Calibration: bias + sigma + quality from historical errors ---
         lead_days = (market.target_date - date.today()).days
         lead_days = max(0, lead_days)
         month = date.today().month
+        
+        # bias is now the historic temperature error (Actual - Forecast)
         bias, calibrated_sigma = self._get_calibration_stats(
             market.city_name, market.metric, lead_days, month,
         )
-        calibrated_prob = max(0.01, min(0.99, model_prob - bias))
+        
+        if bias:
+            members = [m + bias for m in members]
+            mean_val += bias
+            
+        # --- Ensemble probability (Calibrated) ---
+        if market.bucket_type == "below" and market.bucket_upper is not None:
+            calibrated_prob = len([m for m in members if m <= market.bucket_upper]) / len(members)
+        elif market.bucket_type == "above" and market.bucket_lower is not None:
+            calibrated_prob = len([m for m in members if m >= market.bucket_lower]) / len(members)
+        elif market.bucket_type == "range" and market.bucket_lower is not None and market.bucket_upper is not None:
+            calibrated_prob = len([m for m in members if market.bucket_lower <= m <= market.bucket_upper]) / len(members)
+        else:
+            return None
+
+        calibrated_prob = max(0.01, min(0.99, calibrated_prob))
+        raw_edge = calibrated_prob - entry_price
+        if raw_edge <= 0:
+            return None
 
         # Use calibrated sigma when available, fallback to live ensemble_std
         effective_std = calibrated_sigma if calibrated_sigma is not None else ensemble_std
@@ -1096,13 +1101,12 @@ class WeatherStrategy(BaseStrategy):
             # Inverse distance weighting
             weight = 1.0 / (1.0 + dist)
             
-            # Sesgo probabilístico
-            raw_bias = float(entry.get("bias", 0.0))
-            count = int(entry.get("count", 0))
-            if count > 0:
-                similar_bias.append((weight, count, raw_bias))
-                
             # Error de temperatura
+            errors = entry.get("forecast_errors", [])
+            if errors:
+                avg_err = sum(errors) / len(errors)
+                similar_bias.append((weight, count, avg_err))
+                
             sigma = entry.get("sigma")
             if sigma is not None:
                 similar_errors.append((weight, count, float(sigma)))
