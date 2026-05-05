@@ -372,22 +372,21 @@ class WeatherStrategy(BaseStrategy):
                     region = r
                     break
             
-            region_exposure = 0.0
-            for pt in self._pending_trades.values():
-                if pt.get("target_date")[:10] == tgt[:10] and pt.get("metric") == met:
-                    pt_city = pt.get("city_name", "")
-                    if pt_city in CITY_REGIONS.get(region, []):
-                        region_exposure += float(pt.get("size", 0))
-            
-            max_region_exposure = balance * 0.25
-            if region_exposure >= max_region_exposure:
-                self._logger.info("Weather Correlated Kelly: Max exposure reached for %s on %s", region, tgt)
-                continue
-                
-            if region_exposure > 0:
-                discount = 1.0 - (region_exposure / max_region_exposure)
-                sig.size *= discount
-                if sig.size < 5.0:  # Min trade size after discount
+            # --- Correlated Kelly: dividir por N posiciones en misma región/fecha ---
+            # En lugar de un cap plano, el sizing cae naturalmente con cada ciudad correlacionada.
+            n_region_same_date = sum(
+                1 for pt in self._pending_trades.values()
+                if pt.get("target_date", "")[:10] == tgt[:10]
+                and pt.get("metric") == met
+                and pt.get("city_name", "") in CITY_REGIONS.get(region, [])
+            )
+            if n_region_same_date > 0:
+                sig.size /= (1 + n_region_same_date)
+                if sig.size < 3.0:
+                    self._logger.info(
+                        "Weather Correlated Kelly: size < $3 after /%d divisor for %s in %s",
+                        n_region_same_date + 1, city, region,
+                    )
                     continue
 
             if running >= 10:
@@ -643,9 +642,19 @@ class WeatherStrategy(BaseStrategy):
         if market.yes_price > 0 and market.no_price > 0:
             if abs(market.yes_price - (1.0 - market.no_price)) > 0.15:
                 return None
-        entry_price = market.yes_price
+        # --- Mid-Price: evaluar edge contra el mid-market, no el Ask ---
+        # Esto evita pagar el spread completo como Taker en cada entrada.
+        # bid = 1 - no_price (precio de compra implícito del YES)
+        ask_price = market.yes_price
+        bid_price = 1.0 - market.no_price
+        mid_price = (ask_price + bid_price) / 2.0
+        mid_price = max(0.01, min(0.99, mid_price))
+        # Usar mid para evaluar el edge; si lo hay, entrar como Maker al mid
+        entry_price = mid_price
         if entry_price > self._max_entry_price:
             return None
+        # Spread actual (indicador de liquidez)
+        spread = ask_price - bid_price
 
         # --- Calibration: bias + sigma + quality from historical errors ---
         lead_days = (market.target_date - date.today()).days
@@ -672,7 +681,7 @@ class WeatherStrategy(BaseStrategy):
             return None
 
         calibrated_prob = max(0.01, min(0.99, calibrated_prob))
-        raw_edge = calibrated_prob - entry_price
+        raw_edge = calibrated_prob - mid_price
         if raw_edge <= 0:
             return None
 
@@ -760,17 +769,18 @@ class WeatherStrategy(BaseStrategy):
                     confidence *= 0.8
 
         uncertainty_penalty = min(1.0, dt["uncertainty_penalty_num"] / (effective_std + dt["uncertainty_penalty_off"]))
-        effective_edge = (calibrated_prob - entry_price) * confidence * uncertainty_penalty
+        effective_edge = (calibrated_prob - mid_price) * confidence * uncertainty_penalty
         if effective_edge < min_edge:
             return None
 
-        # --- Kelly sizing ---
+        # --- Kelly sizing: escalado por convicción ---
+        # Kelly × conviction evita apostar igual con 90% agreement que con 55%.
         if entry_price <= 0 or entry_price >= 1:
             return None
         odds = (1.0 - entry_price) / entry_price
         lose_prob = 1.0 - calibrated_prob
         kelly = (calibrated_prob * odds - lose_prob) / odds if odds > 0 else 0.0
-        kelly *= self._kelly_fraction
+        kelly *= self._kelly_fraction * confidence * uncertainty_penalty
         kelly = min(kelly, dt["kelly_cap"])
         kelly = max(kelly, dt["kelly_floor"])
 
@@ -789,7 +799,7 @@ class WeatherStrategy(BaseStrategy):
             f"{market.threshold:.0f}F on {market.target_date} | "
             f"Ensemble: {mean_val:.1f}F +/- {ensemble_std:.1f}F ({len(members)}m) | "
             f"CalProb: {calibrated_prob:.0%} (bias={bias:+.1f}F {sigma_label} Q={quality:.0%}) | "
-            f"vs Mkt: {entry_price:.0%} | EffEdge: {effective_edge:+.1%} (min={min_edge:.1%}) -> BUY @ {entry_price:.3f}"
+            f"Mid: {mid_price:.0%} Spread: {spread:.2f} | EffEdge: {effective_edge:+.1%} (min={min_edge:.1%}) -> Maker @ {entry_price:.3f}"
         )
 
         return self._make_signal(
@@ -857,7 +867,14 @@ class WeatherStrategy(BaseStrategy):
                 forecast_mean = float(pt.get("forecast_mean", 0))
                 try:
                     target_date = date.fromisoformat(target_date_str)
-                    lead_days = max(0, (target_date - date.today()).days)
+                    # Usar la fecha de ejecución original para calcular lead_days correcto,
+                    # ya que al resolver el target_date ya está en el pasado (lead=0 siempre).
+                    executed_at_str = pt.get("executed_at", "")
+                    if executed_at_str:
+                        entry_date = date.fromisoformat(executed_at_str[:10])
+                        lead_days = max(0, (target_date - entry_date).days)
+                    else:
+                        lead_days = max(0, (target_date - date.today()).days)
                 except (ValueError, TypeError):
                     lead_days = 0
 

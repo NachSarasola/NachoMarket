@@ -794,7 +794,7 @@ class EnsembleForecast:
 # ---------------------------------------------------------------------------
 
 _forecast_cache: Dict[str, tuple[float, "EnsembleForecast"]] = {}
-_CACHE_TTL = 900  # 15 minutos
+_CACHE_TTL = 300  # 5 minutos — alineado con scan_interval_minutes
 
 _geo_cache: Dict[str, dict] = {}
 
