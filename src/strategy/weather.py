@@ -788,7 +788,7 @@ class WeatherStrategy(BaseStrategy):
             f"{market.city_name} {market.metric} {market.bucket_type} "
             f"{market.threshold:.0f}F on {market.target_date} | "
             f"Ensemble: {mean_val:.1f}F +/- {ensemble_std:.1f}F ({len(members)}m) | "
-            f"CalProb: {calibrated_prob:.0%} (raw={model_prob:.0%} bias={bias:+.0%} {sigma_label} Q={quality:.0%}) | "
+            f"CalProb: {calibrated_prob:.0%} (bias={bias:+.1f}F {sigma_label} Q={quality:.0%}) | "
             f"vs Mkt: {entry_price:.0%} | EffEdge: {effective_edge:+.1%} (min={min_edge:.1%}) -> BUY @ {entry_price:.3f}"
         )
 
@@ -800,7 +800,7 @@ class WeatherStrategy(BaseStrategy):
             size=size,
             confidence=confidence,
             metadata={
-                "model_prob": calibrated_prob, "raw_prob": model_prob,
+                "model_prob": calibrated_prob,
                 "market_prob": entry_price, "effective_edge": effective_edge,
                 "entry_price": entry_price, "agreement": confidence,
                 "city_name": market.city_name, "threshold": market.threshold,
