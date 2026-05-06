@@ -1336,8 +1336,8 @@ class NachoMarketBot:
         schedule.every(interval).minutes.do(self._weather_trading_cycle)
         self._logger.info("Weather trading schedule: cada %d min", interval)
         # Primer scan inmediato al arrancar
-        self._logger.info("Weather: ejecutando primer scan...")
-        self._weather_trading_cycle()
+        self._logger.info("Weather: lanzando primer scan en segundo plano...")
+        threading.Thread(target=self._weather_trading_cycle, daemon=True).start()
 
     def _setup_safe_compounder_schedule(self) -> None:
         """Configura schedule job para safe_compounder market scan."""
@@ -1347,8 +1347,9 @@ class NachoMarketBot:
         schedule.every(5).minutes.do(self._sc_trading_cycle)
         self._logger.info("SafeCompounder trading schedule: cada 5 min")
         # Primer scan inmediato al arrancar
-        self._logger.info("SafeCompounder: ejecutando primer scan...")
-        self._sc_trading_cycle()
+        self._logger.info("SafeCompounder: lanzando primer scan en segundo plano...")
+        threading.Thread(target=self._sc_trading_cycle, daemon=True).start()
+
 
     def _weather_trading_cycle(self) -> None:
         """Ciclo de weather trading: descubrir mercados, senales, ejecutar."""
