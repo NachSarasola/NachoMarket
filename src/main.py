@@ -476,6 +476,11 @@ class NachoMarketBot:
             for strategy in self._strategies:
                 if not strategy.is_active:
                     continue
+                # RF: solo operar en mercados con asignación de capital explícita.
+                # Sin este gate, RF evalúa TODOS los mercados del pool (46+) y
+                # acumula zero-signal streaks en mercados que no deberían explorarse.
+                if strategy.name == "rewards_farmer" and capital_alloc and cid_key not in capital_alloc:
+                    continue
                 # Capital allocation enforcement
                 if self._capital_alloc and strategy.name in ("weather", "safe_compounder"):
                     alloc_key = f"{strategy.name}_max_pct"

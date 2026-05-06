@@ -241,8 +241,9 @@ class RewardsFarmerStrategy(BaseStrategy):
         self._rejection_backoff = 3600.0  # 1 hora de blacklist
 
         # Blacklist por 0 señales consecutivas (imbalance, capital insuficiente, etc.)
+        # Solo cuenta ciclos donde el mercado está en el alloc activo (gateado por main.py).
         self._zero_signal_streak: dict[str, int] = {}   # condition_id → consecutive zero-signal cycles
-        self._zero_signal_limit = 4    # ciclos sin señales antes de blacklistear
+        self._zero_signal_limit = 10   # ~2.5 min (10 × 15s) — da tiempo al WS conectarse
         self._zero_signal_backoff = 1800.0  # 30 min de blacklist
 
         self._reconcile_open_orders()
@@ -410,6 +411,19 @@ class RewardsFarmerStrategy(BaseStrategy):
             self._exploration_results[cid] = max(prev, cpm)
 
         best_cpm = max(self._exploration_results.values()) if self._exploration_results else 0
+
+        # Evict markets stuck in _market_entry_ts sin ordenes reales tras 5 min.
+        # Pasa cuando el mercado se eligió pero should_act() siempre lo descarta
+        # (ej: mid movió fuera de rango después del scoring). Libera el slot.
+        _EVICT_TIMEOUT = 300.0  # 5 minutos sin establecerse
+        for cid in list(self._market_entry_ts.keys()):
+            age = now - self._market_entry_ts[cid]
+            if age > _EVICT_TIMEOUT and cid not in self._active_farms:
+                self._market_entry_ts.pop(cid, None)
+                self._logger.info(
+                    "RF evict %s: %.0fm en exploración sin establecerse → slot liberado",
+                    cid[:8], age / 60,
+                )
 
         # Get currently active markets
         current = [c for c in active_cids if c in self._market_entry_ts]
@@ -742,17 +756,23 @@ class RewardsFarmerStrategy(BaseStrategy):
             condition_id[:12], len(signals), len(tokens),
         )
 
-        # Trackear rachas de 0 señales para blacklistear mercados inoperables
+        # Trackear rachas de 0 señales para blacklistear mercados inoperables.
+        # Solo llega aquí si should_act() pasó y el mercado está en capital_alloc
+        # (gateado por main.py). El streak representa ciclos reales de inactividad.
         if not signals:
             streak = self._zero_signal_streak.get(condition_id, 0) + 1
             self._zero_signal_streak[condition_id] = streak
+            self._logger.info(
+                "RF eval %s...: 0 señales (streak=%d/%d)",
+                condition_id[:12], streak, self._zero_signal_limit,
+            )
             if streak >= self._zero_signal_limit:
                 self._rejection_blacklist[condition_id] = time.time() + self._zero_signal_backoff
                 self._zero_signal_streak.pop(condition_id, None)
                 self._market_entry_ts.pop(condition_id, None)  # liberar slot para rotación
                 self._logger.warning(
-                    "RF blacklist %s...: %d ciclos sin señales → suspendido 30min",
-                    condition_id[:12], streak,
+                    "RF blacklist %s...: %d ciclos sin señales → suspendido %.0fmin",
+                    condition_id[:12], streak, self._zero_signal_backoff / 60,
                 )
         else:
             self._zero_signal_streak.pop(condition_id, None)
