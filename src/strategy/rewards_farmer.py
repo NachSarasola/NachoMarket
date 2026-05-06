@@ -347,8 +347,16 @@ class RewardsFarmerStrategy(BaseStrategy):
         per_market_cap = available_cash * 0.95
         alloc: dict[str, float] = {}
 
-        # Mapeo de metadata para candidatos
-        mkt_map = {m.get("condition_id", ""): m for m in candidate_markets if m.get("condition_id")}
+        # Mapeo de metadata para candidatos y filtro de rango de precios (0.05 - 0.95)
+        mkt_map = {}
+        for m in candidate_markets:
+            cid = m.get("condition_id", "")
+            if not cid: continue
+            mid = float(m.get("mid_price", 0.5))
+            # Polymarket no paga rewards fuera de [0.05, 0.95]
+            if mid > 0.95 or mid < 0.05:
+                continue
+            mkt_map[cid] = m
 
         active_cids = [
             cid for cid in mkt_map.keys()

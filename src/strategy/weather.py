@@ -324,7 +324,7 @@ class WeatherStrategy(BaseStrategy):
         # 3. Generate signals
         signals: list[tuple[Signal, float]] = []
         for mkt in markets:
-            time.sleep(0.3)  # Evitar 429 de Open-Meteo
+            time.sleep(0.5)  # Evitar 429 de Open-Meteo
             sig = self._generate_signal(mkt, balance)
             if sig is not None:
                 edge = float(sig.metadata.get("effective_edge", 0.0))
