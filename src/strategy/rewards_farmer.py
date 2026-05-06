@@ -362,18 +362,28 @@ class RewardsFarmerStrategy(BaseStrategy):
         # Mapeo de metadata para candidatos y filtro de rango de precios (0.05 - 0.95)
         mkt_map = {}
         out_of_range = 0
+        unaffordable = 0
         for m in candidate_markets:
             cid = m.get("condition_id", "")
             if not cid: continue
             mid = float(m.get("mid_price", 0.5))
-            # Polymarket no paga rewards fuera de [0.05, 0.95]
-            if mid > 0.95 or mid < 0.05:
+            if mid > 0.96 or mid < 0.04:
                 out_of_range += 1
+                continue
+            # Filtro de affordability: descartar mercados donde min_size × precio_caro > capital.
+            # Compramos el lado de mayor probabilidad (más caro = max(mid, 1-mid)).
+            # Si no podemos costear min_size shares de ese lado, nunca habrá señal → slot bloqueado.
+            min_size = float(m.get("rewards_min_size", 0.0)) or MIN_SHARES_FALLBACK
+            expensive_side = max(mid, 1.0 - mid)
+            if min_size * expensive_side > per_market_cap:
+                unaffordable += 1
                 continue
             mkt_map[cid] = m
 
-        if out_of_range > 0:
-            self._logger.info("RF allocate: %d/%d mercados candidatos en rango 0.05-0.95", len(mkt_map), len(candidate_markets))
+        self._logger.info(
+            "RF allocate: %d/%d mercados candidatos en rango 0.04-0.96 (%d fuera rango, %d incosteables)",
+            len(mkt_map), len(candidate_markets), out_of_range, unaffordable,
+        )
 
         now_ts = time.time()
         active_cids = [
@@ -522,6 +532,7 @@ class RewardsFarmerStrategy(BaseStrategy):
         else:
             max_total_usd = min(self._max_capital_per_market, available_cash * 0.98)
 
+
         now_utc = datetime.now(timezone.utc).hour
         size_boost = 1.0
         if now_utc in self._prime_hours:
@@ -563,25 +574,16 @@ class RewardsFarmerStrategy(BaseStrategy):
         signals: list[Signal] = []
         token_signal_counts: dict[str, int] = {}  # cuantas senales tiene cada token
 
-        # BUY only: priorizar el token más caro que PODAMOS AFRONTAR.
-        # Fallback al más barato si el caro no genera target_shares >= min_shares.
+        # BUY only: siempre el token MÁS CARO (mayor probabilidad de resolución correcta).
+        # Si no se puede costear min_shares, _calc_shares lo detecta y no emite señal.
+        # NO hay fallback al lado barato: comprar el lado poco probable es peor en caso de fill.
         if not self._two_sided:
             sorted_tokens = sorted(
                 [t for t in tokens if t.get("token_id", "") in viable_token_ids],
                 key=lambda t: float(token_data.get(t.get("token_id", ""), {}).get("mid_price", 0.5)),
                 reverse=True,
             )
-            # Elegir el primer token donde max_total_usd / price >= min_shares
-            tokens_to_eval = sorted_tokens[:1]  # default: más caro
-            for candidate in sorted_tokens:
-                tid_c = candidate.get("token_id", "")
-                t_mid_c = float(token_data.get(tid_c, {}).get("mid_price", 0.0))
-                if t_mid_c > 0 and max_total_usd / t_mid_c >= min_shares:
-                    tokens_to_eval = [candidate]
-                    break
-            else:
-                # Ningún token alcanza min_shares — usar el más barato como último recurso
-                tokens_to_eval = sorted_tokens[-1:] if sorted_tokens else []
+            tokens_to_eval = sorted_tokens[:1]  # siempre el más caro
         else:
             tokens_to_eval = [t for t in tokens if t.get("token_id", "") in viable_token_ids]
 
@@ -624,7 +626,7 @@ class RewardsFarmerStrategy(BaseStrategy):
 
             # Capital por lado: two_sided=false -> todo al token mas barato
             if not self._two_sided:
-                side_capital = max_total_usd  # $80 completo al YES
+                side_capital = max_total_usd
             else:
                 side_capital = max_total_usd / (n_viable * n_order_slots)
 
@@ -756,24 +758,16 @@ class RewardsFarmerStrategy(BaseStrategy):
             condition_id[:12], len(signals), len(tokens),
         )
 
-        # Trackear rachas de 0 señales para blacklistear mercados inoperables.
-        # Solo llega aquí si should_act() pasó y el mercado está en capital_alloc
-        # (gateado por main.py). El streak representa ciclos reales de inactividad.
+        # Log informativo de rachas sin señales, sin blacklistear.
+        # Los mercados genuinamente inactivos son eviccionados por el timer de 5min
+        # (_EVICT_TIMEOUT en allocate_capital). Solo blacklisteamos rechazos reales del CLOB.
         if not signals:
             streak = self._zero_signal_streak.get(condition_id, 0) + 1
             self._zero_signal_streak[condition_id] = streak
             self._logger.info(
-                "RF eval %s...: 0 señales (streak=%d/%d)",
-                condition_id[:12], streak, self._zero_signal_limit,
+                "RF eval %s...: 0 señales (streak=%d)",
+                condition_id[:12], streak,
             )
-            if streak >= self._zero_signal_limit:
-                self._rejection_blacklist[condition_id] = time.time() + self._zero_signal_backoff
-                self._zero_signal_streak.pop(condition_id, None)
-                self._market_entry_ts.pop(condition_id, None)  # liberar slot para rotación
-                self._logger.warning(
-                    "RF blacklist %s...: %d ciclos sin señales → suspendido %.0fmin",
-                    condition_id[:12], streak, self._zero_signal_backoff / 60,
-                )
         else:
             self._zero_signal_streak.pop(condition_id, None)
 
@@ -906,7 +900,9 @@ class RewardsFarmerStrategy(BaseStrategy):
 
             oo = existing[0]
             oo_price = float(oo.get("price", 0.0))
-            oo_size = float(oo.get("original_size", oo.get("size", 0.0)))
+            oo_original_size = float(oo.get("original_size", oo.get("size", 0.0)))
+            oo_size_matched = float(oo.get("size_matched", 0.0))
+            oo_size = oo_original_size - oo_size_matched  # Tamaño restante (aún no filleado)
             oid = str(oo.get("id", oo.get("order_id", "")))
 
             max_spread_usd = float(sig.metadata.get("max_spread_usd", 0.04))
@@ -968,7 +964,9 @@ class RewardsFarmerStrategy(BaseStrategy):
             
             # Criterio 7: partial_fill — cualquier fill detectado (reposition immediately)
             # Usamos un pequeño buffer para evitar ruido de redondeo
-            partial_fill = oo_size < (sig.size - 1.0)
+            # Si oo_size <= 0, la orden ya fue fully matched; no marcar como partial_fill
+            # (main.py debería haberla removido, pero si por algún motivo sigue, no cancelar 2x)
+            partial_fill = oo_size > 0 and oo_size < (sig.size - 1.0)
 
             should_reprice = out_of_window or danger or non_earning or not_scoring or repriced or size_drift or partial_fill
 
@@ -1016,7 +1014,34 @@ class RewardsFarmerStrategy(BaseStrategy):
                         NON_EARNING_BLOCK_HOURS * 60,
                     )
                 else:
-                    to_place.append(sig)
+                    # Si hubo partial fill, recolocar solo lo que resta (cualquiera sea el trigger)
+                    sig_to_place = sig
+                    if oo_size_matched > 0:
+                        remaining_size = max(0.0, sig.size - oo_size_matched)
+                        if remaining_size > 0:
+                            # Crear copia de sig con tamaño ajustado
+                            sig_to_place = Signal(
+                                market_id=sig.market_id,
+                                token_id=sig.token_id,
+                                side=sig.side,
+                                price=sig.price,
+                                size=remaining_size,
+                                confidence=sig.confidence,
+                                strategy_name=sig.strategy_name,
+                                metadata=sig.metadata,
+                            )
+                            self._logger.debug(
+                                "RF: recolocando parcial (trigger=%s): %s -> %.0f sh (fue %.0f filleado de %.0f)",
+                                reason, sig.token_id[:8], remaining_size, oo_size_matched, sig.size,
+                            )
+                        else:
+                            # Full matched, no re-colocar
+                            self._logger.info(
+                                "RF: skip recolocar %s (100%% filleada, fill_inv=%s)",
+                                sig.token_id[:8], oo_size_matched,
+                            )
+                            continue
+                    to_place.append(sig_to_place)
             else:
                 self._logger.debug(
                     "RF: manteniendo %s %s tid=%s... @ %.4f",
