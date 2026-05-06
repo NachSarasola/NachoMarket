@@ -365,6 +365,10 @@ class RewardsFarmerStrategy(BaseStrategy):
             rate = all_rate.get(cid, 0)
             if share and rate:
                 estimated[cid] = share * rate / 1440 * 100  # cents/min estimado
+            elif rate > 0:
+                # Proxy: assume we can capture a small percentage of the pool initially
+                # to allow high-reward markets to out-compete low-reward ones during exploration
+                estimated[cid] = (0.02 * rate / 1440 * 100) # 2% share proxy
             else:
                 estimated[cid] = 0.0
 
@@ -888,10 +892,14 @@ class RewardsFarmerStrategy(BaseStrategy):
             # Criterio 5: mid se movio >= max_spread / 2
             repriced = abs(sig.price - oo_price) >= max_spread_usd * REPRICE_THRESHOLD_RATIO
 
-            # Criterio 6: size difiere > 30%
+            # Criterio 6: size difiere > 30% (drift significativo)
             size_drift = abs(sig.size - oo_size) / max(oo_size, 1e-9) > SIZE_DRIFT_THRESHOLD
+            
+            # Criterio 7: partial_fill — cualquier fill detectado (reposition immediately)
+            # Usamos un pequeño buffer para evitar ruido de redondeo
+            partial_fill = oo_size < (sig.size - 1.0)
 
-            should_reprice = out_of_window or danger or non_earning or not_scoring or repriced or size_drift
+            should_reprice = out_of_window or danger or non_earning or not_scoring or repriced or size_drift or partial_fill
 
             if should_reprice:
                 # Evitar churn: si el nuevo precio es igual al existente, no cancelar
@@ -909,6 +917,7 @@ class RewardsFarmerStrategy(BaseStrategy):
                     else "non_earning" if non_earning
                     else "not_scoring" if not_scoring
                     else "mid_drift" if repriced
+                    else "partial_fill" if partial_fill
                     else "size_drift"
                 )
                 self._logger.info(
