@@ -80,7 +80,7 @@ weather:
 rewards_farmer:
   max_capital_per_market: 999.0     # Sin cap real: shadow orders nunca se llenan
   min_rewards_pool_usd: 10.0
-  max_markets_simultaneous: 3       # 3 mercados en paralelo para testear mas rapido
+  max_markets_simultaneous: 4
   two_sided: false
   spread_pct_of_max: 0.80
   inventory_merge_threshold: 5
