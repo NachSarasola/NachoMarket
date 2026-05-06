@@ -365,16 +365,14 @@ class MarketAnalyzer:
                 skipped_pool += 1
                 continue
 
-            # Viability check: podemos cubrir el min_size con nuestro capital?
-            # Usar mid_price de Gamma (bestBid/bestAsk) como fuente primaria.
-            # _get_representative_price() devuelve 0 cuando Gamma no incluye
-            # precios por token en el list endpoint, forzando fallback a 0.5 y
-            # rechazando mercados low-mid que son perfectamente viables.
+            # Viability check: podemos cubrir el min_size en AL MENOS UN lado del binario?
+            # Usar min(mid, 1-mid) para el lado mas barato — evaluate() elige el token
+            # optimo internamente. Solo excluir si NINGUN lado es asequible.
             mid = market.get("mid_price") or self._get_representative_price(market)
             if mid <= 0:
                 mid = 0.5
-            # Shadow orders: viabilidad contra tope nocional, no contra capital del bot
-            required_usd = min_size * mid
+            cheapest_side = min(mid, 1.0 - mid)
+            required_usd = min_size * cheapest_side
             if required_usd > _SHADOW_MAX_NOTIONAL:
                 skipped_viability += 1
                 continue
@@ -607,18 +605,20 @@ class MarketAnalyzer:
         if not markets:
             logger.warning("select_top_markets: no se encontraron mercados")
             return []
-        logger.debug("select_top_markets: post-discover=%d", len(markets))
+        logger.info("select_top_markets: post-discover=%d", len(markets))
 
         markets = self._filter.apply_all(markets)
-        logger.debug("select_top_markets: post-filter=%d", len(markets))
+        logger.info("select_top_markets: post-filter=%d", len(markets))
 
         markets = self.enrich_with_rewards(markets)
-        logger.debug("select_top_markets: post-rewards=%d", len(markets))
+        rewards_count = sum(1 for m in markets if m.get("rewards_active"))
+        logger.info("select_top_markets: post-rewards=%d (activos=%d)", len(markets), rewards_count)
 
         self._prefetch_orderbooks(markets)
 
         markets = self.enrich_density(markets)
-        logger.debug("select_top_markets: post-density=%d", len(markets))
+        density_count = sum(1 for m in markets if m.get("rewards_active"))
+        logger.info("select_top_markets: post-density=%d (activos=%d)", len(markets), density_count)
 
         # Solo scorear mercados con rewards activos
         markets = [m for m in markets if m.get("rewards_active") and m.get("rewards_rate", 0) > 0]

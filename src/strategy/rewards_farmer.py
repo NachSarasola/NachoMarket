@@ -544,15 +544,25 @@ class RewardsFarmerStrategy(BaseStrategy):
         signals: list[Signal] = []
         token_signal_counts: dict[str, int] = {}  # cuantas senales tiene cada token
 
-        # BUY only: priorizar el token más caro (ganador). Todo el capital a un solo lado.
+        # BUY only: priorizar el token más caro que PODAMOS AFRONTAR.
+        # Fallback al más barato si el caro no genera target_shares >= min_shares.
         if not self._two_sided:
-            # Ordenar tokens por precio descendente (el que tiene más probabilidad de ganar)
             sorted_tokens = sorted(
                 [t for t in tokens if t.get("token_id", "") in viable_token_ids],
                 key=lambda t: float(token_data.get(t.get("token_id", ""), {}).get("mid_price", 0.5)),
                 reverse=True,
             )
-            tokens_to_eval = sorted_tokens[:1]  # solo el "ganador"
+            # Elegir el primer token donde max_total_usd / price >= min_shares
+            tokens_to_eval = sorted_tokens[:1]  # default: más caro
+            for candidate in sorted_tokens:
+                tid_c = candidate.get("token_id", "")
+                t_mid_c = float(token_data.get(tid_c, {}).get("mid_price", 0.0))
+                if t_mid_c > 0 and max_total_usd / t_mid_c >= min_shares:
+                    tokens_to_eval = [candidate]
+                    break
+            else:
+                # Ningún token alcanza min_shares — usar el más barato como último recurso
+                tokens_to_eval = sorted_tokens[-1:] if sorted_tokens else []
         else:
             tokens_to_eval = [t for t in tokens if t.get("token_id", "") in viable_token_ids]
 
