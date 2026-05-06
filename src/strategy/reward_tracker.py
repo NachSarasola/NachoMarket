@@ -143,6 +143,18 @@ class RewardTracker:
                 self._daily_rates[cid] = daily_rate
                 tracked += 1
 
+        # f2. Complementar con datos globales de rewards para mercados no activos aun
+        # Esto permite que la estrategia RF vea el 'rate' de mercados nuevos para rotar
+        try:
+            global_rewards = self._client.get_rewards()
+            if global_rewards:
+                with self._lock:
+                    for cid, rinfo in global_rewards.items():
+                        if cid not in self._daily_rates or self._daily_rates[cid] <= 0:
+                            self._daily_rates[cid] = float(rinfo.get("rewards_daily_rate", 0))
+        except Exception as e:
+            logger.debug("RT global rewards fetch error: %s", e)
+
         if tracked:
             with self._lock:
                 top = self.best_cents_per_min()
