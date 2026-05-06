@@ -337,17 +337,21 @@ class RewardsFarmerStrategy(BaseStrategy):
 
         return True
 
-    def allocate_capital(self, candidate_cids: list[str], available_cash: float) -> dict[str, float]:
+    def allocate_capital(self, candidate_markets: list[dict[str, Any]], available_cash: float) -> dict[str, float]:
         """Asigna capital a los mejores mercados usando earnings reales de la API.
 
         Usa share_pct * daily_rate como proxy de c/min (tiempo real, sin lag).
-        Solo rota un mercado si el actual rinde < 50% del mejor observado.
-        Exploration perpetua: cada 2h re-evalua todos los candidatos.
+        Si no hay datos de share reales (RT vacio), usa el proxy de participacion
+        basado en la densidad del libro (order_size / total_depth).
         """
         per_market_cap = available_cash * 0.95
         alloc: dict[str, float] = {}
+
+        # Mapeo de metadata para candidatos
+        mkt_map = {m.get("condition_id", ""): m for m in candidate_markets if m.get("condition_id")}
+
         active_cids = [
-            cid for cid in candidate_cids
+            cid for cid in mkt_map.keys()
             if not self._market_filter or not self._market_filter.is_banned({"condition_id": cid})
         ]
         if not active_cids:
@@ -356,7 +360,7 @@ class RewardsFarmerStrategy(BaseStrategy):
         now = time.time()
         rt = self._reward_tracker
 
-        # Compute estimated cpm for each candidate using RewardTracker data
+        # Compute estimated cpm for each candidate using RewardTracker data or Density Proxy
         estimated: dict[str, float] = {}
         all_share = rt.get_share_pct_map() if rt else {}
         all_rate = rt.get_daily_rate_map() if rt else {}
@@ -364,11 +368,13 @@ class RewardsFarmerStrategy(BaseStrategy):
             share = all_share.get(cid, 0)
             rate = all_rate.get(cid, 0)
             if share and rate:
-                estimated[cid] = share * rate / 1440 * 100  # cents/min estimado
+                estimated[cid] = share * rate / 1440 * 100  # cents/min estimado REAL
             elif rate > 0:
-                # Proxy: assume we can capture a small percentage of the pool initially
-                # to allow high-reward markets to out-compete low-reward ones during exploration
-                estimated[cid] = (0.02 * rate / 1440 * 100) # 2% share proxy
+                # Proxy basado en participacion estimada del MarketAnalyzer
+                # (order_size / (depth + order_size))
+                m_data = mkt_map.get(cid, {})
+                share_proxy = float(m_data.get("_share_estimate", 0.02))
+                estimated[cid] = (share_proxy * rate / 1440 * 100)
             else:
                 estimated[cid] = 0.0
 

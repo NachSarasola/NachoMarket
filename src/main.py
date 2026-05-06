@@ -435,9 +435,8 @@ class NachoMarketBot:
         )
         capital_alloc: dict[str, float] = {}
         if rf_strategy is not None and hasattr(rf_strategy, "allocate_capital"):
-            candidate_cids = [m.get("condition_id", "") for m in markets if m.get("condition_id")]
             try:
-                capital_alloc = rf_strategy.allocate_capital(candidate_cids, self._cached_balance)
+                capital_alloc = rf_strategy.allocate_capital(markets, self._cached_balance)
             except Exception as e:
                 self._logger.warning("RF allocate_capital error: %s", e)
             if capital_alloc:
