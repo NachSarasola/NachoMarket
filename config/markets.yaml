@@ -39,8 +39,9 @@ competition:
   min_participation_share: 0.005     # 0.5% — alineado con settings.yaml
 
 # Diversificacion por tematica
+# RF optimiza yield, no diversidad: desactivar cap por categoria
 diversification:
-  max_per_category: 3
+  max_per_category: 0
 
 # Preferencias de mercado
 preferred_categories:

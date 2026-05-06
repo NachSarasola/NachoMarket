@@ -86,15 +86,6 @@ rewards_farmer:
   competition_share_min: 0.02
   max_mid_deviation: 0.45
 
-# Filtros del pipeline de selección de mercados
-filters:
-  min_reward_density: 0.001         # Bajado de 0.005: rate/depth >= 0.001 (antes filtraba mercados con buena liquidez)
-  min_time_to_resolution_hours: 168 # 7 dias minimo (default)
-
-# Diversificacion: sin cap por categoria (RF solo optimiza yield)
-diversification:
-  max_per_category: 0               # 0 = desactivado; sin RF no tiene sentido limitar por categoria
-
 # Safe Compounder — apuesta matematica al NO sin IA
 safe_compounder:
   min_yes_price: 0.01
