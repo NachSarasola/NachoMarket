@@ -240,6 +240,11 @@ class RewardsFarmerStrategy(BaseStrategy):
         self._rejection_limit = 3   # rechazos seguidos antes de blacklistear
         self._rejection_backoff = 3600.0  # 1 hora de blacklist
 
+        # Blacklist por 0 señales consecutivas (imbalance, capital insuficiente, etc.)
+        self._zero_signal_streak: dict[str, int] = {}   # condition_id → consecutive zero-signal cycles
+        self._zero_signal_limit = 4    # ciclos sin señales antes de blacklistear
+        self._zero_signal_backoff = 1800.0  # 30 min de blacklist
+
         self._reconcile_open_orders()
 
         self._logger.info(
@@ -364,9 +369,11 @@ class RewardsFarmerStrategy(BaseStrategy):
                 continue
             mkt_map[cid] = m
 
+        now_ts = time.time()
         active_cids = [
             cid for cid in mkt_map.keys()
-            if not self._market_filter or not self._market_filter.is_banned({"condition_id": cid})
+            if (not self._market_filter or not self._market_filter.is_banned({"condition_id": cid}))
+            and now_ts >= self._rejection_blacklist.get(cid, 0.0)
         ]
         if not active_cids:
             return alloc
@@ -407,31 +414,14 @@ class RewardsFarmerStrategy(BaseStrategy):
         if len(current) < self._max_markets:
             candidates = [c for c in active_cids if c not in self._market_entry_ts]
             candidates.sort(key=lambda c: estimated.get(c, 0), reverse=True)
+            self._logger.info(
+                "RF slots: %d/%d activos | %d candidatos disponibles | active_cids=%d mkt_map=%d",
+                len(current), self._max_markets, len(candidates), len(active_cids), len(mkt_map),
+            )
             for c in candidates[:self._max_markets - len(current)]:
                 self._market_entry_ts[c] = now
                 current.append(c)
                 self._logger.info("RF explore: +%s (est=%.1f¢/m)", c[:8], estimated.get(c, 0))
-
-        # Rotate underperforming markets that had enough time
-        for cid in list(current):
-            entry = self._market_entry_ts.get(cid, now)
-            if (now - entry) < min_explore:
-                continue  # still warming up
-
-            est = estimated.get(cid, 0)
-            if best_cpm > 0.001 and est < best_cpm * 0.5:
-                replacement = next((c for c in active_cids
-                                    if c not in self._market_entry_ts
-                                    and estimated.get(c, 0) > est), None)
-                if replacement:
-                    del self._market_entry_ts[cid]
-                    self._market_entry_ts[replacement] = now
-                    current.remove(cid)
-                    current.append(replacement)
-                    self._logger.info(
-                        "RF rotate: %s=%.2f¢ -> %s=%.2f¢",
-                        cid[:8], est, replacement[:8], estimated.get(replacement, 0),
-                    )
 
         # Allocate to active markets (up to max_markets)
         # Cuando best_cpm == 0 (sin datos de earnings), usar el orden de
@@ -736,6 +726,22 @@ class RewardsFarmerStrategy(BaseStrategy):
             "RF eval %s...: %d senales (tokens=%d)",
             condition_id[:12], len(signals), len(tokens),
         )
+
+        # Trackear rachas de 0 señales para blacklistear mercados inoperables
+        if not signals:
+            streak = self._zero_signal_streak.get(condition_id, 0) + 1
+            self._zero_signal_streak[condition_id] = streak
+            if streak >= self._zero_signal_limit:
+                self._rejection_blacklist[condition_id] = time.time() + self._zero_signal_backoff
+                self._zero_signal_streak.pop(condition_id, None)
+                self._market_entry_ts.pop(condition_id, None)  # liberar slot para rotación
+                self._logger.warning(
+                    "RF blacklist %s...: %d ciclos sin señales → suspendido 30min",
+                    condition_id[:12], streak,
+                )
+        else:
+            self._zero_signal_streak.pop(condition_id, None)
+
         return signals
 
     def _cancel_market_orders(self, condition_id: str) -> int:
