@@ -49,8 +49,8 @@ logger = logging.getLogger("nachomarket.strategy.rewards_farmer")
 
 SINGLE_SIDED_DIVISOR = 3.0   # c en Q_min formula
 MIN_SHARES_FALLBACK = 20     # minimo practico si la API no reporta rewards_min_size
-SAFETY_TICKS = 2             # ticks detras del BBO para evitar fills
-DANGER_ZONE_TICKS = 1        # si estamos a ≤1 tick del BBO, huir
+SAFETY_TICKS = 3             # ticks detras del BBO para evitar fills
+DANGER_ZONE_TICKS = 2        # si estamos a ≤2 tick del BBO, huir
 REPRICE_THRESHOLD_RATIO = 0.5  # recolocar si mid se movio >= max_spread * 0.5
 SIZE_DRIFT_THRESHOLD = 0.30  # recolocar si size difiere > 30%
 MIN_MAX_SPREAD_USD = 0.001   # no operar si max_spread < 0.1¢ (captura mercados de alto pool con spread ajustado)
@@ -594,7 +594,7 @@ class RewardsFarmerStrategy(BaseStrategy):
             # Calcular safety_ticks dinámico: 1 tick si hay colchón entre nosotros y el BBO
             our_bid_2t = best_bid - SAFETY_TICKS * tick_size
             cushion_bid = _get_cushion_usd(bids_book, our_bid_2t, best_bid)
-            safety_ticks_bid = 1 if cushion_bid >= self._min_cushion_usd else SAFETY_TICKS
+            safety_ticks_bid = 2 if cushion_bid >= self._min_cushion_usd else SAFETY_TICKS
             bid_price = _qualifying_bid(t_mid, max_spread_usd, tick_size, best_bid, safety_ticks_bid) if buy_allowed else None
             if bid_price is not None:
                 target_shares = _calc_shares(min_shares, size_boost, side_capital, bid_price, cushion_bid)
@@ -634,7 +634,7 @@ class RewardsFarmerStrategy(BaseStrategy):
                 # Calcular safety_ticks dinámico: 1 tick si hay colchón entre nosotros y el BBO
                 our_ask_2t = best_ask + SAFETY_TICKS * tick_size
                 cushion_ask = _get_cushion_usd(asks_book, best_ask, our_ask_2t)
-                safety_ticks_ask = 1 if cushion_ask >= self._min_cushion_usd else SAFETY_TICKS
+                safety_ticks_ask = 2 if cushion_ask >= self._min_cushion_usd else SAFETY_TICKS
                 ask_price = _qualifying_ask(t_mid, max_spread_usd, tick_size, best_ask, safety_ticks_ask) if sell_allowed else None
                 if ask_price is not None:
                     target_shares_ask = _calc_shares(min_shares, size_boost, side_capital, ask_price, cushion_ask)
@@ -759,11 +759,11 @@ class RewardsFarmerStrategy(BaseStrategy):
             cancel = False
             if side == "BUY" and best_bid > 0:
                 cushion = _get_cushion_usd(bids, price, best_bid)
-                if cushion < self._min_cushion_usd and best_bid - price <= 0.02:
+                if cushion < self._min_cushion_usd and best_bid - price <= 0.04:
                     cancel = True
             elif side == "SELL" and best_ask > 0:
                 cushion = _get_cushion_usd(asks, best_ask, price)
-                if cushion < self._min_cushion_usd and price - best_ask <= 0.02:
+                if cushion < self._min_cushion_usd and price - best_ask <= 0.04:
                     cancel = True
                     
             if cancel:
