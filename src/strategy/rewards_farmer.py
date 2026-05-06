@@ -360,14 +360,19 @@ class RewardsFarmerStrategy(BaseStrategy):
 
         # Mapeo de metadata para candidatos y filtro de rango de precios (0.05 - 0.95)
         mkt_map = {}
+        out_of_range = 0
         for m in candidate_markets:
             cid = m.get("condition_id", "")
             if not cid: continue
             mid = float(m.get("mid_price", 0.5))
             # Polymarket no paga rewards fuera de [0.05, 0.95]
             if mid > 0.95 or mid < 0.05:
+                out_of_range += 1
                 continue
             mkt_map[cid] = m
+
+        if out_of_range > 0:
+            self._logger.info("RF allocate: %d/%d mercados candidatos en rango 0.05-0.95", len(mkt_map), len(candidate_markets))
 
         now_ts = time.time()
         active_cids = [
