@@ -1,4 +1,4 @@
-﻿"""
+"""
 Seleccion inteligente de mercados para NachoMarket.
 
 Fuentes de datos:
@@ -601,7 +601,7 @@ class MarketAnalyzer:
     # 6. Pipeline principal
     # ------------------------------------------------------------------
 
-    def select_top_markets(self, n: int = 3) -> list[dict[str, Any]]:
+    def select_top_markets(self, n: int = 10) -> list[dict[str, Any]]:
         """Retorna los N mejores mercados para RF."""
         markets = self.discover_markets()
         if not markets:
@@ -680,7 +680,7 @@ class MarketAnalyzer:
         return selected
 
     def scan_markets(self) -> list[dict[str, Any]]:
-        return self.select_top_markets(n=self._max_markets)
+        return self.select_top_markets(n=50)
 
     def _apply_category_cap(self, markets_sorted: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
         if self._max_per_category <= 0:
