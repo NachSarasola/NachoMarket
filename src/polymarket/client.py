@@ -757,11 +757,24 @@ class PolymarketClient:
 
         params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
         result = self._client.get_balance_allowance(params)
-        # Retorna {"balance": "123456789", ...} en unidades de 6 decimales (pUSD)
+        # Retorna {"balance": "...", "allowance": "..."} en unidades de 6 decimales (pUSD).
+        # El CLOB usa min(balance, allowance) para determinar cuánto puede gastar.
         raw_balance = result.get("balance", "0")
+        raw_allowance = result.get("allowance", raw_balance)
         balance = float(raw_balance) / 1_000_000
+        allowance = float(raw_allowance) / 1_000_000
+        effective = min(balance, allowance)
 
-        if balance == 0.0 and self._signature_type == 0:
+        # Si el CLOB reportó un balance real menor via error de saldo insuficiente, usarlo.
+        real_from_clob = getattr(self, "_real_balance_from_clob", None)
+        if real_from_clob is not None and real_from_clob < effective:
+            logger.info(
+                "Balance proxy: API=%.2f pero CLOB reportó %.2f → usando CLOB",
+                effective, real_from_clob,
+            )
+            effective = real_from_clob
+
+        if effective == 0.0 and self._signature_type == 0:
             logger.warning(
                 "Balance=0 con signature_type=0 (EOA mode). "
                 "Si depositaste via Polymarket.com, tu pUSD está en el PROXY address, "
@@ -769,7 +782,10 @@ class PolymarketClient:
                 "definí POLYMARKET_PROXY_ADDRESS en .env."
             )
 
-        return balance
+        if allowance < balance:
+            logger.info("Balance proxy: balance=%.2f allowance=%.2f → usando allowance", balance, allowance)
+
+        return effective
 
     @_log_api_call
     @retry_with_backoff(max_attempts=3)
@@ -990,7 +1006,27 @@ class PolymarketClient:
             if order_dicts:
                 for sig, res in zip(signals, order_dicts):
                     order_id = _extract_order_id(res) if isinstance(res, dict) else getattr(res, "orderID", "unknown")
+                    error_msg = (res.get("errorMsg") or res.get("error") or "") if isinstance(res, dict) else ""
                     status = res.get("status", "submitted") if isinstance(res, dict) else getattr(res, "status", "submitted")
+                    if order_id == "unknown" or error_msg or not status:
+                        status = "rejected"
+                        # Parsear balance real si es error de saldo insuficiente
+                        if "not enough balance" in error_msg or "balance is not enough" in error_msg:
+                            import re as _re
+                            m = _re.search(r"balance:\s*(\d+)", error_msg)
+                            if m:
+                                real_balance = int(m.group(1)) / 1_000_000
+                                self._real_balance_from_clob = real_balance
+                        logger.warning(
+                            "Orden posiblemente rechazada: %s %s @ %s | order_id=%s | error=%s",
+                            sig.side, sig.size, sig.price, order_id,
+                            error_msg[:100] if error_msg else "unknown",
+                        )
+                    else:
+                        logger.info(
+                            "Orden placed: %s %s @ %s | order_id=%s",
+                            sig.side, sig.size, sig.price, order_id,
+                        )
                     results.append({"status": status, "order_id": order_id})
                     self._log_trade({
                         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1004,10 +1040,6 @@ class PolymarketClient:
                         "status": status,
                         "order_id": order_id,
                     })
-                    logger.info(
-                        "Orden colocada: %s %s @ %s | order_id=%s",
-                        sig.side, sig.size, sig.price, order_id,
-                    )
             else:
                 logger.warning("post_orders: respuesta vacía o inesperada — %s", str(batch_result)[:500])
                 for sig in signals:

@@ -234,6 +234,12 @@ class RewardsFarmerStrategy(BaseStrategy):
         self._orders_placed_today: int = 0
         self._orders_filled_today: int = 0
 
+        # Circuit breaker: mercados con rechazos consecutivos (CLOB cierra mercado pero Gamma lag)
+        self._rejection_streak: dict[str, int] = {}   # condition_id → consecutive rejections
+        self._rejection_blacklist: dict[str, float] = {}  # condition_id → expiry timestamp
+        self._rejection_limit = 3   # rechazos seguidos antes de blacklistear
+        self._rejection_backoff = 3600.0  # 1 hora de blacklist
+
         self._reconcile_open_orders()
 
         self._logger.info(
@@ -471,6 +477,15 @@ class RewardsFarmerStrategy(BaseStrategy):
         if not condition_id:
             return []
         self._market_volume[condition_id] = float(market_data.get("volume_24h", 0.0))
+
+        if not market_data.get("accepting_orders", True):
+            self._logger.info("RF skip %s...: accepting_orders=False", condition_id[:12])
+            return []
+
+        expiry = self._rejection_blacklist.get(condition_id, 0.0)
+        if time.time() < expiry:
+            self._logger.info("RF skip %s...: rejection blacklist (%.0fm restantes)", condition_id[:12], (expiry - time.time()) / 60)
+            return []
 
         tokens = market_data.get("tokens", [])
         token_data = market_data.get("token_data", {})
@@ -1028,12 +1043,30 @@ class RewardsFarmerStrategy(BaseStrategy):
             try:
                 if hasattr(self._client, "post_batch_orders"):
                     batch_results = self._client.post_batch_orders(to_place)
+                    # Detectar rechazos masivos: si todos los resultados de un mercado son rejected,
+                    # incrementar contador y blacklistear si supera el límite.
+                    market_results: dict[str, list[str]] = {}
                     for sig, res in zip(to_place, batch_results):
                         trade = self._build_trade(sig, res)
                         trades.append(trade)
                         if trade.order_id and trade.status not in ("error", "rejected"):
                             self._pending_orders[trade.order_id] = sig
                             self._order_placed_at[trade.order_id] = time.time()
+                        cid = sig.market_id
+                        market_results.setdefault(cid, []).append(trade.status)
+                    for cid, statuses in market_results.items():
+                        if all(s in ("error", "rejected") for s in statuses):
+                            streak = self._rejection_streak.get(cid, 0) + 1
+                            self._rejection_streak[cid] = streak
+                            if streak >= self._rejection_limit:
+                                self._rejection_blacklist[cid] = time.time() + self._rejection_backoff
+                                self._rejection_streak.pop(cid, None)
+                                self._logger.warning(
+                                    "RF blacklist %s...: %d rechazos consecutivos — suspendido 1h",
+                                    cid[:12], streak,
+                                )
+                        else:
+                            self._rejection_streak.pop(cid, None)
                 else:
                     for sig in to_place:
                         res = self._client.place_limit_order(

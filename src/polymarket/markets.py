@@ -300,7 +300,7 @@ class MarketAnalyzer:
             "volume_24h": _safe_float(raw.get("volume24hr", raw.get("volume", 0))),
             "liquidity": _safe_float(raw.get("liquidity", 0)),
             "end_date": raw.get("endDate", raw.get("end_date_iso", "")),
-            "accepting_orders": True,
+            "accepting_orders": bool(raw.get("acceptingOrders", raw.get("accepting_orders", True))),
             "rewards_active": False,
             "rewards_rate": 0.0,
             "mid_price": gamma_mid,
