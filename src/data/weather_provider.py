@@ -104,10 +104,10 @@ class LiveMarketProvider(MarketProvider):
         except Exception:
             return None
 
-    def get_market_price(self, market_id: str) -> float:
+    def get_market_price(self, market_id: str) -> Optional[float]:
         market = self.get_market(market_id)
         if market is None:
-            return 0.50
+            return None
         prices = market.get("outcomePrices", [])
         if isinstance(prices, str):
             try:
@@ -118,7 +118,7 @@ class LiveMarketProvider(MarketProvider):
             p = float(prices[0])
             if 0.01 <= p <= 0.99:
                 return p
-        return 0.50
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -228,19 +228,20 @@ class HistoricalMarketProvider(MarketProvider):
                         return mkt
         return None
 
-    def get_market_price(self, market_id: str) -> float:
+    def get_market_price(self, market_id: str) -> Optional[float]:
         if market_id in self._price_cache:
             return self._price_cache[market_id]
         market = self.get_market(market_id)
         if market is None:
-            return 0.50
+            return None
         prices = market.get("outcomePrices", [])
         if isinstance(prices, str):
             try:
                 prices = json.loads(prices)
             except Exception:
                 prices = []
-        p = float(prices[0]) if prices else 0.50
-        p = max(0.01, min(0.99, p))
-        self._price_cache[market_id] = p
+        p = float(prices[0]) if prices else None
+        if p is not None:
+            p = max(0.01, min(0.99, p))
+            self._price_cache[market_id] = p
         return p

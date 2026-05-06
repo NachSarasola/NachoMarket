@@ -1357,7 +1357,7 @@ class WeatherStrategy(BaseStrategy):
 
         return trades
 
-    def _fetch_market_price(self, mid: str) -> float:
+    def _fetch_market_price(self, mid: str) -> Optional[float]:
         """Obtiene el precio YES actual via market provider."""
         return self._market_provider.get_market_price(mid)
 
@@ -1385,12 +1385,16 @@ class WeatherStrategy(BaseStrategy):
         return self._do_exit(mid, pt, reason, fraction=fraction)
 
     def _do_exit(self, mid: str, pt: dict, reason: str, fraction: float) -> Trade | None:
-        """Ejecuta salida (total o parcial) con precio real de mercado."""
+        """Ejecuta salida (total o parcial) con orden a mercado para garantizar fill."""
         token_id = pt.get("token_id", "")
-        if not token_id:
+        if not token_id or pt.get("exit_placed"):
             return None
         try:
             current_price = self._fetch_market_price(mid)
+            if current_price is None:
+                self._logger.warning("Weather: No price available for %s, skipping exit.", mid[:14])
+                return None
+                
             position_size_usdc = float(pt.get("size", 0))
             exit_size_usdc = position_size_usdc * fraction
             shares = int(exit_size_usdc / current_price) if current_price > 0 else 0
@@ -1398,14 +1402,17 @@ class WeatherStrategy(BaseStrategy):
                 return None
 
             entry_price = float(pt.get("entry_price", 0.5))
+            
+            # Place a limit order at 0.001 to act as a Market Sell and guarantee crossing the spread
             result = self._client.place_limit_order(
                 token_id=token_id, side="SELL",
-                price=current_price, size=shares, post_only=False,
+                price=0.001, size=shares, post_only=False,
             )
             order_id = result.get("order_id", "") or result.get("id", "")
             status = result.get("status", "")
 
             if status in ("live", "submitted", "filled"):
+                pt["exit_placed"] = True
                 if fraction >= 1.0:
                     self._pending_trades.pop(mid, None)
                 else:
