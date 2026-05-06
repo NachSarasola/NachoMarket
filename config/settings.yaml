@@ -32,7 +32,7 @@ weather:
   max_total_allocation: 50.0     # Exposicion total maxima en weather
   max_trades_per_scan: 3         # Maximos trades nuevos por scan
   kelly_fraction: 0.15           # Kelly fraccional 15%
-  min_edge_taker: 0.30           # Usar market order si edge > 30%
+  min_edge_taker: 0.15           # Usar market order (taker) si edge > 15% para garantizar fills
   # Phase 3: verification pipeline + data quality guardrails
   nws_cross_check: true          # Cross-check GFS vs NWS forecast para US (gratis, sin API key)
   nws_max_divergence: 10.0       # Saltar trade si NWS vs GFS difiere >10F
