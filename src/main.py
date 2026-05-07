@@ -227,7 +227,7 @@ class NachoMarketBot:
         # (eliminados en refactor v3 para simplificar)
 
         self._loop_interval: int = self._settings.get(
-            "main_loop_interval_sec", 1
+            "main_loop_interval_sec", 2
         )
         self._start_time: float = time.time()
 
