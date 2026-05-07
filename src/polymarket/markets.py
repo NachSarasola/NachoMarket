@@ -548,8 +548,25 @@ class MarketAnalyzer:
 
         if rewards_active and rewards_rate > 0:
             mid_for_rewards = mid_price if mid_price > 0 else 0.5
-            capital_required = rewards_min_size * mid_for_rewards
-            efficiency = rewards_rate / capital_required if capital_required > 0 else rewards_rate
+            capital_required = rewards_min_size * mid_for_rewards if rewards_min_size > 0 else 1.0
+
+            # Si el tracker tiene datos reales de earnings, usar cpm real en lugar de rate estático.
+            # cpm real refleja lo que realmente generamos; el rate estático es el pool total (ignora share).
+            real_cpm = None
+            if self._reward_tracker and cid:
+                try:
+                    real_cpm = self._reward_tracker.cents_per_min(cid)
+                except Exception:
+                    pass
+
+            if real_cpm is not None:
+                # Convertir cpm a USD/día para comparar con capital_required en misma unidad
+                real_daily_usd = real_cpm * 60 * 24 / 100.0
+                efficiency = real_daily_usd / capital_required if capital_required > 0 else real_daily_usd
+            else:
+                # Sin datos reales aún: usar rate estático (mercado nuevo)
+                efficiency = rewards_rate / capital_required if capital_required > 0 else rewards_rate
+
             density_boost = min(reward_density / 0.01, 1.0) if reward_density > 0 else 0.5
             scores["rewards"] = min(efficiency / 1.0 * (0.7 + 0.3 * density_boost), 1.0)
         else:

@@ -84,7 +84,10 @@ rewards_farmer:
   spread_pct_of_max: 0.80
   inventory_merge_threshold: 5
   competition_share_min: 0.02
-  max_mid_deviation: 0.45
+  max_mid_deviation: 0.46
+  rf_safety:
+    fast_cancel_enabled: true
+    min_cushion_usd: 15.0           # Cancela si hay < $15 de libro entre nuestra orden y el BBO (antes: $250)
 
 # Safe Compounder — apuesta matematica al NO sin IA
 safe_compounder:
@@ -130,7 +133,7 @@ metrics_enabled: false
 metrics_port: 9008
 
 # Loop principal
-main_loop_interval_sec: 15
+main_loop_interval_sec: 10
 health_check_interval_sec: 60
 
 # Logging
