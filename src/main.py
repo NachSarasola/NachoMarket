@@ -227,7 +227,7 @@ class NachoMarketBot:
         # (eliminados en refactor v3 para simplificar)
 
         self._loop_interval: int = self._settings.get(
-            "main_loop_interval_sec", 10
+            "main_loop_interval_sec", 1
         )
         self._start_time: float = time.time()
 
@@ -357,11 +357,10 @@ class NachoMarketBot:
 
         self._cycle_count = getattr(self, '_cycle_count', 0) + 1
 
-        # Balance desde config (evita bloquear el loop con llamadas API lentas)
-        # Solo actualizar cada 20 ciclos desde el CLOB
-        if self._cycle_count == 1:
-            self._cached_balance = float(self._settings.get("capital_total", 162))
-        elif self._cycle_count % 20 == 0:
+        # Balance real del CLOB: actualizar ciclo 1 y cada 20 ciclos.
+        # No usar capital_total del config porque el CLOB puede tener menos
+        # (fondos parcialmente depositados, colateral bloqueado en órdenes abiertas).
+        if self._cycle_count == 1 or self._cycle_count % 20 == 0:
             try:
                 self._cached_balance = self._client.get_balance()
             except Exception:
@@ -479,7 +478,7 @@ class NachoMarketBot:
                 # RF: solo operar en mercados con asignación de capital explícita.
                 # Sin este gate, RF evalúa TODOS los mercados del pool (46+) y
                 # acumula zero-signal streaks en mercados que no deberían explorarse.
-                if strategy.name == "rewards_farmer" and capital_alloc and cid_key not in capital_alloc:
+                if strategy.name == "rewards_farmer" and capital_alloc is not None and cid_key not in capital_alloc:
                     continue
                 # Capital allocation enforcement
                 if self._capital_alloc and strategy.name in ("weather", "safe_compounder"):

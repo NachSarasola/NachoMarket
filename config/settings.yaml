@@ -133,7 +133,7 @@ metrics_enabled: false
 metrics_port: 9008
 
 # Loop principal
-main_loop_interval_sec: 10
+main_loop_interval_sec: 1
 health_check_interval_sec: 60
 
 # Logging
