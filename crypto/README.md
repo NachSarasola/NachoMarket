@@ -24,14 +24,17 @@ resultado también vale: es la fundida que no ocurre.
 crypto/
 ├── smc/
 │   ├── signals.py        # deteccion SMC pura (pandas/numpy), causal, sin look-ahead
-│   └── backtest.py       # backtester bar-by-bar con fees/slippage, fills unit-testeados
+│   ├── backtest.py       # backtester bar-by-bar con fees/slippage, fills unit-testeados
+│   ├── stats.py          # Deflated Sharpe Ratio + Monte Carlo de ruina (numpy puro)
+│   └── synthetic.py      # generadores de control POSITIVO (sweeps) y NEGATIVO (random-walk)
 ├── user_data/strategies/
 │   ├── smc_sweep.py      # estrategia freqtrade (produccion/dry-run/live) — importa smc/signals
 │   └── donchian_control.py  # control/benchmark (breakout Donchian)
 ├── scripts/
 │   ├── fetch_data.py     # descarga OHLCV a CSV (ccxt) — correr donde haya acceso a exchanges
-│   └── validate.py       # pipeline anti-overfitting: IS / walk-forward / OOS / benchmarks
-├── tests/                # tests de deteccion (causalidad) y de fills del backtester
+│   ├── validate.py       # pipeline anti-overfitting: IS/walk-forward/OOS/benchmarks/DSR/MonteCarlo
+│   └── param_sweep.py    # grilla de parametros + deteccion de MESETA vs PICO
+├── tests/                # 32 tests: causalidad, fills, control positivo/negativo, stats, FVG
 ├── config-backtest.json  # config freqtrade para backtesting
 ├── config-dryrun.json    # config freqtrade para paper trading (dry-run)
 └── REGLAS_CONGELADAS.md  # spec pre-registrada (Gate 1) + registro de variantes
@@ -55,9 +58,16 @@ pip install freqtrade        # trae ccxt; requiere TA-Lib del sistema
 ```bash
 # 0) Correr los tests (deben pasar antes de tocar nada):
 python -m pytest crypto/tests -q
+#   Incluye el control POSITIVO (con sweeps inyectados la estrategia DEBE ganar) y el
+#   NEGATIVO (en random-walk DEBE perder por costos). Un detector roto falla aca.
 
 # 1) Smoke del pipeline sobre datos sinteticos (NO es evidencia de edge):
-python crypto/scripts/validate.py --synthetic --strategy sweep
+python crypto/scripts/validate.py --synthetic --strategy sweep --compare --deflated-sharpe 20
+#   Reporta IS/walk-forward/OOS/benchmarks + Deflated Sharpe (multiple-testing) + Monte
+#   Carlo de ruina. En datos sin edge todo da negativo y el DSR ~0 (correcto).
+
+# 1b) Barrido de parametros con deteccion de meseta (anti curve-fitting):
+python crypto/scripts/param_sweep.py --synthetic
 
 # 2) Bajar datos reales (en una maquina con acceso a exchanges, p.ej. el VPS):
 python crypto/scripts/fetch_data.py --symbol BTC/USDT --timeframe 4h \
@@ -87,9 +97,22 @@ freqtrade trade -c crypto/config-dryrun.json --strategy SmcSweep \
 - Protections activas: StoplossGuard, MaxDrawdown 10%, CooldownPeriod.
 - **No pasar a live hasta que el OOS sea creíble y el dry-run confirme fills/fees.**
 
+## Verificación (por qué confiar en el backtester)
+
+- **Control positivo**: sobre series con sweeps inyectados (el fenómeno de Osler), la
+  estrategia es rentable neto de costos. → el detector no está muerto.
+- **Control negativo**: sobre random-walk, pierde por costos. → el backtester no infla
+  resultados (a diferencia del paper sim anterior que reportaba 100% winrate).
+- **Deflated Sharpe Ratio**: penaliza el Sharpe por el nº de variantes probadas.
+- **Monte Carlo de ruina**: distribución de drawdown y P(ruina) por remuestreo de trades.
+- Toda señal es **causal** (tests que exigen que no cambie al agregar barras futuras).
+
 ## Estado
 
-- Detección + backtester + tests: **completos y verificados** (19 tests en verde).
+- Detección + backtester + estadística + tooling + tests: **completos y verificados**
+  (32 tests en verde).
+- **FVG**: primitiva testeada (`fair_value_gap`) pero DELIBERADAMENTE fuera del baseline v1
+  (evita overfitting); base de un futuro setup `fvg_pullback` solo si el núcleo valida.
 - Validación sobre datos reales: **pendiente** (los exchanges están bloqueados en el entorno
   de desarrollo; correr en el VPS).
 - Estrategias freqtrade: escritas contra la API v3, **pendientes de correr en el VPS**.

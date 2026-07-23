@@ -95,10 +95,11 @@ el pivot vive aislado en `crypto/`. Ver `crypto/README.md` y `crypto/REGLAS_CONG
 
 ## Comandos del pivot
 
-- python -m pytest crypto/tests -q — Tests de deteccion (causalidad) y fills del backtester
-- python crypto/scripts/validate.py --synthetic --strategy sweep — Smoke del pipeline
+- python -m pytest crypto/tests -q — 32 tests: causalidad, fills, control positivo/negativo, stats, FVG
+- python crypto/scripts/validate.py --synthetic --strategy sweep --compare --deflated-sharpe 20 — Smoke del pipeline (+ DSR + Monte Carlo)
+- python crypto/scripts/param_sweep.py --synthetic — Barrido de parametros + deteccion de meseta vs pico
 - python crypto/scripts/fetch_data.py --symbol BTC/USDT --timeframe 4h --since 2019-01-01 --out crypto/data/BTC_USDT-4h.csv
-- python crypto/scripts/validate.py --data crypto/data/BTC_USDT-4h.csv --strategy sweep — Validacion real
+- python crypto/scripts/validate.py --data crypto/data/BTC_USDT-4h.csv --strategy sweep --compare --deflated-sharpe <N_variantes> — Validacion real
 - freqtrade backtesting -c crypto/config-backtest.json --strategy SmcSweep --strategy-path crypto/user_data/strategies
 - freqtrade trade -c crypto/config-dryrun.json --strategy SmcSweep --strategy-path crypto/user_data/strategies — Paper
 

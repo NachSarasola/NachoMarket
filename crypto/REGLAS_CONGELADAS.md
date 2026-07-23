@@ -61,6 +61,21 @@ Estos valores deben coincidir en tres lugares (si divergen, es un bug):
 BMS/breakout Donchian (cierre de cuerpo sobre el máximo de N). Trend following con evidencia.
 Si `SmcSweep` no lo bate out-of-sample neto de costos, se **descarta `SmcSweep`** y queda este.
 
+## Fuera de v1 a propósito (anti-overfitting)
+
+- **FVG** (`fair_value_gap` existe y está testeado) NO se cablea al sweep: el FVG solo tiene
+  edge documentado como *pullback en tendencia*, no como filtro de sweep, y acoplarlo sumaría
+  parámetros libres sin fundamento. Queda para un eventual `fvg_pullback` v2 SOLO si v1 valida.
+- Order blocks, armónicos, EMAs/conteo de niveles, MMBM/MMSM: descartados (discreción o
+  explosión de parámetros). Ver `crypto/README.md` y el análisis del pivot.
+
+## Verificación del motor (controles)
+
+- **Positivo**: `crypto/smc/synthetic.py::sweep_market_ohlcv` → el sweep DEBE ser rentable.
+- **Negativo**: `random_walk_ohlcv` → DEBE perder por costos.
+- **DSR / Monte Carlo**: `crypto/smc/stats.py` (multiple-testing + prob. de ruina).
+- Todos ejercitados en `crypto/tests/` (32 tests).
+
 ## Gates de validación (en orden; no se salta ninguno)
 
 1. **Reglas congeladas** (este archivo) antes de mirar datos. ✅
@@ -77,6 +92,11 @@ Si `SmcSweep` no lo bate out-of-sample neto de costos, se **descarta `SmcSweep`*
 > Cada fila cuenta para el sesgo de selección. Cuantas más variantes, más alto debe ser el
 > Sharpe para ser creíble. Anotar ANTES de mirar el OOS.
 
+> `param_sweep.py` prueba una grilla de 108 combinaciones — ESO cuenta como 108 trials para
+> el Deflated Sharpe. Al validar con datos reales, pasar `--deflated-sharpe 108` (o el nº real
+> de variantes acumuladas) a `validate.py`.
+
 | # | fecha | cambio vs base | motivo | resultado IS (Sharpe/PF/trades) |
 |---|-------|----------------|--------|---------------------------------|
 | 0 | (base)| —              | hipótesis inicial congelada | (pendiente: correr con datos reales) |
+| — | —     | grilla param_sweep (108 combos) | robustez/meseta | cuenta para multiple-testing |

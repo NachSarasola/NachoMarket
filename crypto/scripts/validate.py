@@ -30,8 +30,9 @@ import pandas as pd
 
 sys.path.insert(0, __file__.rsplit("/crypto/", 1)[0])  # raiz del repo en path
 
-from crypto.smc.backtest import compute_metrics, run_backtest  # noqa: E402
+from crypto.smc.backtest import BacktestResult, compute_metrics, run_backtest  # noqa: E402
 from crypto.smc.signals import donchian_bms_signals, smc_sweep_signals  # noqa: E402
+from crypto.smc.stats import deflated_sharpe_ratio, monte_carlo_ruin  # noqa: E402
 
 BARS_PER_YEAR_4H = 6 * 365  # 2190
 
@@ -123,13 +124,17 @@ def gen_signals(df: pd.DataFrame, strategy: str, params: dict) -> pd.DataFrame:
     raise ValueError(f"estrategia desconocida: {strategy}")
 
 
-def run_segment(df: pd.DataFrame, strategy: str, params: dict, bt_kwargs: dict) -> dict:
+def run_segment_full(df: pd.DataFrame, strategy: str, params: dict, bt_kwargs: dict) -> tuple[dict, BacktestResult]:
     sig = gen_signals(df, strategy, params)
     res = run_backtest(df, sig, **bt_kwargs)
     m = res.metrics()
     m["signals_long"] = int(sig["enter_long"].sum())
     m["signals_short"] = int(sig["enter_short"].sum())
-    return m
+    return m, res
+
+
+def run_segment(df: pd.DataFrame, strategy: str, params: dict, bt_kwargs: dict) -> dict:
+    return run_segment_full(df, strategy, params, bt_kwargs)[0]
 
 
 def walk_forward(df: pd.DataFrame, strategy: str, params: dict, bt_kwargs: dict, folds: int) -> list[dict]:
@@ -193,6 +198,11 @@ def main() -> int:
     p.add_argument("--risk-pct", type=float, default=0.01)
     p.add_argument("--folds", type=int, default=4)
     p.add_argument("--min-trades", type=int, default=100)
+    p.add_argument("--deflated-sharpe", type=int, default=1, metavar="N_TRIALS",
+                   help="nº de variantes probadas para el Deflated Sharpe (multiple-testing)")
+    p.add_argument("--mc-sims", type=int, default=5000, help="simulaciones Monte Carlo de ruina")
+    p.add_argument("--compare", action="store_true",
+                   help="tabla comparativa sweep vs donchian vs benchmarks (IS y OOS)")
     p.add_argument("--out", default="", help="ruta opcional para el reporte JSON")
     args = p.parse_args()
 
@@ -233,7 +243,7 @@ def main() -> int:
     print(f"Estrategia: {args.strategy} ({args.direction}) | params: {params}\n")
 
     # --- Gate 2: in-sample ---
-    is_m = run_segment(is_df, args.strategy, params, bt_kwargs)
+    is_m, is_res = run_segment_full(is_df, args.strategy, params, bt_kwargs)
     report["in_sample"] = is_m
     print("== IN-SAMPLE ==")
     print(" ", _fmt(is_m))
@@ -290,6 +300,48 @@ def main() -> int:
             report["gate5_verdict"] = verdict
     else:
         print("  (OOS con muy pocas barras — extender el rango de datos)")
+
+    # --- Deflated Sharpe Ratio (multiple-testing) sobre el in-sample ---
+    is_rets = is_res.equity.pct_change().dropna().to_numpy()
+    dsr = deflated_sharpe_ratio(is_rets, n_trials=args.deflated_sharpe)
+    report["deflated_sharpe"] = dsr
+    print(f"\n== DEFLATED SHARPE (n_trials={args.deflated_sharpe}) ==")
+    print(f"  PSR vs 0 = {dsr.get('psr_vs_0')}  |  DSR = {dsr.get('dsr')}  "
+          f"(Sharpe/periodo={dsr.get('sr_per_period')}, SR0={dsr.get('sr0_per_period')})")
+    print("  Regla: DSR < 0.95 => el Sharpe NO se distingue del mejor de N intentos al azar.")
+
+    # --- Monte Carlo de ruina sobre los trades del in-sample ---
+    r_mults = [t.r_multiple for t in is_res.trades]
+    if r_mults:
+        mc = monte_carlo_ruin(r_mults, n_sims=args.mc_sims, risk_pct=args.risk_pct,
+                              initial=args.initial, ruin_frac=0.5, seed=0)
+        report["monte_carlo_ruin"] = mc
+        print(f"\n== MONTE CARLO DE RUINA ({mc['sims']} sims, riesgo {args.risk_pct:.0%}/trade) ==")
+        print(f"  P(equity cae a <= 50% del inicial) = {mc['prob_ruin']:.1%}")
+        print(f"  retorno final  p5/p50/p95 = {mc['final_return_p5']} / {mc['final_return_p50']} "
+              f"/ {mc['final_return_p95']}")
+        print(f"  peor maxDD (p95) = {mc['max_drawdown_p95']}  |  maxDD mediano = {mc['max_drawdown_p50']}")
+
+    # --- Tabla comparativa opcional ---
+    if args.compare:
+        print("\n== COMPARATIVA (Sharpe / PF / trades / retorno) ==")
+        rows = []
+        for strat in ("sweep", "donchian"):
+            sp = DEFAULT_PARAMS[strat]
+            mi = run_segment(is_df, strat, sp, bt_kwargs)
+            mo = run_segment(oos_df, strat, sp, bt_kwargs) if len(oos_df) > 300 else {}
+            rows.append((strat, mi, mo))
+        print(f"  {'estrategia':>12} | {'IS sharpe':>9} {'IS pf':>6} {'IS ret':>7} | "
+              f"{'OOS sharpe':>10} {'OOS ret':>8}")
+        for name, mi, mo in rows:
+            print(f"  {name:>12} | {str(mi.get('sharpe')):>9} {str(mi.get('profit_factor')):>6} "
+                  f"{str(mi.get('total_return')):>7} | {str(mo.get('sharpe')):>10} "
+                  f"{str(mo.get('total_return')):>8}")
+        print(f"  {'buy&hold':>12} | {str(bh.get('sharpe')):>9} {'-':>6} "
+              f"{str(bh.get('total_return')):>7} | {'-':>10} {'-':>8}")
+        print(f"  {'ma_cross':>12} | {str(ma.get('sharpe')):>9} {'-':>6} "
+              f"{str(ma.get('total_return')):>7} | {'-':>10} {'-':>8}")
+        report["compare"] = {name: {"is": mi, "oos": mo} for name, mi, mo in rows}
 
     print("\nRECORDATORIO: cada variante de parametros probada cuenta para el multiple-testing.")
     print("Anotarla en crypto/REGLAS_CONGELADAS.md antes de mirar el OOS.")
