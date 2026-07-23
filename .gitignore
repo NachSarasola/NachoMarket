@@ -30,3 +30,13 @@ Thumbs.db
 # Keys
 *.pem
 *.key
+
+# Crypto pivot: datos de mercado descargados y artefactos de freqtrade
+crypto/data/
+crypto/user_data/data/
+crypto/user_data/backtest_results/
+crypto/user_data/logs/
+crypto/user_data/plot/
+crypto/user_data/*.sqlite
+crypto/user_data/*.sqlite-*
+*.feather

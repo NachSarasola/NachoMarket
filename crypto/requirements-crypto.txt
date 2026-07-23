@@ -1,0 +1,12 @@
+# Deteccion + backtester + validacion (ligero, corre en cualquier lado):
+numpy>=1.26
+pandas>=2.0
+pytest>=8.0
+
+# Descarga de datos (correr donde haya acceso a exchanges):
+ccxt>=4.0
+
+# Runtime de produccion (VPS): backtest + dry-run + live + Telegram.
+# Requiere TA-Lib del sistema. Instalar aparte en el VPS:
+#   pip install freqtrade
+# freqtrade>=2024.0

@@ -69,3 +69,45 @@ PRIORIDAD ABSOLUTA: preservacion de capital. Nunca arriesgar >5% en un solo merc
 - Usar logging (no print)
 - snake_case para todo
 - Config en YAML, nunca hardcodeada
+
+---
+
+# Pivot: bot de crypto SMC (directorio `crypto/`)
+
+Tras fundir el capital con el rewards farming single-sided de Polymarket (fill toxico
+sin tope de riesgo en dolares), se pivota a un bot de crypto DIRECCIONAL basado en Smart
+Money Concepts (barrido de liquidez / turtle soup). El codigo de Polymarket queda intacto;
+el pivot vive aislado en `crypto/`. Ver `crypto/README.md` y `crypto/REGLAS_CONGELADAS.md`.
+
+## Principios del pivot (del usuario)
+
+- SIN overfitting, SIN sobre-ingenieria. Presupuesto duro: 3-5 parametros libres.
+- Preservacion de capital primero. Con $150-500 el objetivo es UN setup validado, no ingresos.
+- Solo se mecaniza el componente SMC con fundamento (clustering de stops, Osler/NY Fed).
+  Si el out-of-sample no muestra edge, NO se opera.
+
+## Stack del pivot
+
+- numpy + pandas (deteccion y backtester) — ligero, ya usable.
+- freqtrade (runtime de produccion: backtest + dry-run + live, Telegram nativo) — en el VPS.
+- Un solo modulo de deteccion (`crypto/smc/signals.py`) alimenta backtester y freqtrade →
+  las senales no pueden divergir entre validacion y live.
+
+## Comandos del pivot
+
+- python -m pytest crypto/tests -q — Tests de deteccion (causalidad) y fills del backtester
+- python crypto/scripts/validate.py --synthetic --strategy sweep — Smoke del pipeline
+- python crypto/scripts/fetch_data.py --symbol BTC/USDT --timeframe 4h --since 2019-01-01 --out crypto/data/BTC_USDT-4h.csv
+- python crypto/scripts/validate.py --data crypto/data/BTC_USDT-4h.csv --strategy sweep — Validacion real
+- freqtrade backtesting -c crypto/config-backtest.json --strategy SmcSweep --strategy-path crypto/user_data/strategies
+- freqtrade trade -c crypto/config-dryrun.json --strategy SmcSweep --strategy-path crypto/user_data/strategies — Paper
+
+## Reglas INQUEBRANTABLES del pivot
+
+- Stop OBLIGATORIO en toda posicion; JAMAS mover el stop en contra.
+- Riesgo 1% del equity por trade (por distancia al stop); descartar senal si el stop supera 4%.
+- SPOT, SIN apalancamiento. Solo BTC/USDT y ETH/USDT. Timeframe 4h (nada < 1h: los costos matan).
+- El backtester DEBE modelar fees + slippage + fills adversos. Un backtest con 100% winrate MIENTE.
+- NO pasar a live hasta: OOS 2024+ creible (Sharpe OOS >= 50% del IS), batir buy&hold y MA diaria,
+  y confirmar fills/fees en dry-run 4-8 semanas.
+- Toda variante de parametros probada se anota en `crypto/REGLAS_CONGELADAS.md` (multiple-testing).
