@@ -29,6 +29,7 @@ __all__ = [
     "add_atr",
     "swing_mask",
     "confirmed_swings",
+    "fair_value_gap",
     "smc_sweep_signals",
     "donchian_bms_signals",
 ]
@@ -118,6 +119,44 @@ def confirmed_swings(
     conf_high = sh_price.shift(right).ffill().rename("conf_swing_high")
     conf_low = sl_price.shift(right).ffill().rename("conf_swing_low")
     return conf_high, conf_low
+
+
+def fair_value_gap(df: pd.DataFrame) -> pd.DataFrame:
+    """Detecta Fair Value Gaps (imbalances de 3 velas) de forma causal.
+
+    Definicion aritmetica del vol 1 (BISI/SIBI), evaluada en la 3ra vela ``t`` (usa solo
+    t, t-1, t-2 -> causal):
+      - FVG alcista (BISI): high[t-2] < low[t]  -> hueco de compra; gap=[high[t-2], low[t]].
+      - FVG bajista (SIBI): low[t-2] > high[t]  -> hueco de venta;  gap=[high[t], low[t-2]].
+
+    NOTA DE DISEÑO: esta primitiva NO se cablea al baseline congelado ``smc_sweep_signals``
+    (v1). El FVG solo tiene edge documentado como PULLBACK en direccion de tendencia (no
+    como filtro del sweep), y acoplarlo agregaria parametros libres sin fundamento -> queda
+    disponible y testeada para un futuro setup ``fvg_pullback`` SOLO si el nucleo valida.
+
+    Returns:
+        DataFrame con columnas: bull_fvg, bear_fvg (bool), fvg_top, fvg_bottom (float|NaN).
+    """
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    h2 = high.shift(2)
+    l2 = low.shift(2)
+
+    bull = (h2 < low).fillna(False)
+    bear = (l2 > high).fillna(False)
+
+    out = pd.DataFrame(index=df.index)
+    out["bull_fvg"] = bull
+    out["bear_fvg"] = bear
+    top = pd.Series(np.nan, index=df.index)
+    bot = pd.Series(np.nan, index=df.index)
+    top = top.mask(bull, low)     # techo del hueco alcista = low[t]
+    bot = bot.mask(bull, h2)      # piso  del hueco alcista = high[t-2]
+    top = top.mask(bear, l2)      # techo del hueco bajista = low[t-2]
+    bot = bot.mask(bear, high)    # piso  del hueco bajista = high[t]
+    out["fvg_top"] = top
+    out["fvg_bottom"] = bot
+    return out
 
 
 def _equal_level_count(

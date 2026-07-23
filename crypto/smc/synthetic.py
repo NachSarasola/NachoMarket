@@ -1,0 +1,127 @@
+"""Generadores de OHLCV sinteticos para VERIFICAR la estrategia (no para evidencia de edge).
+
+Dos controles complementarios:
+
+- ``random_walk_ohlcv``: GBM sin microestructura. La estrategia de sweep NO tiene nada que
+  capturar -> debe PERDER neto de costos. Control NEGATIVO (el backtester no miente).
+- ``sweep_market_ohlcv``: inyecta el fenomeno que la estrategia persigue (barrido de
+  liquidez bajo un minimo previo + reversion, i.e. clustering de stops de Osler). La
+  estrategia DEBE ser rentable. Control POSITIVO (el detector no esta roto ni muerto).
+
+Que la misma logica gane en uno y pierda en el otro es la prueba de que detecta la senal
+correcta y no ruido — el complemento honesto de un backtest que "siempre gana".
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+
+def _index(n: int) -> pd.DatetimeIndex:
+    return pd.date_range("2019-01-01", periods=n, freq="4h", tz="UTC")
+
+
+def random_walk_ohlcv(n: int = 5000, seed: int = 1, vol: float = 0.01) -> pd.DataFrame:
+    """GBM con velas OHLC coherentes. Control NEGATIVO (sin edge)."""
+    rng = np.random.default_rng(seed)
+    rets = rng.normal(0.0, vol, n)
+    close = 100.0 * np.exp(np.cumsum(rets))
+    open_ = np.empty(n)
+    open_[0] = close[0]
+    open_[1:] = close[:-1]
+    wick = vol * close
+    high = np.maximum(open_, close) + rng.uniform(0.05, 1.0, n) * wick
+    low = np.minimum(open_, close) - rng.uniform(0.05, 1.0, n) * wick
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": np.ones(n)},
+        index=_index(n),
+    )
+
+
+def sweep_market_ohlcv(
+    n_events: int = 60,
+    range_bars: int = 26,
+    revert_bars: int = 6,
+    band: float = 6.0,
+    win_prob: float = 0.70,
+    seed: int = 3,
+) -> pd.DataFrame:
+    """Serie con barridos de sell-side liquidity + reversion (control POSITIVO).
+
+    Cada evento: (1) una consolidacion de ``range_bars`` velas en una banda [lo, hi];
+    (2) una vela que barre por debajo de ``lo`` con la mecha pero CIERRA de vuelta arriba
+    (el trigger long del detector); (3) con prob ``win_prob`` el precio revierte hasta el
+    medio de la banda (target -> ganancia); con prob ``1-win_prob`` sigue cayendo y toca el
+    stop (perdida). Ruido leve en todo. La banda deriva suavemente entre eventos.
+
+    Parametrizado para que el long-only sea claramente rentable neto de costos, sin ser
+    degenerado (incluye perdidas reales).
+    """
+    rng = np.random.default_rng(seed)
+    opens: list[float] = []
+    highs: list[float] = []
+    lows: list[float] = []
+    closes: list[float] = []
+
+    level = 100.0
+    for _ in range(n_events):
+        lo = level
+        hi = level + band
+        mid = (lo + hi) / 2.0
+        noise = band * 0.04
+
+        # (1) Consolidacion dentro de [lo, hi].
+        prev_c = mid
+        for i in range(range_bars):
+            c = mid + (band / 2.5) * np.sin(i / 2.0) + rng.normal(0, noise)
+            c = float(np.clip(c, lo + noise, hi - noise))
+            o = prev_c
+            h = max(o, c) + abs(rng.normal(0, noise))
+            l = min(o, c) - abs(rng.normal(0, noise))
+            h = min(h, hi + noise)  # no romper la banda por arriba durante la consolidacion
+            l = max(l, lo + noise * 0.2)  # ni por abajo (el minimo lo hace el sweep)
+            opens.append(o); highs.append(h); lows.append(l); closes.append(c)
+            prev_c = c
+
+        # (2) Vela de sweep: mecha por debajo de lo, cuerpo cierra arriba de lo.
+        depth = band * rng.uniform(0.12, 0.22)
+        o = prev_c
+        sweep_low = lo - depth
+        c = lo + band * 0.06  # cuerpo cierra de vuelta adentro (discount)
+        h = max(o, c) + noise
+        opens.append(o); highs.append(h); lows.append(sweep_low); closes.append(c)
+        prev_c = c
+        entry = c
+
+        # (3) Reversion (win) o continuacion bajista (loss).
+        win = rng.random() < win_prob
+        if win:
+            target = mid + band * 0.05
+            path = np.linspace(entry, target + rng.uniform(0, band * 0.15), revert_bars)
+        else:
+            # cae por debajo del sweep_low para tocar el stop (~ sweep_low - 0.5*ATR)
+            path = np.linspace(entry, sweep_low - band * 0.15, revert_bars)
+        for c in path:
+            o = prev_c
+            cc = float(c + rng.normal(0, noise))
+            h = max(o, cc) + abs(rng.normal(0, noise))
+            l = min(o, cc) - abs(rng.normal(0, noise))
+            opens.append(o); highs.append(h); lows.append(l); closes.append(cc)
+            prev_c = cc
+
+        # Deriva suave de la banda para el proximo evento.
+        level = prev_c + rng.normal(0, band * 0.1)
+        level = max(level, 20.0)
+
+    n = len(closes)
+    return pd.DataFrame(
+        {
+            "open": np.array(opens),
+            "high": np.array(highs),
+            "low": np.array(lows),
+            "close": np.array(closes),
+            "volume": np.ones(n),
+        },
+        index=_index(n),
+    )

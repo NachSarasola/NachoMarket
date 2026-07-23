@@ -16,6 +16,7 @@ from crypto.smc.signals import (
     add_atr,
     confirmed_swings,
     donchian_bms_signals,
+    fair_value_gap,
     smc_sweep_signals,
     swing_mask,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "add_atr",
     "confirmed_swings",
     "donchian_bms_signals",
+    "fair_value_gap",
     "smc_sweep_signals",
     "swing_mask",
 ]
