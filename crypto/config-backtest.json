@@ -1,0 +1,75 @@
+{
+    "$schema": "https://schema.freqtrade.io/schema.json",
+    "max_open_trades": 2,
+    "stake_currency": "USDT",
+    "stake_amount": "unlimited",
+    "tradable_balance_ratio": 0.99,
+    "dry_run": true,
+    "dry_run_wallet": 500,
+    "fiat_display_currency": "USD",
+    "timeframe": "4h",
+    "trading_mode": "spot",
+    "margin_mode": "",
+    "unfilledtimeout": {
+        "entry": 10,
+        "exit": 10,
+        "unit": "minutes"
+    },
+    "entry_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "exit_pricing": {
+        "price_side": "same",
+        "use_order_book": true,
+        "order_book_top": 1
+    },
+    "exchange": {
+        "name": "binance",
+        "key": "",
+        "secret": "",
+        "ccxt_config": {},
+        "ccxt_async_config": {},
+        "pair_whitelist": [
+            "BTC/USDT",
+            "ETH/USDT"
+        ],
+        "pair_blacklist": []
+    },
+    "pairlists": [
+        {
+            "method": "StaticPairList"
+        }
+    ],
+    "order_types": {
+        "entry": "limit",
+        "exit": "limit",
+        "stoploss": "market",
+        "stoploss_on_exchange": false
+    },
+    "protections": [
+        {
+            "method": "StoplossGuard",
+            "lookback_period_candles": 24,
+            "trade_limit": 4,
+            "stop_duration_candles": 12,
+            "only_per_pair": false
+        },
+        {
+            "method": "MaxDrawdown",
+            "lookback_period_candles": 90,
+            "trade_limit": 10,
+            "stop_duration_candles": 24,
+            "max_allowed_drawdown": 0.10
+        },
+        {
+            "method": "CooldownPeriod",
+            "stop_duration_candles": 2
+        }
+    ],
+    "dataformat_ohlcv": "feather",
+    "internals": {
+        "process_throttle_secs": 5
+    }
+}
