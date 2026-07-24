@@ -37,6 +37,7 @@ __all__ = [
     "taker_buy_ratio",
     "ma_timing_signals",
     "flow_momentum_signals",
+    "funding_extreme_signals",
 ]
 
 # Ventanas de la etiqueta de regimen (instrumentacion OBSERVACIONAL: no filtra senales,
@@ -456,6 +457,88 @@ def ma_timing_signals(
     return out
 
 
+def _hysteresis_state(entry_raw: pd.Series, exit_raw: pd.Series) -> pd.Series:
+    """Máquina de estado long/flat con histéresis: entra con entry, sale con exit.
+
+    Compartida por flow y funding (una sola implementación → sin divergencias). O(n).
+    """
+    n = len(entry_raw)
+    state = np.zeros(n, dtype=bool)
+    prev = False
+    e = entry_raw.to_numpy(dtype=bool)
+    x = exit_raw.to_numpy(dtype=bool)
+    for i in range(n):
+        if not prev and e[i]:
+            prev = True
+        elif prev and x[i]:
+            prev = False
+        state[i] = prev
+    return pd.Series(state, index=entry_raw.index)
+
+
+def funding_extreme_signals(
+    df: pd.DataFrame,
+    enter_pct: float = 0.02,
+    exit_pct: float = 0.50,
+    lookback: int = 1095,
+    atr_period: int = 14,
+    sl_atr: float = 3.0,
+) -> pd.DataFrame:
+    """H3a — funding extremo contrarian, long/flat (spec CONGELADA en HIPOTESIS.md).
+
+    Evidencia: BIS WP1087/Management Science — el funding es el precio del apalancamiento;
+    su cola NEGATIVA extrema marca capitulación de longs (posicionamiento lavado) y precede
+    rebotes a semanas (estimaciones de practicantes: funding <-5% anualizado → +19% a 30d).
+
+    Reglas (long/flat sobre barras de precio con columna ``funding_rate`` ya adjunta):
+      - Entrar long cuando funding <= su cuantil ``enter_pct`` rolling (ventana ``lookback``
+        de barras, umbral calculado sobre historia PREVIA → causal).
+      - Salir cuando funding >= su cuantil ``exit_pct`` (histéresis).
+      - Stop paracaídas close − sl_atr·ATR. Sin target/time-stop.
+    Parámetros libres: enter_pct, exit_pct, lookback, sl_atr (4).
+    Sin columna ``funding_rate`` → ninguna señal. La columna se adjunta con
+    ``validate.py --funding <csv>`` (ffill del último funding conocido → causal-conservador).
+    """
+    out = pd.DataFrame(index=df.index)
+    close = df["close"].astype(float)
+    atr = add_atr(df, atr_period)
+
+    if "funding_rate" not in df.columns:
+        fr = pd.Series(np.nan, index=df.index)
+    else:
+        fr = df["funding_rate"].astype(float)
+
+    hist = fr.shift(1)  # umbrales sobre historia previa: causal
+    q_lo = hist.rolling(lookback, min_periods=lookback // 2).quantile(enter_pct)
+    q_mid = hist.rolling(lookback, min_periods=lookback // 2).quantile(exit_pct)
+
+    entry_raw = (fr <= q_lo).fillna(False)
+    exit_raw = (fr >= q_mid).fillna(False)
+
+    state_s = _hysteresis_state(entry_raw, exit_raw)
+    prev_state = state_s.shift(1, fill_value=False)
+
+    out["enter_long"] = (state_s & ~prev_state)
+    out["enter_short"] = False
+    out["exit_long"] = (~state_s & prev_state)
+    out["exit_short"] = False
+    out["entry_price"] = close
+    out["atr"] = atr
+
+    sl_price = pd.Series(np.nan, index=df.index)
+    sl_price = sl_price.mask(out["enter_long"], close - sl_atr * atr)
+    out["sl_price"] = sl_price
+    out["tp1_price"] = np.nan
+    out["tp2_price"] = np.nan
+    out["time_stop_bars"] = np.inf
+
+    tag = pd.Series("", index=df.index, dtype=object)
+    tag = tag.mask(out["enter_long"], "funding_extreme_long")
+    out["enter_tag"] = tag
+    out["regime"] = regime_labels(df, atr_period)
+    return out
+
+
 def flow_momentum_signals(
     df: pd.DataFrame,
     flow_window: int = 6,
@@ -492,19 +575,7 @@ def flow_momentum_signals(
     entry_raw = (ratio > q_hi).fillna(False)
     exit_raw = (ratio < q_lo).fillna(False)
 
-    # Estado long/flat con histeresis (vectorizado seria ffill sobre +1/-1; loop claro y O(n)).
-    n = len(df)
-    state = np.zeros(n, dtype=bool)
-    prev = False
-    entry_np = entry_raw.to_numpy()
-    exit_np = exit_raw.to_numpy()
-    for i in range(n):
-        if not prev and entry_np[i]:
-            prev = True
-        elif prev and exit_np[i]:
-            prev = False
-        state[i] = prev
-    state_s = pd.Series(state, index=df.index)
+    state_s = _hysteresis_state(entry_raw, exit_raw)
     prev_state = state_s.shift(1, fill_value=False)  # bool dtype preservado (ver ma_timing)
 
     out["enter_long"] = (state_s & ~prev_state)

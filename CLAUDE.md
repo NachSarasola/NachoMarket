@@ -48,6 +48,7 @@ de variantes (multiple-testing) en `crypto/REGLAS_CONGELADAS.md`.
 - python crypto/scripts/portfolio.py --data <csv> <csv> — multi-par + correlacion (¿diversifica?)
 - python crypto/scripts/weekly_review.py --freqtrade-csv <trades.csv> --baseline <report.json> — review semanal
 - bash crypto/scripts/vps_validate_all.sh — one-shot en el VPS (baja datos + gates + veredicto)
+- bash crypto/scripts/vps_run_hipotesis.sh — one-shot del programa de hipotesis (H1+H2 congeladas + veredicto)
 - freqtrade backtesting -c crypto/config-backtest.json --strategy SmcSweep --strategy-path crypto/user_data/strategies --enable-protections
 - freqtrade trade -c crypto/config-dryrun.json --strategy SmcSweep --strategy-path crypto/user_data/strategies — paper
 

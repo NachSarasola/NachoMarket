@@ -74,7 +74,14 @@ Base rate del factor zoo (crypto y equities): **~70-80% de las hipótesis mueren
 - Variantes permitidas: UNA tanda (enter_q 0.85 o flow_window 12) si la base falla SOFT.
 - Código: `signals.flow_momentum_signals` + `validate.py --strategy flow`.
 
-**Cómo correr en el VPS (cuando quieras):**
+**Cómo correr en el VPS — UN comando (recomendado):**
+```bash
+cd ~/nacho-crypto && bash crypto/scripts/vps_run_hipotesis.sh
+```
+(hace git pull, tests, baja los 4 datasets con flujo, corre H1+H2 con las specs congeladas,
+aplica decide.py y empaqueta `crypto/data/hipotesis_<fecha>.tar.gz`)
+
+O a mano:
 ```bash
 cd ~/nacho-crypto && git pull && source .venv-crypto/bin/activate && python -m pytest crypto/tests -q
 python crypto/scripts/fetch_data.py --with-flow --symbol BTC/USDT --timeframe 1d --since 2019-01-01 --out crypto/data/BTC_USDT-1d.csv
@@ -91,10 +98,31 @@ python crypto/scripts/decide.py crypto/data/*-rep_*.json
 ```
 (`--deflated-sharpe 120` = trials acumulados ~113 + los nuevos, redondeado en contra nuestra.)
 
-### H3 — funding extremo / cascadas (datos listos, spec PENDIENTE de congelar)
-`fetch_funding.py` ya baja la historia completa. La spec se congela recién al terminar H1/H2
-(una familia a la vez). Boceto: funding percentil <2% rolling → ventana long N días; y/o
-proxy de cascada = ΔOI<<0 + volumen z>3 + wick → entrada contraria. NO correr antes de congelar.
+### H3a — `funding` (funding extremo contrarian, BIS WP1087) — IMPLEMENTADA ✅, EN COLA
+**Spec CONGELADA (2026-07-24, antes de mirar cualquier dato de funding real):**
+- Datos: velas **4h** BTC/ETH + funding adjunto (`validate.py --funding <csv>` con el CSV de
+  `fetch_funding.py`; ffill causal del último funding conocido al open de cada barra).
+- Reglas: long cuando funding ≤ su cuantil **0.02** rolling (ventana **1095 barras 4h ≈ 6
+  meses**, umbral sobre historia previa → causal); flat cuando funding ≥ cuantil **0.50**
+  (histéresis); stop paracaídas close − 3·ATR14. Sin target/time-stop.
+- Parámetros libres: enter_pct, exit_pct, lookback, sl_atr (4). Variantes permitidas: UNA
+  (enter_pct 0.05) si la base falla SOFT.
+- **REGLA DE ORDEN: NO se corre hasta registrar el veredicto de H1/H2** (una familia a la
+  vez). Al correrla, usar `--deflated-sharpe 124` (trials acumulados + H1/H2 + esta).
+- Código: `signals.funding_extreme_signals` + controles en `synthetic.funding_market_ohlcv`
+  (capitulación→rebote vs no-informativo) — 5 tests.
+- Comandos (POST-veredicto H1/H2):
+```bash
+python crypto/scripts/fetch_funding.py --symbol BTCUSDT --out crypto/data/BTCUSDT-funding.csv
+python crypto/scripts/fetch_funding.py --symbol ETHUSDT --out crypto/data/ETHUSDT-funding.csv
+python crypto/scripts/validate.py --data crypto/data/BTC_USDT-4h-flow.csv --funding crypto/data/BTCUSDT-funding.csv --strategy funding --compare --deflated-sharpe 124 --out crypto/data/rep_funding_btc.json
+python crypto/scripts/validate.py --data crypto/data/ETH_USDT-4h-flow.csv --funding crypto/data/ETHUSDT-funding.csv --strategy funding --compare --deflated-sharpe 124 --out crypto/data/rep_funding_eth.json
+python crypto/scripts/decide.py crypto/data/rep_funding_*.json
+```
+
+### H3b — proxy de cascadas de liquidación (DISEÑADA, no implementada)
+Requiere construir el dataset de proxies (ΔOI de los dumps de métricas + volumen z + wick +
+flip de funding). Se implementa SOLO si H3a resuelve y el programa sigue en pie (MAPA_EDGES B1).
 
 ## Backlog de hipótesis (prioridad = prior × dato disponible × costo de test)
 

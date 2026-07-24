@@ -110,6 +110,42 @@ def flow_market_ohlcv(n: int = 6000, seed: int = 6, informative: bool = True) ->
     )
 
 
+def funding_market_ohlcv(n: int = 8000, seed: int = 8, informative: bool = True) -> pd.DataFrame:
+    """Control de H3a: episodios de CAPITULACION (funding muy negativo) que preceden rebote.
+
+    Cada ~700 barras: ~25 barras de funding profundamente negativo (capitulacion de longs).
+    Con ``informative=True``, las ~120 barras SIGUIENTES tienen drift positivo fuerte (el
+    rebote post-lavado del BIS). Con ``informative=False``, el funding hace los mismos
+    extremos pero el drift no cambia -> la estrategia no debe ganar.
+    Incluye columna ``funding_rate`` alineada a las barras (como la adjunta validate --funding).
+    """
+    rng = np.random.default_rng(seed)
+    funding = rng.normal(0.0001, 0.00004, n)
+    drift = np.full(n, 0.0002)
+    i = 600
+    while i < n - 200:
+        cap_len = int(rng.integers(18, 30))
+        funding[i : i + cap_len] = rng.normal(-0.0012, 0.0003, cap_len)
+        if informative:
+            drift[i + cap_len : i + cap_len + 120] = 0.004
+        i += int(rng.integers(600, 800))
+
+    rets = rng.normal(drift, 0.011)
+    close = 100.0 * np.exp(np.cumsum(rets))
+    open_ = np.empty(n)
+    open_[0] = close[0]
+    open_[1:] = close[:-1]
+    wick = 0.011 * close
+    high = np.maximum(open_, close) + rng.uniform(0.1, 0.9, n) * wick
+    low = np.minimum(open_, close) - rng.uniform(0.1, 0.9, n) * wick
+
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close,
+         "volume": np.ones(n), "funding_rate": funding},
+        index=_index(n),
+    )
+
+
 def sweep_market_ohlcv(
     n_events: int = 60,
     range_bars: int = 26,

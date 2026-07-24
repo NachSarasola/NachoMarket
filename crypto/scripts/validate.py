@@ -35,6 +35,7 @@ from crypto.smc.report import export_trades_csv, slice_report  # noqa: E402
 from crypto.smc.signals import (  # noqa: E402
     donchian_bms_signals,
     flow_momentum_signals,
+    funding_extreme_signals,
     ma_timing_signals,
     smc_sweep_signals,
 )
@@ -154,6 +155,8 @@ def gen_signals(df: pd.DataFrame, strategy: str, params: dict) -> pd.DataFrame:
         return ma_timing_signals(df, **params)
     if strategy == "flow":
         return flow_momentum_signals(df, **params)
+    if strategy == "funding":
+        return funding_extreme_signals(df, **params)
     raise ValueError(f"estrategia desconocida: {strategy}")
 
 
@@ -219,6 +222,14 @@ DEFAULT_PARAMS = {
         "exit_q": 0.50,
         "sl_atr": 3.0,
     },
+    # H3a (spec congelada en HIPOTESIS.md): funding extremo contrarian. NO correr antes
+    # del veredicto H1/H2 (una familia a la vez). Requiere --funding <csv>.
+    "funding": {
+        "enter_pct": 0.02,
+        "exit_pct": 0.50,
+        "lookback": 1095,
+        "sl_atr": 3.0,
+    },
 }
 
 
@@ -238,7 +249,7 @@ def main() -> int:
                      help="datos sinteticos SIN edge (random-walk multi-regimen) — smoke negativo")
     src.add_argument("--synthetic-positive", action="store_true",
                      help="datos sinteticos CON edge (sweeps inyectados) — demuestra el pipeline en verde")
-    p.add_argument("--strategy", choices=["sweep", "donchian", "ma_timing", "flow"], default="sweep")
+    p.add_argument("--strategy", choices=["sweep", "donchian", "ma_timing", "flow", "funding"], default="sweep")
     p.add_argument("--direction", choices=["long", "short", "both"], default="long")
     p.add_argument("--is-end", default="2023-12-31", help="fin del in-sample (OOS empieza al dia sig.)")
     p.add_argument("--initial", type=float, default=500.0)
@@ -247,6 +258,8 @@ def main() -> int:
     p.add_argument("--risk-pct", type=float, default=0.01)
     p.add_argument("--vol-target", type=float, default=None,
                    help="overlay de vol-targeting anual (p.ej. 0.30); solo reduce tamaño")
+    p.add_argument("--funding", default="",
+                   help="CSV de funding (fetch_funding.py) para adjuntar como columna causal")
     p.add_argument("--folds", type=int, default=4)
     p.add_argument("--min-trades", type=int, default=100)
     p.add_argument("--deflated-sharpe", type=int, default=1, metavar="N_TRIALS",
@@ -270,6 +283,13 @@ def main() -> int:
               "NO es dato real, solo muestra que detecta el fenomeno cuando existe ###\n")
     else:
         df = load_csv(args.data)
+
+    if args.funding:
+        fdf = pd.read_csv(args.funding)
+        fdf.index = pd.to_datetime(fdf["timestamp"], unit="ms", utc=True)
+        # ffill del ultimo funding CONOCIDO al open de cada barra -> causal (levemente stale).
+        df["funding_rate"] = fdf["funding_rate"].astype(float).reindex(
+            df.index.union(fdf.index)).sort_index().ffill().reindex(df.index)
 
     params = DEFAULT_PARAMS[args.strategy]
     bars_per_year = infer_bars_per_year(df)

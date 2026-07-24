@@ -38,8 +38,10 @@ crypto/
 │   ├── portfolio.py      # validacion multi-par + correlacion (¿diversifica o solo suma fees?)
 │   ├── weekly_review.py  # revision semanal: journal vivo vs cono del backtest -> NORMAL/ALERTA/KILL
 │   ├── cost_sensitivity.py  # ¿a partir de que fee+slippage muere el edge? (acantilado de costos)
+│   ├── fetch_funding.py  # historia completa del funding de Binance perps (gratis) — H3a
 │   ├── vps_setup.sh      # setup AISLADO en el VPS (venv propio, no toca el otro bot)
-│   └── vps_validate_all.sh  # one-shot VPS: baja datos + gates + veredicto + empaqueta
+│   ├── vps_validate_all.sh  # one-shot VPS: baja datos + gates + veredicto + empaqueta
+│   └── vps_run_hipotesis.sh # one-shot VPS: H1+H2 con specs congeladas + veredicto
 ├── tests/                # 32 tests: causalidad, fills, control positivo/negativo, stats, FVG
 ├── config-backtest.json  # config freqtrade para backtesting
 ├── config-dryrun.json    # config freqtrade para paper trading (dry-run)
