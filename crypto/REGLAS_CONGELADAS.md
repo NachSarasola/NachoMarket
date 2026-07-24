@@ -280,9 +280,14 @@ en HIPOTESIS.md → RIP: el cap de stop 4% es incompatible con vol de eventos en
 event-short futuro exigiría stop escalado por vol = **enmienda de regla INQUEBRANTABLE que
 solo el usuario puede autorizar** y contaría como spec nueva.
 
-**H7 (unlocks): PENDIENTE** — `fetch_unlocks.py` falló contra el API de DeFiLlama (forma
-del JSON a inspeccionar con `--dump-raw`); el resto del pipeline (klines/funding de 202
-perps) ya quedó cacheado en el VPS. Se corre al ajustar el parser.
+**H7 (unlocks): PENDIENTE** — el API clásico de DeFiLlama pasó a ser PAGO (HTTP 402,
+verificado en el VPS 2026-07-24). Mitigación implementada el mismo día: `fetch_unlocks.py`
+v2 con fuentes en cascada — (1) scrape del JSON embebido del SITIO gratuito
+defillama.com/unlocks (misma data, backend abierto emissions-adapters), (2) API clásico con
+`DEFILLAMA_API_KEY` opcional, (3) `--probe` de diagnóstico. Fallback pre-diseñado si el
+sitio también cierra: reconstrucción de cliffs por saltos de supply circulante (requiere
+registrar el supuesto de conocibilidad ex-ante — cierto para vesting contractual). El resto
+del pipeline (klines/funding de 202 perps) ya quedó cacheado en el VPS.
 
 ## RESULTADO GATE 1 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
 

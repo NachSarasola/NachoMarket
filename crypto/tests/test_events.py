@@ -268,6 +268,43 @@ def test_parse_emission_without_supply_gives_nan_pct() -> None:
     assert evs[0]["pct_supply"] is None and evs[0]["pct_basis"] == "desconocido"
 
 
+def test_parse_emission_dedups_repeated_event_lists() -> None:
+    # El pageProps del sitio repite la misma lista de eventos en varios props.
+    fu = _load_script("fetch_unlocks")
+    ev = {"timestamp": 1720000000, "noOfTokens": 100.0, "unlockType": "cliff"}
+    payload = {"pageProps": {"a": {"events": [ev], "maxSupply": 1000, "symbol": "zz"},
+                             "b": {"chartData": {"events": [dict(ev)]}}}}
+    evs = fu.parse_emission(payload, "zz")
+    assert len(evs) == 1 and np.isclose(evs[0]["pct_supply"], 10.0)
+
+
+def test_extract_next_data_and_build_id() -> None:
+    fu = _load_script("fetch_unlocks")
+    html = ('<html><script id="__NEXT_DATA__" type="application/json">'
+            '{"buildId":"abc123","props":{"pageProps":{"x":1}}}</script></html>')
+    nd = fu.extract_next_data(html)
+    assert nd.get("buildId") == "abc123"
+    assert fu.extract_next_data("<html>nope</html>") == {}
+
+
+def test_slugify_defillama_convention() -> None:
+    fu = _load_script("fetch_unlocks")
+    assert fu.slugify("Jupiter") == "jupiter"
+    assert fu.slugify("Curve DAO") == "curve-dao"
+    assert fu.slugify("Ether.fi") == "ether-fi"
+
+
+def test_extract_index_protocols_from_next_data() -> None:
+    fu = _load_script("fetch_unlocks")
+    nd = {"buildId": "b", "props": {"pageProps": {"protocols": [
+        {"name": "Aptos", "tSymbol": "APT", "maxSupply": 1},
+        {"name": "Arbitrum", "nextEvent": {"timestamp": 1}},
+        {"name": "Aptos", "tSymbol": "APT"},          # duplicado -> una sola vez
+        {"name": "loose-string-sin-campos-token"},    # no parece protocolo
+    ]}}}
+    assert fu.extract_index_protocols(nd) == ["Aptos", "Arbitrum"]
+
+
 def test_perp_symbols_from_info() -> None:
     fu = _load_script("fetch_unlocks")
     info = {"symbols": [

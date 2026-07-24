@@ -40,11 +40,13 @@ if [ ! -f "$EV/listings.csv" ]; then
         && echo "  ✅ listings.csv" || echo "  ⚠️ fetch_listings fallo (ver $LOG)"
 else echo "  (cache) $EV/listings.csv"; fi
 
-echo "== 2/4 Calendario historico de unlocks (DeFiLlama, cliffs >=1%) =="
+echo "== 2/4 Calendario historico de unlocks (sitio gratuito de DefiLlama, cliffs >=1%) =="
 if [ ! -f "$EV/unlocks.csv" ]; then
     python crypto/scripts/fetch_unlocks.py --perps-json "$EV/perps.json" --min-pct 1.0 \
         --out "$EV/unlocks.csv" >>"$LOG" 2>&1 \
-        && echo "  ✅ unlocks.csv" || echo "  ⚠️ fetch_unlocks fallo — inspeccionar con: python crypto/scripts/fetch_unlocks.py --dump-raw aptos --out /tmp/llama.json"
+        && echo "  ✅ unlocks.csv" \
+        || { echo "  ⚠️ fetch_unlocks fallo — diagnostico automatico:";
+             python crypto/scripts/fetch_unlocks.py --probe 2>&1 | tee -a "$LOG"; }
 else echo "  (cache) $EV/unlocks.csv"; fi
 
 echo "== 3/4 Klines 4h + funding de los perps de los eventos =="
