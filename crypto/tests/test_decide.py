@@ -96,3 +96,30 @@ def test_combine_adjust_when_only_soft() -> None:
                                            in_sample={"trades": 30, "sharpe": 2.0, "total_return": 0.5}))
     res = decide.combine([sweep])
     assert res["overall"] == "AJUSTE_UNICO"
+
+
+# --- combine() agnostico de estrategia (H1/H2/H3: ma_timing, flow, funding) ---
+
+def test_combine_multiple_candidates_all_fail_is_no_operar() -> None:
+    # El caso real del veredicto H1/H2: ma_timing y flow FAIL en la misma fuente.
+    ma = decide.classify_report(_report(strategy="ma_timing", gate5_oos_is_ratio=0.09))
+    fl = decide.classify_report(_report(strategy="flow", deflated_sharpe={"dsr": 0.1}))
+    res = decide.combine([ma, fl])
+    assert res["overall"] == "NO_OPERAR"
+    assert "SIN_SWEEP" not in str(res)
+
+
+def test_combine_flow_pass_alone_is_go() -> None:
+    fl = decide.classify_report(_report(strategy="flow"))
+    res = decide.combine([fl])
+    assert res["overall"] == "GO_DRY_RUN"
+    pair = list(res["per_pair"].values())[0]
+    assert pair["strategy"] == "flow"
+
+
+def test_combine_best_of_two_passes_wins() -> None:
+    ma = decide.classify_report(_report(strategy="ma_timing", oos={"sharpe": 1.0, "total_return": 0.2}))
+    fl = decide.classify_report(_report(strategy="flow", oos={"sharpe": 2.0, "total_return": 0.4}))
+    res = decide.combine([ma, fl])
+    pair = list(res["per_pair"].values())[0]
+    assert pair["verdict"] == "GO_DRY_RUN" and pair["strategy"] == "flow"

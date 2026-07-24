@@ -125,6 +125,34 @@ batir buy&hold y MA`. Veredictos: `GO_DRY_RUN` / `AJUSTE_UNICO` / `DESCARTAR_SWE
 |---|-------|----------------|--------|---------------------------------|
 | 0 | 2026-07-24 | — (base congelada) | GATE 1 con datos reales BTC+ETH 4h 2019→2026 | **FAIL → NO_OPERAR** (ver abajo) |
 | — | 2026-07-24 | grilla param_sweep (108 combos) | robustez/meseta | cuenta para multiple-testing |
+| 1 | 2026-07-24 | H1 ma_timing (SMA100 1d, vol-target 0.30) BTC+ETH | programa v2, spec congelada | **FAIL → NO_OPERAR** (2 runs) |
+| 2 | 2026-07-24 | H2 flow (taker q0.80/0.50) BTC+ETH 4h y 1d | programa v2, spec congelada | **FAIL → NO_OPERAR** (4 runs) |
+
+## RESULTADO GATE H1/H2 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌ (trials acumulados ≈ 119)
+
+| run | trades | WF folds>0 | OOS/IS | DSR | benchmarks | nota |
+|-----|--------|-----------|--------|-----|------------|------|
+| H1 ma_timing BTC 1d | 28 | 75% | **0.09** | 0.457 | **bate IS**, no OOS | el edge de los papers existió… hasta 2023 |
+| H1 ma_timing ETH 1d | 37 | 75% | -0.50 | 0.082 | no IS / sí OOS | — |
+| H2 flow BTC 4h | 369 | 75% | **-2.21** | 0.036 | no | OOS fuertemente negativo |
+| H2 flow ETH 4h | 409 | 50% | 0.31 | 0.088 | no IS / sí OOS | — |
+| H2 flow BTC 1d | 37 | 33% | -0.57 | 0.141 | no | — |
+| H2 flow ETH 1d | 46 | 67% | **0.56 ✅** | 0.228 | no IS / sí OOS | "lo menos muerto": pasó OOS/IS pero 46 trades no alcanzan para el DSR |
+
+Lecciones (pre-registradas como formato, escritas al ver los datos):
+1. **Tercera confirmación independiente del quiebre de régimen 2024+**: el trend lento
+   (ma_timing 1d) batió benchmarks IS con WF sólido y colapsó OOS — igual que donchian 4h y
+   que el propio benchmark. El edge de tendencia de la literatura (muestras ≤2022) **decayó
+   en la era ETF**, como predice el factor zoo. No es un bug nuestro: es el mercado.
+2. **El flow tiene un pulso débil** (ETH 1d pasó OOS/IS y batió B&H OOS) pero 37-46 trades en
+   1d no dan poder estadístico frente a ~119 trials: DSR hard-fail. Insuficiente evidencia ≠
+   evidencia. NO se ajusta (los fallos DSR/benchmarks son HARD por diseño).
+3. **Metodológica**: estrategias lentas en 1d generan 30-50 señales en 7 años → casi
+   in-validables con nuestro estándar. Correcto no operarlas; anotar que el gate de trades
+   limita estructuralmente el espacio 1d (consecuencia aceptada, no defecto).
+
+Siguiente paso según el árbol (MAPA_EDGES §A, rama AMBAS FAIL): **correr H3a (funding
+extremo)**, ya congelada e implementada. Si H3a también muere → checkpoint estratégico.
 
 ## RESULTADO GATE 1 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
 

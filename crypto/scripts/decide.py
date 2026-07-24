@@ -139,36 +139,51 @@ def classify_report(report: dict) -> dict:
 
 
 def combine(classified: list[dict]) -> dict:
-    """Combina las clasificaciones por fuente (par): sweep vs donchian -> veredicto por par."""
+    """Combina las clasificaciones por fuente (par) — AGNOSTICO de la estrategia.
+
+    'donchian' actua como CONTROL; cualquier otra estrategia es CANDIDATA (sweep, ma_timing,
+    flow, funding, ...). Por fuente: la mejor candidata PASS gana (si el control tambien pasa
+    y la supera en OOS, se prefiere el control); solo-soft-fails -> AJUSTE_UNICO; nada pasa
+    -> NO_OPERAR.
+    """
+    control_name = "donchian"
     by_source: dict[str, dict] = {}
     for c in classified:
         by_source.setdefault(c["source"], {})[c["strategy"]] = c
 
     per_pair: dict[str, dict] = {}
     for src, strat in by_source.items():
-        s = strat.get("sweep")
-        d = strat.get("donchian")
-        if s is None:
-            per_pair[src] = {"verdict": "SIN_SWEEP", "reasons": ["falta reporte del sweep"]}
-            continue
-        sweep_beats = True
-        if d is not None:
-            sweep_beats = s["oos_sharpe"] >= d["oos_sharpe"]
-        if s["classification"] == "PASS" and sweep_beats:
-            v = {"verdict": "GO_DRY_RUN", "strategy": "sweep", "reasons": []}
-        elif s["classification"] == "PASS" and d and d["classification"] == "PASS":
+        control = strat.get(control_name)
+        candidates = {k: v for k, v in strat.items() if k != control_name}
+
+        passes = [c for c in candidates.values() if c["classification"] == "PASS"]
+        adjusts = [c for c in candidates.values() if c["classification"] == "ADJUST"]
+        control_pass = control is not None and control["classification"] == "PASS"
+
+        if passes:
+            best = max(passes, key=lambda c: c["oos_sharpe"])
+            if control_pass and control["oos_sharpe"] > best["oos_sharpe"]:
+                v = {"verdict": "DESCARTAR_SWEEP_QUEDA_DONCHIAN",
+                     "reasons": [f"control OOS {control['oos_sharpe']:.2f} > "
+                                 f"{best['strategy']} {best['oos_sharpe']:.2f}"]}
+            else:
+                v = {"verdict": "GO_DRY_RUN", "strategy": best["strategy"], "reasons": []}
+        elif control_pass:
             v = {"verdict": "DESCARTAR_SWEEP_QUEDA_DONCHIAN",
-                 "reasons": [f"donchian OOS Sharpe {d['oos_sharpe']:.2f} >= sweep {s['oos_sharpe']:.2f}"]}
-        elif s["classification"] == "FAIL" and d and d["classification"] == "PASS":
-            v = {"verdict": "DESCARTAR_SWEEP_QUEDA_DONCHIAN", "reasons": s["hard_fail"]}
-        elif s["classification"] == "ADJUST":
-            v = {"verdict": "AJUSTE_UNICO", "reasons": s["soft_fail"]}
+                 "reasons": [f"solo el control pasa; candidatas: "
+                             f"{[c['strategy'] for c in candidates.values()] or 'ninguna'}"]}
+        elif adjusts:
+            a = adjusts[0]
+            v = {"verdict": "AJUSTE_UNICO", "strategy": a["strategy"], "reasons": a["soft_fail"]}
         else:
-            v = {"verdict": "NO_OPERAR", "reasons": s["hard_fail"] or s["soft_fail"]}
+            reasons: list[str] = []
+            for c in candidates.values():
+                reasons.extend(f"{c['strategy']}: {r}" for r in (c["hard_fail"] or c["soft_fail"]))
+            v = {"verdict": "NO_OPERAR", "reasons": reasons[:6]}
         per_pair[src] = v
 
     # Veredicto global por prioridad.
-    priority = ["GO_DRY_RUN", "DESCARTAR_SWEEP_QUEDA_DONCHIAN", "AJUSTE_UNICO", "NO_OPERAR", "SIN_SWEEP"]
+    priority = ["GO_DRY_RUN", "DESCARTAR_SWEEP_QUEDA_DONCHIAN", "AJUSTE_UNICO", "NO_OPERAR"]
     overall = "NO_OPERAR"
     for p in priority:
         if any(v["verdict"] == p for v in per_pair.values()):

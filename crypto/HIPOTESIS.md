@@ -160,4 +160,11 @@ flip de funding). Se implementa SOLO si H3a resuelve y el programa sigue en pie 
 - **Donchian 4h long-only sin filtro de régimen**: estructura IS pero muere en chop 2024+ y
   no bate hold. Lección: la tendencia existe pero el timeframe/gestión importan más que la
   señal de ruptura.
+- **H1 ma_timing (SMA100 1d + vol-target)** — 2026-07-24, NO_OPERAR: batió benchmarks IS en
+  BTC con WF 75% y colapsó OOS 2024+ (ratio 0.09). Lección: TERCERA confirmación del quiebre
+  de régimen 2024+ para trend en majors; el edge de los papers (muestras ≤2022) decayó.
+- **H2 flow (taker imbalance q0.80/0.50)** — 2026-07-24, NO_OPERAR: en 4h el OOS fue
+  negativo; en 1d ETH pasó OOS/IS (0.56) y batió B&H OOS pero 46 trades no sobreviven al
+  DSR con ~119 trials. Lección: si el flujo tiene señal, vive en 1d y necesita un diseño con
+  más señales por año (o más pares/historia) para ser validable — no torturar esta spec.
 - **Scalping <1h con capital chico**: muerto por aritmética de costos, sin necesidad de test.
