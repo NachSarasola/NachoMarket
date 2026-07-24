@@ -99,11 +99,16 @@ semana el mercado está raro".
 3. ¿Drawdown vs límites (MaxDrawdown protection)? ¿Alguna protection saltó? ¿Por qué?
 4. Journal: anotar cualquier anomalía (slippage raro, vela extrema, exchange caído).
 
-**Semanal (analítico, 30 min):**
-1. Slice por régimen y por enter_tag/exit_reason (CSV del journal): ¿dónde gana, dónde pierde?
-2. Curva de equity vs curva esperada del backtest (¿dentro del cono de Monte Carlo?).
-3. ¿Rachas dentro de lo simulado? (si el MC decía peor racha ~8 y vas 12, señal de cambio).
-4. NO tocar parámetros. Anotar hipótesis para el review trimestral.
+**Semanal (analítico, 30 min) — automatizado en `crypto/scripts/weekly_review.py`:**
+```bash
+python crypto/scripts/weekly_review.py --freqtrade-csv <export_de_trades.csv> --baseline report.json
+```
+El script hace mecánicamente lo que antes dependía de disciplina:
+1. Slice por régimen y por exit_reason: ¿dónde gana, dónde pierde?
+2. Drawdown realizado vs el p95 del Monte Carlo del backtest (cono).
+3. Racha de pérdidas actual/máxima vs la esperada; winrate vivo vs backtest (edge decayendo).
+4. Veredicto: `TODO_NORMAL` / `ALERTA(...)` / `KILL(...)` (los criterios de muerte de abajo).
+NO toca parámetros. Un `KILL` = apagar y post-mortem antes de reencender.
 
 **Trimestral (estructural):**
 1. Re-correr validación completa con los datos nuevos (walk-forward extendido).

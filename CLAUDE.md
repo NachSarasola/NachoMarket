@@ -44,6 +44,10 @@ de variantes (multiple-testing) en `crypto/REGLAS_CONGELADAS.md`.
 - python crypto/scripts/param_sweep.py --synthetic — meseta vs pico de parametros
 - python crypto/scripts/fetch_data.py --symbol BTC/USDT --timeframe 4h --since 2019-01-01 --out crypto/data/BTC_USDT-4h.csv
 - python crypto/scripts/validate.py --data <csv> --strategy sweep --compare --deflated-sharpe <N> --trades-out journal.csv
+- python crypto/scripts/decide.py crypto/data/report_*.json — veredicto mecanico de los gates
+- python crypto/scripts/portfolio.py --data <csv> <csv> — multi-par + correlacion (¿diversifica?)
+- python crypto/scripts/weekly_review.py --freqtrade-csv <trades.csv> --baseline <report.json> — review semanal
+- bash crypto/scripts/vps_validate_all.sh — one-shot en el VPS (baja datos + gates + veredicto)
 - freqtrade backtesting -c crypto/config-backtest.json --strategy SmcSweep --strategy-path crypto/user_data/strategies --enable-protections
 - freqtrade trade -c crypto/config-dryrun.json --strategy SmcSweep --strategy-path crypto/user_data/strategies — paper
 

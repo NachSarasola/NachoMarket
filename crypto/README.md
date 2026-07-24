@@ -36,6 +36,7 @@ crypto/
 │   ├── param_sweep.py    # grilla de parametros + deteccion de MESETA vs PICO
 │   ├── decide.py         # veredicto MECANICO de los gates desde los reportes JSON
 │   ├── portfolio.py      # validacion multi-par + correlacion (¿diversifica o solo suma fees?)
+│   ├── weekly_review.py  # revision semanal: journal vivo vs cono del backtest -> NORMAL/ALERTA/KILL
 │   ├── vps_setup.sh      # setup AISLADO en el VPS (venv propio, no toca el otro bot)
 │   └── vps_validate_all.sh  # one-shot VPS: baja datos + gates + veredicto + empaqueta
 ├── tests/                # 32 tests: causalidad, fills, control positivo/negativo, stats, FVG
