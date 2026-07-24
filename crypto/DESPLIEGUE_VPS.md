@@ -1,9 +1,10 @@
 # Despliegue en el VPS — AISLADO del otro bot
 
 > ⚠️ **Hay otro bot corriendo en el VPS (`~/nachomarket`, servicio `polymarket-bot`). NADA de
-> esto lo toca.** Todo el bot de crypto vive en un directorio y un venv separados. No corras
-> `scripts/deploy.sh` ni `scripts/setup_vm.sh` para esto — esos apuntan a `~/nachomarket`,
-> hacen `apt upgrade` global y tocan systemd. Para el bot de crypto: SOLO lo de abajo.
+> esto lo toca.** Todo el bot de crypto vive en un directorio y un venv separados. Los scripts
+> de deploy del bot viejo (`deploy.sh`/`setup_vm.sh`, ya eliminados de este branch pero
+> posiblemente presentes en el VPS) apuntan a `~/nachomarket`, hacen `apt upgrade` global y
+> tocan systemd — NO los uses para esto. Para el bot de crypto: SOLO lo de abajo.
 
 Claude no puede entrar al VPS desde su entorno (sin cliente ssh, sin tu clave, y el egress a
 la VPS está bloqueado). Así que estos pasos los corrés vos con tu `ssh dublin`. Son seguros,
@@ -90,7 +91,7 @@ freqtrade trade -c crypto/config-dryrun.json --strategy SmcSweep \
 
 ## Qué NO hacer
 
-- ❌ `bash scripts/deploy.sh` / `scripts/setup_vm.sh` para el bot de crypto (son del otro bot).
+- ❌ Usar los deploy scripts del bot viejo (si sobreviven en el VPS) para el bot de crypto.
 - ❌ Instalar en `~/nachomarket/venv` ni tocar el servicio `polymarket-bot`.
 - ❌ `git checkout` de este branch dentro de `~/nachomarket` (cambiaría el código del otro bot).
 - ❌ Pasar a live sin: OOS creíble, batir benchmarks, y 4-8 semanas de dry-run.

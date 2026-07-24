@@ -3,6 +3,8 @@
 .venv/
 venv/
 env/
+.venv-crypto/
+.venv-ft/
 
 # Python
 __pycache__/
@@ -11,11 +13,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-
-# Data (trades log puede ser grande)
-data/trades.jsonl
-data/state.json
-data/reviews/*.json
+.pytest_cache/
 
 # IDE
 .vscode/
@@ -31,8 +29,7 @@ Thumbs.db
 *.pem
 *.key
 
-# Crypto pivot: venv aislado, datos de mercado descargados y artefactos de freqtrade
-.venv-crypto/
+# Datos de mercado descargados y artefactos de freqtrade
 crypto/data/
 crypto/user_data/data/
 crypto/user_data/backtest_results/
