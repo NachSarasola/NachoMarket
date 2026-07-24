@@ -37,8 +37,13 @@ crypto/
 ├── tests/                # 32 tests: causalidad, fills, control positivo/negativo, stats, FVG
 ├── config-backtest.json  # config freqtrade para backtesting
 ├── config-dryrun.json    # config freqtrade para paper trading (dry-run)
-└── REGLAS_CONGELADAS.md  # spec pre-registrada (Gate 1) + registro de variantes
+├── REGLAS_CONGELADAS.md  # spec pre-registrada (Gate 1) + registro de variantes
+├── ESTRATEGIA.md         # la estrategia en lenguaje llano + como leer la validacion
+└── RECURSOS.md           # recursos curados para aprender (microestructura, quant, freqtrade)
 ```
+
+Para entender el sistema: leer **ESTRATEGIA.md** (qué hace y por qué, mapeado al ebook).
+Para seguir aprendiendo: **RECURSOS.md** (libros/papers/repos vetados, con nivel y credibilidad).
 
 **Un solo módulo de detección** (`smc/signals.py`) alimenta tanto el backtester de validación
 como la estrategia de freqtrade → las señales no pueden divergir entre backtest y live.
