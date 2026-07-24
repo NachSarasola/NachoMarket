@@ -149,3 +149,14 @@ Conclusiones pre-registradas que aplican:
    desde cero y se anota acá como trial (el contador de multiple-testing sigue corriendo).
 5. Según TESIS ("qué invalida la tesis", escrito de antemano): NO se opera direccional; se
    preserva capital y aprendizaje; nuevas hipótesis solo en la ventana de review trimestral.
+
+**Post-mortem con datos finos** (journals + param_sweep + slices, 2026-07-24):
+- Grilla del sweep 100% roja (mejor combo Sharpe -0.32, y era pico, no meseta) → familia
+  falsada, no des-tuneada.
+- Asimetría de régimen consistente en las 4 combinaciones: PnL positivo SOLO en regímenes
+  `up_*`; long con precio < SMA 30d destruyó valor siempre.
+- Única celda viva del sweep: BTC `up_hi` (n=20, wr 0.80, avgR +0.47) → semilla de H2, n<30.
+- `ma_cross` (benchmark SMA200 long/flat) batió a TODO in-sample (Sharpe 1.45/1.56; 16x/42x).
+- El programa de investigación v2 (familias H1-H6, reglas y RIP) vive en `crypto/HIPOTESIS.md`.
+  Aclaración de cadencia: **investigar es continuo** (nada está live); la regla trimestral
+  aplica a cambios de parámetros EN VIVO.
