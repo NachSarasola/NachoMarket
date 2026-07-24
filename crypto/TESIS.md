@@ -3,6 +3,12 @@
 Documento vivo. Se revisa con RESULTADOS (journal + slices por régimen), no con opiniones.
 Cada cambio de reglas se anota en `REGLAS_CONGELADAS.md` y cuenta como trial (Deflated Sharpe).
 
+> **ESTADO (2026-07-24): GATE 1 = NO_OPERAR.** El sweep SMC fue falsado con datos reales
+> (sin edge OOS, DSR≈0) y el control Donchian murió en el régimen 2024+; nada batió al
+> buy&hold. Según los criterios pre-registrados de abajo: no hay live direccional; se
+> preserva capital, se estudia, y las hipótesis nuevas pasan el pipeline completo en la
+> ventana trimestral. Detalle: `REGLAS_CONGELADAS.md` → "RESULTADO GATE 1".
+
 ## La tesis en 5 puntos
 
 1. **Los stops se agrupan en niveles obvios y su barrido revierte.** Crypto es retail-heavy y

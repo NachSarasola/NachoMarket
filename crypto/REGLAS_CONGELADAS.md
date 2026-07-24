@@ -123,5 +123,29 @@ batir buy&hold y MA`. Veredictos: `GO_DRY_RUN` / `AJUSTE_UNICO` / `DESCARTAR_SWE
 
 | # | fecha | cambio vs base | motivo | resultado IS (Sharpe/PF/trades) |
 |---|-------|----------------|--------|---------------------------------|
-| 0 | (base)| —              | hipótesis inicial congelada | (pendiente: correr con datos reales) |
-| — | —     | grilla param_sweep (108 combos) | robustez/meseta | cuenta para multiple-testing |
+| 0 | 2026-07-24 | — (base congelada) | GATE 1 con datos reales BTC+ETH 4h 2019→2026 | **FAIL → NO_OPERAR** (ver abajo) |
+| — | 2026-07-24 | grilla param_sweep (108 combos) | robustez/meseta | cuenta para multiple-testing |
+
+## RESULTADO GATE 1 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
+
+Corrido en el VPS con datos reales (Binance, 4h, 2019→2026), costos 10+5 bps/lado.
+`decide.py` (mecánico, sin interpretación):
+
+| par | estrategia | trades | walk-forward | OOS/IS | DSR | benchmarks | veredicto |
+|-----|-----------|--------|--------------|--------|-----|------------|-----------|
+| BTC | sweep     | 228 | 25% folds >0 | **-243.75** | 0.006 | no bate | FAIL |
+| BTC | donchian  | 299 | 75% folds >0 | **-0.57** | 0.464 | no bate | FAIL |
+| ETH | sweep     | 176 | 50% folds >0 | IS no rentable | 0.000 | no bate | FAIL |
+| ETH | donchian  | 303 | 75% folds >0 | **-0.35** | 0.197 | no bate OOS sí/IS no | FAIL |
+
+Conclusiones pre-registradas que aplican:
+1. **El sweep SMC mecanizado NO tiene edge** en majors 4h neto de costos. Se descarta como
+   estrategia operable (la hipótesis era falsable y fue falsada — eso es un resultado válido).
+2. **El control Donchian muestra estructura IS pero muere en el OOS 2024+** (régimen chop) y
+   no bate al buy&hold. Tampoco se opera.
+3. **Nada batió a holdear BTC** en el periodo. Para exposición a crypto con este capital,
+   holdear/DCA es la posición honesta; un bot direccional no se justifica con esta evidencia.
+4. Fallos HARD → **no hay "ajuste único"**. Toda hipótesis nueva pasa el pipeline COMPLETO
+   desde cero y se anota acá como trial (el contador de multiple-testing sigue corriendo).
+5. Según TESIS ("qué invalida la tesis", escrito de antemano): NO se opera direccional; se
+   preserva capital y aprendizaje; nuevas hipótesis solo en la ventana de review trimestral.
