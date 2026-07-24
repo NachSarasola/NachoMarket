@@ -74,7 +74,8 @@ Si `SmcSweep` no lo bate out-of-sample neto de costos, se **descarta `SmcSweep`*
 - **Positivo**: `crypto/smc/synthetic.py::sweep_market_ohlcv` → el sweep DEBE ser rentable.
 - **Negativo**: `random_walk_ohlcv` → DEBE perder por costos.
 - **DSR / Monte Carlo**: `crypto/smc/stats.py` (multiple-testing + prob. de ruina).
-- Todos ejercitados en `crypto/tests/` (32 tests).
+- Todos ejercitados en `crypto/tests/` (57 tests: causalidad, fills, controles, stats, régimen,
+  veredicto, multi-par, review).
 
 ## Gates de validación (en orden; no se salta ninguno)
 
@@ -86,6 +87,30 @@ Si `SmcSweep` no lo bate out-of-sample neto de costos, se **descarta `SmcSweep`*
 6. **Batir buy&hold BTC y MA diaria** neto de costos. Si no → no desplegar.
 7. **Dry-run 4-8 semanas** (freqtrade); fills/fees reales deben coincidir con lo simulado.
 8. **Live con $10-20/posición** + kill-switch. Objetivo de la etapa: un setup validado, no ingresos.
+
+Los gates 2-6 los aplica MECÁNICAMENTE `crypto/scripts/decide.py` sobre los reportes JSON de
+`validate.py` — el veredicto no se interpreta a mano.
+
+## GATE 1 — validación con datos reales (decide.py)
+
+Correr `crypto/scripts/vps_validate_all.sh` en el VPS → `decide.py` sobre los reportes. Umbrales:
+`trades≥100 · walk-forward ≥50% folds Sharpe>0 y peor fold≥-1.0 · OOS/IS≥0.5 · DSR≥0.95 ·
+batir buy&hold y MA`. Veredictos: `GO_DRY_RUN` / `AJUSTE_UNICO` / `DESCARTAR_SWEEP_QUEDA_DONCHIAN`
+/ `NO_OPERAR`. **El veredicto se anota como fila en el registro de abajo.**
+
+## GATE 2 — pasar de dry-run a live (checklist)
+
+- [ ] ≥ 4 semanas de dry-run (freqtrade) completadas.
+- [ ] Fills/fees reales dentro de ±20% de lo simulado (paridad backtest↔dry-run).
+- [ ] `weekly_review.py` sin `KILL` ni `ALERTA` sostenida en las últimas 4 semanas.
+- [ ] Kill-switch probado en vivo (drill: `/stop` de Telegram y verificar cancelación de órdenes).
+- [ ] Live arranca con $10-20/posición, riesgo 1%, y el otro bot del VPS intacto.
+
+## Criterios de muerte en live (weekly_review.py → KILL)
+
+- Drawdown realizado peor que **2× el p95 del Monte Carlo** del backtest.
+- Racha de pérdidas **>> la esperada** (backtest + 3 y > 1.5×).
+- (ALERTA, no KILL) winrate vivo < 70% del backtest → edge decayendo, investigar.
 
 ## Registro de variantes probadas (multiple-testing)
 
