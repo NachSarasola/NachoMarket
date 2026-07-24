@@ -280,14 +280,18 @@ en HIPOTESIS.md → RIP: el cap de stop 4% es incompatible con vol de eventos en
 event-short futuro exigiría stop escalado por vol = **enmienda de regla INQUEBRANTABLE que
 solo el usuario puede autorizar** y contaría como spec nueva.
 
-**H7 (unlocks): PENDIENTE** — el API clásico de DeFiLlama pasó a ser PAGO (HTTP 402,
-verificado en el VPS 2026-07-24). Mitigación implementada el mismo día: `fetch_unlocks.py`
-v2 con fuentes en cascada — (1) scrape del JSON embebido del SITIO gratuito
-defillama.com/unlocks (misma data, backend abierto emissions-adapters), (2) API clásico con
-`DEFILLAMA_API_KEY` opcional, (3) `--probe` de diagnóstico. Fallback pre-diseñado si el
-sitio también cierra: reconstrucción de cliffs por saltos de supply circulante (requiere
-registrar el supuesto de conocibilidad ex-ante — cierto para vesting contractual). El resto
-del pipeline (klines/funding de 202 perps) ya quedó cacheado en el VPS.
+**H7 (unlocks): PENDIENTE** — el API clásico de DeFiLlama pasó a ser PAGO (HTTP 402) y el
+sitio quedó tras challenge de Cloudflare (403), ambos verificados en el VPS 2026-07-24. No
+se elude el challenge (ToS + carrera armamentista). Mitigación definitiva implementada:
+**fuente = el repo open-source que GENERA esos datos** (github.com/DefiLlama/
+emissions-adapters, clonado en el VPS) — `fetch_unlocks.py --source adapters` parsea los
+cronogramas TS declarativos con un mini-evaluador seguro (consts, fechas, periodToSeconds
+leído del propio repo). Supuestos registrados: % sobre suma de secciones declaradas;
+`manualStep` = un evento por escalón en start+k·duración (categoría "step"); helpers no
+parseables → `pct_basis=sum_parcial`. Mapeo gecko_id→ticker vía CoinGecko coins/list
+(cacheado; `COINGECKO_API_KEY` demo opcional). Fuentes secundarias: sitio y API clásico
+quedan como fallback en cascada. El resto del pipeline (klines/funding de 202 perps) ya
+quedó cacheado en el VPS.
 
 ## RESULTADO GATE 1 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
 

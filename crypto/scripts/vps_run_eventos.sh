@@ -40,13 +40,25 @@ if [ ! -f "$EV/listings.csv" ]; then
         && echo "  ✅ listings.csv" || echo "  ⚠️ fetch_listings fallo (ver $LOG)"
 else echo "  (cache) $EV/listings.csv"; fi
 
-echo "== 2/4 Calendario historico de unlocks (sitio gratuito de DefiLlama, cliffs >=1%) =="
+echo "== 2/4 Calendario historico de unlocks (repo open-source emissions-adapters) =="
+ADP="$EV/emissions-adapters"
 if [ ! -f "$EV/unlocks.csv" ]; then
-    python crypto/scripts/fetch_unlocks.py --perps-json "$EV/perps.json" --min-pct 1.0 \
-        --out "$EV/unlocks.csv" >>"$LOG" 2>&1 \
-        && echo "  ✅ unlocks.csv" \
-        || { echo "  ⚠️ fetch_unlocks fallo — diagnostico automatico:";
-             python crypto/scripts/fetch_unlocks.py --probe 2>&1 | tee -a "$LOG"; }
+    if [ ! -d "$ADP/protocols" ]; then
+        echo "  clonando emissions-adapters (fuente de verdad de DefiLlama)..."
+        git clone --depth 1 https://github.com/DefiLlama/emissions-adapters "$ADP" \
+            >>"$LOG" 2>&1 || echo "  ⚠️ clone fallo (ver $LOG)"
+    fi
+    if python crypto/scripts/fetch_unlocks.py --source adapters --adapters-dir "$ADP" \
+        --perps-json "$EV/perps.json" --min-pct 1.0 --out "$EV/unlocks.csv" \
+        2>&1 | tee -a "$LOG" | tail -5 && [ -s "$EV/unlocks.csv" ]; then
+        echo "  ✅ unlocks.csv ($(($(wc -l < "$EV/unlocks.csv") - 1)) eventos)"
+    else
+        echo "  ⚠️ 0 eventos del parser — pegar estas muestras para ajustarlo:"
+        ls "$ADP/protocols" 2>/dev/null | head -15
+        for f in aptos arbitrum celestia; do
+            [ -f "$ADP/protocols/$f.ts" ] && { echo "----- $f.ts"; sed -n '1,60p' "$ADP/protocols/$f.ts"; break; }
+        done
+    fi
 else echo "  (cache) $EV/unlocks.csv"; fi
 
 echo "== 3/4 Klines 4h + funding de los perps de los eventos =="

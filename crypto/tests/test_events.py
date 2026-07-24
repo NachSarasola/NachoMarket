@@ -294,6 +294,83 @@ def test_slugify_defillama_convention() -> None:
     assert fu.slugify("Ether.fi") == "ether-fi"
 
 
+_ADAPTER_TS = """
+import { manualCliff, manualLinear, manualStep } from "../adapters/manual";
+// comentario con url: https://ejemplo.com/x
+const start = 1666569600;
+const total = 1_000_000_000;
+const aptos = {
+  "Community": manualLinear(start, start + periodToSeconds.year * 10, total * 0.5),
+  "Core": [
+    manualCliff("2023-11-12", total * 0.05),
+    manualStep(start + periodToSeconds.month * 18, periodToSeconds.month, 3, total * 0.01),
+  ],
+  meta: {
+    token: "coingecko:aptos",
+    sources: ["https://aptosfoundation.org/whitepaper"],  /* bloque */
+  },
+};
+export default aptos;
+"""
+_PERIODS = {"day": 86400.0, "week": 604800.0, "month": 2628000.0, "year": 31536000.0}
+
+
+def test_adapter_parser_cliff_step_totals() -> None:
+    fu = _load_script("fetch_unlocks")
+    parsed = fu.parse_adapter_file(_ADAPTER_TS, "aptos", _PERIODS)
+    assert parsed["gecko_id"] == "aptos" and not parsed["incomplete"]
+    # total = linear 500M + cliff 50M + 3 steps de 10M = 580M
+    assert np.isclose(parsed["total"], 580_000_000)
+    cliffs = [e for e in parsed["events"] if e["category"] == "cliff"]
+    steps = [e for e in parsed["events"] if e["category"] == "step"]
+    assert len(cliffs) == 1 and len(steps) == 3
+    assert cliffs[0]["ts"] == 1699747200.0  # 2023-11-12 UTC
+    assert np.isclose(steps[0]["ts"], 1666569600 + 2628000 * 19)  # start+18m + 1 paso
+
+
+def test_adapter_rows_pct_and_aggregation() -> None:
+    fu = _load_script("fetch_unlocks")
+    parsed = fu.parse_adapter_file(_ADAPTER_TS, "aptos", _PERIODS)
+    rows = fu.adapter_events_to_rows(parsed, "APTUSDT")
+    cliff_row = [r for r in rows if "cliff" in r["category"]][0]
+    assert np.isclose(cliff_row["pct_supply"], 50 / 580 * 100, atol=0.01)
+    assert cliff_row["timestamp"] == 1699747200000 and cliff_row["symbol"] == "APTUSDT"
+    # dos eventos en el MISMO timestamp se agregan en uno
+    parsed2 = {"protocol": "x", "total": 100.0, "incomplete": False, "events": [
+        {"ts": 1700000000, "tokens": 5.0, "category": "cliff"},
+        {"ts": 1700000000, "tokens": 5.0, "category": "step"},
+    ]}
+    rows2 = fu.adapter_events_to_rows(parsed2, "XUSDT")
+    assert len(rows2) == 1 and np.isclose(rows2[0]["pct_supply"], 10.0)
+    assert rows2[0]["category"] == "cliff+step"
+
+
+def test_adapter_unknown_helper_marks_incomplete() -> None:
+    fu = _load_script("fetch_unlocks")
+    ts = 'const a = manualLog(1700000000, 100); const b = manualCliff(1700000000, 10);'
+    parsed = fu.parse_adapter_file(ts, "x", _PERIODS)
+    assert parsed["incomplete"] and len(parsed["events"]) == 1
+
+
+def test_strip_ts_comments_preserves_urls_in_strings() -> None:
+    fu = _load_script("fetch_unlocks")
+    src = 'const u = ["https://a.com/b"]; // fuera\n/* bloque */ const x = 1;'
+    out = fu.strip_ts_comments(src)
+    assert "https://a.com/b" in out and "fuera" not in out and "bloque" not in out
+
+
+def test_eval_expr_safe_rejects_calls_and_unknowns() -> None:
+    fu = _load_script("fetch_unlocks")
+    assert fu.eval_expr("1_000 * 2 + periodToSeconds.day",
+                        {"__period_day": 86400.0}) == 88400.0
+    for bad in ("__import__('os')", "open('x')", "a.b", "unknown_var + 1"):
+        try:
+            fu.eval_expr(bad, {})
+            raise AssertionError(f"debió rechazar: {bad}")
+        except (ValueError, SyntaxError):
+            pass
+
+
 def test_extract_index_protocols_from_next_data() -> None:
     fu = _load_script("fetch_unlocks")
     nd = {"buildId": "b", "props": {"pageProps": {"protocols": [

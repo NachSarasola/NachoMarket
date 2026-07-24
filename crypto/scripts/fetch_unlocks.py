@@ -1,34 +1,42 @@
 #!/usr/bin/env python3
-"""Descarga el calendario HISTÓRICO de unlocks (cliffs) a CSV de eventos — multi-fuente.
+"""Calendario HISTÓRICO de unlocks (cliffs) a CSV de eventos — multi-fuente.
 
-2026-07-24: el API clásico (api.llama.fi/emissions) pasó a ser PAGO (HTTP 402). El SITIO
-https://defillama.com/unlocks sigue siendo gratuito y embebe los mismos datos (Next.js,
-backend abierto: github.com/DefiLlama/emissions-adapters). Fuentes, en orden:
+Estado de las puertas (verificado en el VPS 2026-07-24): el API clásico
+(api.llama.fi/emissions) es PAGO (402) y el sitio defillama.com está tras challenge de
+Cloudflare (403) — no se elude: vamos a la FUENTE. Los cronogramas de vesting que alimentan
+ese dashboard son open-source: github.com/DefiLlama/emissions-adapters (archivos TS
+declarativos por protocolo). Fuentes, en orden:
 
-  1. llama-site : scrape del JSON embebido del sitio (gratis, sin key).
-  2. llama-api  : API clásico; si existe DEFILLAMA_API_KEY usa pro-api.llama.fi.
-  (fallback pre-diseñado si ambas mueren: reconstrucción por saltos de supply circulante —
-   requiere registrar el supuesto de conocibilidad ex-ante; NO implementada hasta necesitarla.)
+  1. adapters   : parsear un clone local del repo emissions-adapters (fuente de verdad,
+                  sin scraping). `git clone --depth 1` + `--adapters-dir`.
+  2. llama-site : JSON embebido del sitio (por si el challenge se levanta).
+  3. llama-api  : API clásico; con DEFILLAMA_API_KEY usa pro-api.llama.fi.
 
-El % del supply usa max_supply (tokenomics estática → sin lookahead; SUBESTIMA vs
-circulante → umbral conservador, pre-registrado).
+En la fuente `adapters` el % del supply usa la SUMA de todas las secciones declaradas del
+protocolo (= max supply documentado; estático → sin lookahead). Supuestos registrados:
+`manualStep` genera un evento por escalón en start+k·duración (k=1..steps, categoría
+"step"); protocolos con helpers no parseables quedan marcados `pct_basis=sum_parcial`.
 
 Uso (VPS):
-    python crypto/scripts/fetch_unlocks.py --perps-json crypto/data/events/perps.json \
-        --min-pct 1.0 --out crypto/data/events/unlocks.csv
-    python crypto/scripts/fetch_unlocks.py --probe          # diagnóstico de fuentes
-    python crypto/scripts/fetch_unlocks.py --dump-raw aptos --out /tmp/aptos.json
+    git clone --depth 1 https://github.com/DefiLlama/emissions-adapters <dir>
+    python crypto/scripts/fetch_unlocks.py --source adapters --adapters-dir <dir> \
+        --perps-json crypto/data/events/perps.json --min-pct 1.0 \
+        --out crypto/data/events/unlocks.csv
+    python crypto/scripts/fetch_unlocks.py --probe          # diagnóstico de fuentes web
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
+import calendar
 import csv
 import json
 import os
 import re
 import sys
 import time
+from pathlib import Path
 
 SITE_INDEX = "https://defillama.com/unlocks"
 SITE_PAGE = "https://defillama.com/unlocks/{slug}"
@@ -203,8 +211,355 @@ def perp_symbols_from_info(info: dict) -> set[str]:
     return out
 
 
+def _write_rows(out_path: str, rows: list[dict]) -> None:
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    cols = ["symbol", "timestamp", "pct_supply", "pct_basis", "tokens", "category", "protocol"]
+    with open(out_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k) for k in cols})
+
+
 # --------------------------------------------------------------------------- #
-# Fuentes
+# Fuente 1: repo open-source emissions-adapters (parser TS declarativo, testeado offline)
+# --------------------------------------------------------------------------- #
+
+PERIOD_DEFAULTS = {"hour": 3600, "day": 86400, "week": 604800,
+                   "month": 2628000, "year": 31536000}
+
+
+def strip_ts_comments(text: str) -> str:
+    """Quita comentarios // y /* */ SIN romper strings (las URLs contienen '//')."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_str: str | None = None
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c in ("'", '"', "`"):
+            in_str = c
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def parse_period_seconds(repo_dir: str) -> dict[str, float]:
+    """Lee periodToSeconds del propio repo clonado (no confiar en memoria)."""
+    for path in Path(repo_dir).rglob("*.ts"):
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        if "periodToSeconds" not in text or "=" not in text:
+            continue
+        m = re.search(r"periodToSeconds[^=]*=\s*\{([^}]*)\}", text, re.DOTALL)
+        if not m:
+            continue
+        vals: dict[str, float] = {}
+        for k, v in re.findall(r"(\w+)\s*:\s*([\d_.e+*\s]+)", m.group(1)):
+            try:
+                vals[k] = float(eval_expr(v, {}))
+            except Exception:  # noqa: BLE001
+                continue
+        if {"day", "month", "year"} <= set(vals):
+            return vals
+    return dict(PERIOD_DEFAULTS)
+
+
+_ALLOWED_NODES = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Name,
+                  ast.Load, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.USub, ast.UAdd,
+                  ast.Pow)
+
+
+def eval_expr(expr: str, env: dict[str, float]) -> float:
+    """Evalúa aritmética TS simple de forma SEGURA (sin llamadas ni atributos).
+
+    Soporta: números con '_' (1_000_000), notación 1e9, + - * / **, paréntesis,
+    identificadores del env y periodToSeconds.X (sustituido antes del parseo).
+    """
+    s = expr.strip().rstrip(",;")
+    s = re.sub(r"periodToSeconds\.(\w+)",
+               lambda m: str(env.get(f"__period_{m.group(1)}", float("nan"))), s)
+    s = re.sub(r"(?<=\d)_(?=\d)", "", s)
+    tree = ast.parse(s, mode="eval")
+    for node in ast.walk(tree):
+        if not isinstance(node, _ALLOWED_NODES):
+            raise ValueError(f"nodo no permitido: {type(node).__name__} en {expr!r}")
+        if isinstance(node, ast.Constant) and not isinstance(node.value, (int, float)):
+            raise ValueError(f"constante no numérica en {expr!r}")
+
+    def _ev(n) -> float:
+        if isinstance(n, ast.Expression):
+            return _ev(n.body)
+        if isinstance(n, ast.Constant):
+            return float(n.value)
+        if isinstance(n, ast.Name):
+            if n.id in env:
+                return float(env[n.id])
+            raise ValueError(f"identificador desconocido: {n.id}")
+        if isinstance(n, ast.UnaryOp):
+            v = _ev(n.operand)
+            return -v if isinstance(n.op, ast.USub) else v
+        if isinstance(n, ast.BinOp):
+            a, b = _ev(n.left), _ev(n.right)
+            if isinstance(n.op, ast.Add):
+                return a + b
+            if isinstance(n.op, ast.Sub):
+                return a - b
+            if isinstance(n.op, ast.Mult):
+                return a * b
+            if isinstance(n.op, ast.Div):
+                return a / b
+            if isinstance(n.op, ast.Pow):
+                return a ** b
+        raise ValueError("expresión no soportada")
+
+    return _ev(tree)
+
+
+def _parse_ts_date(token: str) -> float | None:
+    """'2023-11-12' / '2023-11-12T08:00:00Z' (con o sin comillas) -> unix segundos UTC."""
+    t = token.strip().strip("'\"`")
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?Z?)?$", t)
+    if not m:
+        return None
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    hh = int(m.group(4) or 0)
+    mm = int(m.group(5) or 0)
+    ss = int(m.group(6) or 0)
+    return float(calendar.timegm((y, mo, d, hh, mm, ss)))
+
+
+def _eval_time_arg(token: str, env: dict[str, float]) -> float:
+    ts = _parse_ts_date(token)
+    if ts is not None:
+        return ts
+    return eval_expr(token, env)
+
+
+def find_calls(text: str, func: str):
+    """Encuentra llamadas ``func(...)`` con paréntesis balanceados; rinde la lista de args."""
+    for m in re.finditer(rf"\b{func}\s*\(", text):
+        i = m.end()
+        depth = 1
+        start = i
+        while i < len(text) and depth:
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+            i += 1
+        if depth:
+            continue
+        inner = text[start: i - 1]
+        args: list[str] = []
+        buf: list[str] = []
+        d = 0
+        for ch in inner:
+            if ch in "([{":
+                d += 1
+            elif ch in ")]}":
+                d -= 1
+            if ch == "," and d == 0:
+                args.append("".join(buf).strip())
+                buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            args.append("".join(buf).strip())
+        yield args
+
+
+def parse_adapter_file(text: str, protocol: str, periods: dict[str, float]) -> dict:
+    """Parsea UN adapter TS declarativo. Devuelve eventos cliff/step + total declarado.
+
+    {'protocol', 'gecko_id', 'events': [{'ts', 'tokens', 'category'}], 'total': float,
+     'incomplete': bool}. Los helpers no-manuales (lecturas on-chain) no se computan:
+    si existen, incomplete=True (el % queda sobre suma parcial → se marca en el CSV).
+    """
+    src = strip_ts_comments(text)
+    env: dict[str, float] = {f"__period_{k}": v for k, v in periods.items()}
+
+    for name, expr in re.findall(r"\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)", src):
+        try:
+            env[name] = eval_expr(expr, env)
+        except Exception:  # noqa: BLE001 — const no numérica (objetos, strings): ignorar
+            continue
+
+    events: list[dict] = []
+    total = 0.0
+    ok = True
+
+    for args in find_calls(src, "manualCliff"):
+        if len(args) < 2:
+            ok = False
+            continue
+        try:
+            ts = _eval_time_arg(args[0], env)
+            amt = eval_expr(args[1], env)
+        except Exception:  # noqa: BLE001
+            ok = False
+            continue
+        if amt > 0:
+            total += amt
+            events.append({"ts": ts, "tokens": amt, "category": "cliff"})
+
+    for args in find_calls(src, "manualLinear"):
+        if len(args) < 3:
+            ok = False
+            continue
+        try:
+            amt = eval_expr(args[2], env)
+        except Exception:  # noqa: BLE001
+            ok = False
+            continue
+        if amt > 0:
+            total += amt  # vesting continuo: cuenta para el supply, no genera evento
+
+    for args in find_calls(src, "manualStep"):
+        if len(args) < 4:
+            ok = False
+            continue
+        try:
+            start = _eval_time_arg(args[0], env)
+            dur = eval_expr(args[1], env)
+            steps = int(eval_expr(args[2], env))
+            amt = eval_expr(args[3], env)
+        except Exception:  # noqa: BLE001
+            ok = False
+            continue
+        if amt > 0 and steps > 0:
+            total += steps * amt
+            for k in range(1, steps + 1):
+                events.append({"ts": start + k * dur, "tokens": amt, "category": "step"})
+
+    known = {"Cliff", "Linear", "Step"}
+    others = set(re.findall(r"\bmanual([A-Za-z]+)\s*\(", src)) - known
+    incomplete = bool(others) or not ok
+
+    gecko = ""
+    m = re.search(r"token:\s*[\"']coingecko:([^\"']+)[\"']", src)
+    if m:
+        gecko = m.group(1)
+    return {"protocol": protocol, "gecko_id": gecko, "events": events,
+            "total": total, "incomplete": incomplete}
+
+
+def adapter_events_to_rows(parsed: dict, symbol: str) -> list[dict]:
+    """Agrega eventos del MISMO timestamp (un unlock por día) y calcula % del total."""
+    total = parsed["total"]
+    if total <= 0:
+        return []
+    basis = "sum_parcial" if parsed["incomplete"] else "sum_secciones"
+    by_ts: dict[int, dict] = {}
+    for ev in parsed["events"]:
+        ts_ms = int(ev["ts"]) * 1000 if ev["ts"] < 10**12 else int(ev["ts"])
+        cur = by_ts.setdefault(ts_ms, {"tokens": 0.0, "cats": set()})
+        cur["tokens"] += ev["tokens"]
+        cur["cats"].add(ev["category"])
+    rows = []
+    for ts_ms, cur in sorted(by_ts.items()):
+        rows.append({
+            "protocol": parsed["protocol"],
+            "symbol": symbol,
+            "timestamp": ts_ms,
+            "tokens": cur["tokens"],
+            "pct_supply": round(cur["tokens"] / total * 100.0, 4),
+            "pct_basis": basis,
+            "category": "+".join(sorted(cur["cats"])),
+        })
+    return rows
+
+
+GECKO_LIST = "https://api.coingecko.com/api/v3/coins/list"
+
+
+def load_gecko_symbol_map(cache_path: str) -> dict[str, str]:
+    """gecko_id -> SYMBOL (ticker). Cachea; usa COINGECKO_API_KEY (demo) si existe."""
+    if cache_path and os.path.exists(cache_path):
+        with open(cache_path) as f:
+            return json.load(f)
+    import requests  # diferido
+
+    headers = dict(UA)
+    key = os.environ.get("COINGECKO_API_KEY", "")
+    if key:
+        headers["x-cg-demo-api-key"] = key
+    r = requests.get(GECKO_LIST, timeout=60, headers=headers)
+    r.raise_for_status()
+    out = {c["id"]: str(c.get("symbol", "")).upper() for c in r.json() if c.get("id")}
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(out, f)
+    return out
+
+
+def source_adapters(adapters_dir: str, perps: set[str], min_pct: float,
+                    gecko_map: dict[str, str]) -> tuple[list[dict], dict]:
+    """Parsea protocols/*.ts del clone. Devuelve (rows, contadores de diagnóstico)."""
+    pdir = Path(adapters_dir) / "protocols"
+    files = sorted(pdir.glob("*.ts")) if pdir.is_dir() else []
+    periods = parse_period_seconds(adapters_dir)
+    stats = {"files": len(files), "parsed": 0, "sin_gecko": 0, "sin_symbol": 0,
+             "sin_perp": 0, "sin_eventos": 0, "error": 0,
+             "periods": {k: periods[k] for k in ("day", "month", "year") if k in periods}}
+    rows: list[dict] = []
+    for path in files:
+        if path.stem in ("index", "types"):
+            continue
+        try:
+            parsed = parse_adapter_file(path.read_text(errors="ignore"), path.stem, periods)
+        except Exception:  # noqa: BLE001
+            stats["error"] += 1
+            continue
+        stats["parsed"] += 1
+        if not parsed["events"]:
+            stats["sin_eventos"] += 1
+            continue
+        if not parsed["gecko_id"]:
+            stats["sin_gecko"] += 1
+            continue
+        symbol = gecko_map.get(parsed["gecko_id"], "")
+        if not symbol:
+            stats["sin_symbol"] += 1
+            continue
+        perp = symbol.upper() + "USDT"
+        if perp not in perps:
+            stats["sin_perp"] += 1
+            continue
+        for row in adapter_events_to_rows(parsed, perp):
+            if row["pct_supply"] >= min_pct:
+                rows.append(row)
+    rows.sort(key=lambda r: r["timestamp"])
+    return rows, stats
+
+
+# --------------------------------------------------------------------------- #
+# Fuentes web (sitio / API clásico)
 # --------------------------------------------------------------------------- #
 
 def site_get_index() -> tuple[str, list[str]]:
@@ -305,7 +660,10 @@ def main() -> int:
     p.add_argument("--min-pct", type=float, default=1.0,
                    help="pre-filtro de % supply (1.0 cubre la variante; el gate congelado usa 2.0)")
     p.add_argument("--limit", type=int, default=0, help="máx protocolos (0 = todos)")
-    p.add_argument("--source", choices=["auto", "llama-site", "llama-api"], default="auto")
+    p.add_argument("--source", choices=["auto", "adapters", "llama-site", "llama-api"],
+                   default="auto")
+    p.add_argument("--adapters-dir", default="crypto/data/events/emissions-adapters",
+                   help="clone local de github.com/DefiLlama/emissions-adapters")
     p.add_argument("--cache-dir", default="crypto/data/events/llama_cache")
     p.add_argument("--dump-raw", default="", help="slug/nombre: guardar el JSON crudo y salir")
     p.add_argument("--probe", action="store_true", help="diagnóstico de fuentes y salir")
@@ -337,10 +695,42 @@ def main() -> int:
         perps = perp_symbols_from_info(_get_json(FAPI_INFO))
     print(f"Perps USDT activos: {len(perps)}", file=sys.stderr)
 
-    # --- elegir fuente ---
+    # --- Fuente 1: clone del repo emissions-adapters (fuente de verdad, sin scraping) ---
+    if args.source in ("auto", "adapters"):
+        pdir = Path(args.adapters_dir) / "protocols"
+        if pdir.is_dir():
+            try:
+                gecko_map = load_gecko_symbol_map(
+                    os.path.join(args.cache_dir, "gecko_symbols.json"))
+            except Exception as e:  # noqa: BLE001
+                print(f"⚠️ coins/list de CoinGecko falló ({e}); "
+                      "export COINGECKO_API_KEY=<demo key gratis> y reintentar",
+                      file=sys.stderr)
+                gecko_map = {}
+            rows, stats = source_adapters(args.adapters_dir, perps, args.min_pct, gecko_map)
+            print(f"Fuente: adapters ({stats})", file=sys.stderr)
+            if rows:
+                _write_rows(args.out, rows)
+                print(f"OK (adapters): {len(rows)} eventos (>= {args.min_pct}% supply, "
+                      f"con perp) -> {args.out}", file=sys.stderr)
+                print("   sesgo superviviente + steps en start+k·duración: registrados.",
+                      file=sys.stderr)
+                return 0
+            if args.source == "adapters":
+                print("❌ adapters: 0 eventos. Pegar 2 muestras para ajustar el parser:\n"
+                      f"   ls {pdir} | head -20\n"
+                      f"   sed -n '1,80p' {pdir}/aptos.ts", file=sys.stderr)
+                return 1
+        elif args.source == "adapters":
+            print(f"❌ falta el clone: git clone --depth 1 "
+                  f"https://github.com/DefiLlama/emissions-adapters {args.adapters_dir}",
+                  file=sys.stderr)
+            return 1
+
+    # --- elegir fuente web ---
     build = ""
     names: list[str] = []
-    source = args.source
+    source = args.source if args.source != "adapters" else "auto"
     if source in ("auto", "llama-site"):
         try:
             build, names = site_get_index()
@@ -398,13 +788,7 @@ def main() -> int:
         time.sleep(0.25)
 
     rows.sort(key=lambda r: r["timestamp"])
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    cols = ["symbol", "timestamp", "pct_supply", "pct_basis", "tokens", "category", "protocol"]
-    with open(args.out, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols)
-        w.writeheader()
-        for r in rows:
-            w.writerow({k: r.get(k) for k in cols})
+    _write_rows(args.out, rows)
     print(f"OK ({source}): {len(rows)} eventos cliff (>= {args.min_pct}% supply, con perp) "
           f"-> {args.out}", file=sys.stderr)
     print(f"   protocolos ilegibles: {unparsed} | símbolos sin perp (descartados): "
