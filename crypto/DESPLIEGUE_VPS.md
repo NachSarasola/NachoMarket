@@ -45,31 +45,26 @@ bash crypto/scripts/vps_setup.sh --ccxt
 Si dice que falta `python3-venv`, es lo ÚNICO que puede requerir `sudo apt install -y
 python3-venv` (una vez). No instala nada más a nivel sistema.
 
-## Paso 3 — Datos reales + validación
+## Paso 3 — Datos reales + validación (UN comando)
 
 ```bash
-source ~/nacho-crypto/.venv-crypto/bin/activate
-cd ~/nacho-crypto
-
-# Bajar OHLCV (si Binance está bloqueado desde el VPS, probá --exchange kraken u okx):
-python crypto/scripts/fetch_data.py --symbol BTC/USDT --timeframe 4h --since 2019-01-01 \
-    --out crypto/data/BTC_USDT-4h.csv
-python crypto/scripts/fetch_data.py --symbol ETH/USDT --timeframe 4h --since 2019-01-01 \
-    --out crypto/data/ETH_USDT-4h.csv
-
-# Validar (los gates): in-sample, walk-forward, OOS 2024+, benchmarks, DSR, Monte Carlo:
-python crypto/scripts/validate.py --data crypto/data/BTC_USDT-4h.csv --strategy sweep \
-    --compare --deflated-sharpe 108 --out crypto/data/report_btc_sweep.json
-python crypto/scripts/validate.py --data crypto/data/BTC_USDT-4h.csv --strategy donchian \
-    --compare
-# El sweep DEBE batir al donchian (control) y a buy&hold/MA, neto de costos, en OOS.
-
-# Robustez de parámetros (meseta vs pico):
-python crypto/scripts/param_sweep.py --data crypto/data/BTC_USDT-4h.csv
+source ~/nacho-crypto/.venv-crypto/bin/activate && cd ~/nacho-crypto
+bash crypto/scripts/vps_validate_all.sh
 ```
+Esto baja BTC+ETH 4h (con fallback binance→okx→kraken), corre TODOS los gates para sweep y
+donchian en ambos pares (in-sample, walk-forward, OOS 2024+, benchmarks, DSR, Monte Carlo),
+corre el barrido de parámetros, aplica el **veredicto mecánico** (`decide.py`) y empaqueta
+todo en `crypto/data/reportes_<fecha>.tar.gz`. **Traeme ese .tar.gz** (o pegá el
+`veredicto.txt` y los `report_*.json`).
 
-**Gate duro:** si el Sharpe OOS < 50% del in-sample, o no bate buy&hold ni la MA diaria, o el
-DSR < 0.95 → **NO se opera**. Ese "no" es el resultado válido que evita la próxima fundida.
+**Veredicto** (lo calcula `decide.py`, sin interpretación humana):
+- `GO_DRY_RUN` → pasar a paper (paso 4).
+- `AJUSTE_UNICO(...)` → una sola tanda de ajuste (se registra como trial) y re-validar.
+- `DESCARTAR_SWEEP_QUEDA_DONCHIAN` → el control tiene edge y el sweep no.
+- `NO_OPERAR` → no hay edge; no hay live. Ese "no" evita la próxima fundida.
+
+> Si preferís correrlo a mano, los comandos sueltos (`fetch_data.py`, `validate.py`,
+> `param_sweep.py`, `decide.py`) están documentados en README.md.
 
 ## Paso 4 — freqtrade (dry-run) — SOLO si el paso 3 pasó los gates
 

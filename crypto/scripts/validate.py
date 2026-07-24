@@ -31,6 +31,7 @@ import pandas as pd
 sys.path.insert(0, __file__.rsplit("/crypto/", 1)[0])  # raiz del repo en path
 
 from crypto.smc.backtest import BacktestResult, compute_metrics, run_backtest  # noqa: E402
+from crypto.smc.report import export_trades_csv, slice_report  # noqa: E402
 from crypto.smc.signals import donchian_bms_signals, smc_sweep_signals  # noqa: E402
 from crypto.smc.stats import deflated_sharpe_ratio, monte_carlo_ruin  # noqa: E402
 
@@ -135,48 +136,6 @@ def run_segment_full(df: pd.DataFrame, strategy: str, params: dict, bt_kwargs: d
 
 def run_segment(df: pd.DataFrame, strategy: str, params: dict, bt_kwargs: dict) -> dict:
     return run_segment_full(df, strategy, params, bt_kwargs)[0]
-
-
-def slice_report(trades: list) -> dict:
-    """Agrupa trades por regimen y por exit_reason: n, winrate, pnl total, R promedio.
-
-    Es el corazon del review semanal de TESIS.md: ver DONDE gana y donde pierde la
-    estrategia, sin tocar parametros.
-    """
-    def _agg(keyfn) -> dict:
-        groups: dict[str, list] = {}
-        for t in trades:
-            groups.setdefault(keyfn(t) or "(sin)", []).append(t)
-        out = {}
-        for k, ts in sorted(groups.items()):
-            pnls = [t.pnl for t in ts]
-            wins = sum(1 for p in pnls if p > 0)
-            out[k] = {
-                "n": len(ts),
-                "winrate": round(wins / len(ts), 3),
-                "pnl": round(sum(pnls), 2),
-                "avg_r": round(sum(t.r_multiple for t in ts) / len(ts), 3),
-            }
-        return out
-
-    return {
-        "por_regimen": _agg(lambda t: t.regime),
-        "por_salida": _agg(lambda t: t.exit_reason),
-    }
-
-
-def export_trades_csv(trades: list, path: str) -> None:
-    """Journal de trades a CSV (una fila por trade, con regimen y salida)."""
-    import csv
-
-    with open(path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["entry_time", "exit_time", "side", "tag", "regime", "entry_price",
-                    "exit_price", "qty", "pnl", "r_multiple", "exit_reason"])
-        for t in trades:
-            w.writerow([t.entry_time, t.exit_time, t.side, t.tag, t.regime,
-                        round(t.entry_price, 6), round(t.exit_price, 6), round(t.qty, 8),
-                        round(t.pnl, 4), round(t.r_multiple, 4), t.exit_reason])
 
 
 def walk_forward(df: pd.DataFrame, strategy: str, params: dict, bt_kwargs: dict, folds: int) -> list[dict]:
@@ -284,6 +243,7 @@ def main() -> int:
         "params": params,
         "costs": {"fee_bps": args.fee_bps, "slippage_bps": args.slippage_bps},
         "data": {
+            "source": args.data if args.data else ("synthetic-positive" if args.synthetic_positive else "synthetic"),
             "bars": len(df),
             "from": str(df.index[0]),
             "to": str(df.index[-1]),

@@ -34,7 +34,9 @@ crypto/
 │   ├── fetch_data.py     # descarga OHLCV a CSV (ccxt) — correr donde haya acceso a exchanges
 │   ├── validate.py       # pipeline anti-overfitting: IS/walk-forward/OOS/benchmarks/DSR/MonteCarlo
 │   ├── param_sweep.py    # grilla de parametros + deteccion de MESETA vs PICO
-│   └── vps_setup.sh      # setup AISLADO en el VPS (venv propio, no toca el otro bot)
+│   ├── decide.py         # veredicto MECANICO de los gates desde los reportes JSON
+│   ├── vps_setup.sh      # setup AISLADO en el VPS (venv propio, no toca el otro bot)
+│   └── vps_validate_all.sh  # one-shot VPS: baja datos + gates + veredicto + empaqueta
 ├── tests/                # 32 tests: causalidad, fills, control positivo/negativo, stats, FVG
 ├── config-backtest.json  # config freqtrade para backtesting
 ├── config-dryrun.json    # config freqtrade para paper trading (dry-run)
