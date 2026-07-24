@@ -154,6 +154,40 @@ Lecciones (pre-registradas como formato, escritas al ver los datos):
 Siguiente paso según el árbol (MAPA_EDGES §A, rama AMBAS FAIL): **correr H3a (funding
 extremo)**, ya congelada e implementada. Si H3a también muere → checkpoint estratégico.
 
+## RESULTADO GATE H3a — 2026-07-24 — VEREDICTO: NO_OPERAR ❌ (trials acumulados ≈ 125)
+
+| run | trades | WF folds>0 | OOS/IS | DSR | benchmarks | nota |
+|-----|--------|-----------|--------|-----|------------|------|
+| funding BTC 4h | 37 | 75% | -0.35 | 0.288 | no | IS: PF 2.68, maxDD -1.9%, Sharpe 0.87 |
+| funding ETH 4h | 48 | **100%** | -0.55 | 0.048 | no IS / sí OOS | el WF más consistente del programa entero |
+
+Misma firma que las 4 familias anteriores: estructura IS (2019-2023), muerte OOS (2024+).
+
+## ★ CHECKPOINT ESTRATÉGICO — 2026-07-24 (rama terminal del árbol pre-registrado)
+
+**Meta-hallazgo del programa** (5 familias × 2 pares, ~125 trials, $0 perdidos): precio,
+tendencia, order flow y posicionamiento — TODAS muestran estructura in-sample hasta 2023 y
+colapso out-of-sample 2024+. Conclusión honesta: **no hay edge direccional validable para
+nosotros en majors, swing, con datos gratis, en el régimen actual.** No es un fallo del
+método: es LA respuesta del método. El mercado post-ETF arbitró el rincón donde mira el retail.
+
+**Resolución (las tres salidas pre-escritas en MAPA_EDGES §A):**
+1. **Exposición pasiva** (si se quiere exposición a crypto): DCA/hold — lo único que
+   sobrevivió en nuestros propios datos. Es una posición del usuario, no un bot.
+2. **Acumular capital → Etapa 3 (carry delta-neutral, $5k+)** — el único edge "grande" con
+   evidencia peer-reviewed que no depende de predecir dirección. Dato honesto de HOY: el
+   funding medio 30d está bajo (BTC ~6.2%, ETH ~3.5% anualizado) → el carry es cíclico y
+   paga en mercados calientes; el capital se acumula MIENTRAS se espera el ciclo.
+3. **Investigación nueva SOLO con mecanismo distinto + datos nuevos**: única candidata viva
+   con diseño listo = **H3b (proxy de cascadas de liquidación, evento-driven en horas)** —
+   mecanismo diferente (overshoot intra-evento, no posicionamiento lento). Requiere construir
+   el dataset de ΔOI. Cualquier otra idea: prior ≥ MEDIO + fuente de datos nueva + pipeline
+   completo + trial contado. **Prohibido re-minar las 5 familias muertas.**
+
+**El programa NO se detiene: cambia de modo.** La máquina de validación (81 tests, gates,
+DSR, decide.py) es el activo construido. Revisión trimestral como manda TESIS; el contador
+de trials sigue corriendo para siempre.
+
 ## RESULTADO GATE 1 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
 
 Corrido en el VPS con datos reales (Binance, 4h, 2019→2026), costos 10+5 bps/lado.

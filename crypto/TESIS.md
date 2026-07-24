@@ -3,11 +3,13 @@
 Documento vivo. Se revisa con RESULTADOS (journal + slices por régimen), no con opiniones.
 Cada cambio de reglas se anota en `REGLAS_CONGELADAS.md` y cuenta como trial (Deflated Sharpe).
 
-> **ESTADO (2026-07-24): GATE 1 = NO_OPERAR.** El sweep SMC fue falsado con datos reales
-> (sin edge OOS, DSR≈0) y el control Donchian murió en el régimen 2024+; nada batió al
-> buy&hold. Según los criterios pre-registrados de abajo: no hay live direccional; se
-> preserva capital, se estudia, y las hipótesis nuevas pasan el pipeline completo en la
-> ventana trimestral. Detalle: `REGLAS_CONGELADAS.md` → "RESULTADO GATE 1".
+> **ESTADO (2026-07-24, actualizado): CHECKPOINT ESTRATÉGICO.** Cinco familias falsadas
+> con datos reales (sweep, donchian, ma_timing, flow, funding) — todas con la misma firma:
+> estructura IS 2019-2023, colapso OOS 2024+. Conclusión: no hay edge direccional validable
+> en majors/swing/datos-gratis en el régimen actual. Resolución y salidas pre-escritas en
+> `REGLAS_CONGELADAS.md` → "CHECKPOINT ESTRATÉGICO" (pasiva DCA/hold · acumular hacia carry
+> $5k+ · solo mecanismos nuevos, candidata viva: H3b cascadas). Capital intacto: $0 perdidos
+> en ~125 trials. La máquina de validación es el activo.
 
 ## La tesis en 5 puntos
 

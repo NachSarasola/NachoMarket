@@ -167,4 +167,9 @@ flip de funding). Se implementa SOLO si H3a resuelve y el programa sigue en pie 
   negativo; en 1d ETH pasó OOS/IS (0.56) y batió B&H OOS pero 46 trades no sobreviven al
   DSR con ~119 trials. Lección: si el flujo tiene señal, vive en 1d y necesita un diseño con
   más señales por año (o más pares/historia) para ser validable — no torturar esta spec.
+- **H3a funding extremo (q0.02/0.50, 4h)** — 2026-07-24, NO_OPERAR: el WF más consistente
+  del programa (ETH 100% folds >0, BTC PF 2.68 IS) y aun así misma muerte OOS 2024+
+  (ratios -0.35/-0.55, DSR 0.29/0.05). Lección: ni el posicionamiento escapa al quiebre de
+  régimen; 37-48 trades tampoco dan poder. QUINTA familia con la misma firma → el hallazgo
+  es el régimen, no las estrategias. Ver CHECKPOINT en REGLAS_CONGELADAS.
 - **Scalping <1h con capital chico**: muerto por aritmética de costos, sin necesidad de test.
