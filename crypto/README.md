@@ -33,13 +33,15 @@ crypto/
 ├── scripts/
 │   ├── fetch_data.py     # descarga OHLCV a CSV (ccxt) — correr donde haya acceso a exchanges
 │   ├── validate.py       # pipeline anti-overfitting: IS/walk-forward/OOS/benchmarks/DSR/MonteCarlo
-│   └── param_sweep.py    # grilla de parametros + deteccion de MESETA vs PICO
+│   ├── param_sweep.py    # grilla de parametros + deteccion de MESETA vs PICO
+│   └── vps_setup.sh      # setup AISLADO en el VPS (venv propio, no toca el otro bot)
 ├── tests/                # 32 tests: causalidad, fills, control positivo/negativo, stats, FVG
 ├── config-backtest.json  # config freqtrade para backtesting
 ├── config-dryrun.json    # config freqtrade para paper trading (dry-run)
 ├── REGLAS_CONGELADAS.md  # spec pre-registrada (Gate 1) + registro de variantes
 ├── ESTRATEGIA.md         # la estrategia en lenguaje llano + como leer la validacion
-└── RECURSOS.md           # recursos curados para aprender (microestructura, quant, freqtrade)
+├── RECURSOS.md           # recursos curados para aprender (microestructura, quant, freqtrade)
+└── DESPLIEGUE_VPS.md     # runbook de despliegue AISLADO en el VPS (sin tocar el otro bot)
 ```
 
 Para entender el sistema: leer **ESTRATEGIA.md** (qué hace y por qué, mapeado al ebook).

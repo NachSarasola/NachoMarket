@@ -31,7 +31,8 @@ Thumbs.db
 *.pem
 *.key
 
-# Crypto pivot: datos de mercado descargados y artefactos de freqtrade
+# Crypto pivot: venv aislado, datos de mercado descargados y artefactos de freqtrade
+.venv-crypto/
 crypto/data/
 crypto/user_data/data/
 crypto/user_data/backtest_results/
