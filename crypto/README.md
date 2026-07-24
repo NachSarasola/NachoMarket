@@ -37,6 +37,7 @@ crypto/
 │   ├── decide.py         # veredicto MECANICO de los gates desde los reportes JSON
 │   ├── portfolio.py      # validacion multi-par + correlacion (¿diversifica o solo suma fees?)
 │   ├── weekly_review.py  # revision semanal: journal vivo vs cono del backtest -> NORMAL/ALERTA/KILL
+│   ├── cost_sensitivity.py  # ¿a partir de que fee+slippage muere el edge? (acantilado de costos)
 │   ├── vps_setup.sh      # setup AISLADO en el VPS (venv propio, no toca el otro bot)
 │   └── vps_validate_all.sh  # one-shot VPS: baja datos + gates + veredicto + empaqueta
 ├── tests/                # 32 tests: causalidad, fills, control positivo/negativo, stats, FVG
@@ -45,6 +46,7 @@ crypto/
 ├── REGLAS_CONGELADAS.md  # spec pre-registrada (Gate 1) + registro de variantes
 ├── ESTRATEGIA.md         # la estrategia en lenguaje llano + como leer la validacion
 ├── RECURSOS.md           # recursos curados para aprender (microestructura, quant, freqtrade)
+├── ROADMAP.md            # diseño detallado (gated) de las etapas 2 y 3 — sin codigo prematuro
 └── DESPLIEGUE_VPS.md     # runbook de despliegue AISLADO en el VPS (sin tocar el otro bot)
 ```
 
