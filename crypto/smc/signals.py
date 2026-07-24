@@ -30,9 +30,42 @@ __all__ = [
     "swing_mask",
     "confirmed_swings",
     "fair_value_gap",
+    "regime_labels",
     "smc_sweep_signals",
     "donchian_bms_signals",
 ]
+
+# Ventanas de la etiqueta de regimen (instrumentacion OBSERVACIONAL: no filtra senales,
+# solo etiqueta cada trade para el journal y los slices de validate.py — cero parametros
+# de trading nuevos).
+REGIME_TREND_BARS = 180   # 30 dias en velas de 4h
+REGIME_VOL_BARS = 1095    # ~6 meses en velas de 4h (mediana de referencia de ATR%)
+
+
+def regime_labels(df: pd.DataFrame, atr_period: int = 14) -> pd.Series:
+    """Etiqueta causal de regimen por barra: tendencia x volatilidad -> 4 estados.
+
+    - Tendencia: ``up`` si close > SMA(REGIME_TREND_BARS), ``dn`` si no.
+    - Volatilidad: ``hi`` si ATR%%(=ATR/close) > su mediana rolling de REGIME_VOL_BARS,
+      ``lo`` si no.
+
+    Devuelve strings en {"up_hi","up_lo","dn_hi","dn_lo"} (vacio si aun no hay ventana).
+    Solo usa barras <= t (rolling trailing) -> causal.
+    """
+    close = df["close"].astype(float)
+    atr = add_atr(df, atr_period)
+    sma = close.rolling(REGIME_TREND_BARS).mean()
+    atr_pct = atr / close
+    vol_ref = atr_pct.rolling(REGIME_VOL_BARS, min_periods=REGIME_TREND_BARS).median()
+
+    trend = np.where(close > sma, "up", "dn")
+    vol = np.where(atr_pct > vol_ref, "hi", "lo")
+    labels = pd.Series(
+        [f"{t}_{v}" for t, v in zip(trend, vol)], index=df.index, dtype=object
+    )
+    # Sin ventana suficiente -> etiqueta vacia (no inventar regimen al arranque).
+    labels[sma.isna() | vol_ref.isna()] = ""
+    return labels.rename("regime")
 
 
 def add_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -330,6 +363,7 @@ def smc_sweep_signals(
     tag = tag.mask(out["enter_long"], "smc_sweep_long")
     out["enter_tag"] = tag
     out["time_stop_bars"] = time_stop_bars
+    out["regime"] = regime_labels(df, atr_period)  # observacional (journal/slices)
     return out
 
 
@@ -398,4 +432,5 @@ def donchian_bms_signals(
     tag = tag.mask(out["enter_short"], "donchian_bms_short")
     out["enter_tag"] = tag
     out["time_stop_bars"] = time_stop_bars
+    out["regime"] = regime_labels(df, atr_period)  # observacional (journal/slices)
     return out

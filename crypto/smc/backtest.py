@@ -39,6 +39,7 @@ class Trade:
     r_multiple: float  # PnL / riesgo inicial
     exit_reason: str  # 'stop' | 'tp2' | 'time_stop' | 'eod'
     tag: str = ""
+    regime: str = ""  # etiqueta de regimen al momento de la senal (journal/slices)
 
 
 @dataclass
@@ -105,6 +106,11 @@ def run_backtest(
         if "time_stop_bars" in signals
         else np.full(len(idx), np.inf)
     )
+    regime_arr = (
+        signals["regime"].to_numpy(dtype=object)
+        if "regime" in signals
+        else np.array([""] * len(idx), dtype=object)
+    )
 
     fee = fee_bps / 1e4
     slip = slippage_bps / 1e4
@@ -160,6 +166,7 @@ def run_backtest(
             "qty_open": qty,
             "risk_per_unit": risk_per_unit,
             "tag": tag_arr[t_sig] if tag_arr[t_sig] else "",
+            "regime": regime_arr[t_sig] if regime_arr[t_sig] else "",
             "tstop": tstop_arr[t_sig],
             "entry_fee": entry_fee,
             "fees_paid": entry_fee,  # total fees (entrada + salidas), solo para reporte
@@ -208,6 +215,7 @@ def run_backtest(
                 r_multiple=r_mult,
                 exit_reason=pos["last_exit_reason"],
                 tag=pos["tag"],
+                regime=pos.get("regime", ""),
             )
         )
         in_pos = False

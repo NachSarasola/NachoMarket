@@ -137,6 +137,48 @@ def run_segment(df: pd.DataFrame, strategy: str, params: dict, bt_kwargs: dict) 
     return run_segment_full(df, strategy, params, bt_kwargs)[0]
 
 
+def slice_report(trades: list) -> dict:
+    """Agrupa trades por regimen y por exit_reason: n, winrate, pnl total, R promedio.
+
+    Es el corazon del review semanal de TESIS.md: ver DONDE gana y donde pierde la
+    estrategia, sin tocar parametros.
+    """
+    def _agg(keyfn) -> dict:
+        groups: dict[str, list] = {}
+        for t in trades:
+            groups.setdefault(keyfn(t) or "(sin)", []).append(t)
+        out = {}
+        for k, ts in sorted(groups.items()):
+            pnls = [t.pnl for t in ts]
+            wins = sum(1 for p in pnls if p > 0)
+            out[k] = {
+                "n": len(ts),
+                "winrate": round(wins / len(ts), 3),
+                "pnl": round(sum(pnls), 2),
+                "avg_r": round(sum(t.r_multiple for t in ts) / len(ts), 3),
+            }
+        return out
+
+    return {
+        "por_regimen": _agg(lambda t: t.regime),
+        "por_salida": _agg(lambda t: t.exit_reason),
+    }
+
+
+def export_trades_csv(trades: list, path: str) -> None:
+    """Journal de trades a CSV (una fila por trade, con regimen y salida)."""
+    import csv
+
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["entry_time", "exit_time", "side", "tag", "regime", "entry_price",
+                    "exit_price", "qty", "pnl", "r_multiple", "exit_reason"])
+        for t in trades:
+            w.writerow([t.entry_time, t.exit_time, t.side, t.tag, t.regime,
+                        round(t.entry_price, 6), round(t.exit_price, 6), round(t.qty, 8),
+                        round(t.pnl, 4), round(t.r_multiple, 4), t.exit_reason])
+
+
 def walk_forward(df: pd.DataFrame, strategy: str, params: dict, bt_kwargs: dict, folds: int) -> list[dict]:
     out = []
     bounds = np.linspace(0, len(df), folds + 1, dtype=int)
@@ -207,6 +249,8 @@ def main() -> int:
     p.add_argument("--compare", action="store_true",
                    help="tabla comparativa sweep vs donchian vs benchmarks (IS y OOS)")
     p.add_argument("--out", default="", help="ruta opcional para el reporte JSON")
+    p.add_argument("--trades-out", default="",
+                   help="exporta el journal de trades del in-sample a CSV (regimen incluido)")
     args = p.parse_args()
 
     if args.synthetic:
@@ -256,6 +300,20 @@ def main() -> int:
     report["in_sample"] = is_m
     print("== IN-SAMPLE ==")
     print(" ", _fmt(is_m))
+
+    # --- Slice por regimen y por tipo de salida (journal del review semanal) ---
+    if is_res.trades:
+        slices = slice_report(is_res.trades)
+        report["slices"] = slices
+        print("\n== SLICES (in-sample) — donde gana y donde pierde ==")
+        for titulo, key in (("por regimen", "por_regimen"), ("por salida", "por_salida")):
+            print(f"  {titulo}:")
+            for k, v in slices[key].items():
+                print(f"    {k:>10}: n={v['n']:>4} winrate={v['winrate']:<6} "
+                      f"pnl={v['pnl']:<10} avgR={v['avg_r']}")
+    if args.trades_out and is_res.trades:
+        export_trades_csv(is_res.trades, args.trades_out)
+        print(f"\nJournal de trades (IS) -> {args.trades_out}")
 
     # --- Gate 3: minimo de trades ---
     enough = (is_m.get("trades") or 0) >= args.min_trades
