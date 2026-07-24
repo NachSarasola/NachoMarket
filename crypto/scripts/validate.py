@@ -42,6 +42,21 @@ BARS_PER_YEAR_4H = 6 * 365  # 2190
 # Carga de datos
 # --------------------------------------------------------------------------- #
 
+def infer_bars_per_year(df: pd.DataFrame) -> float:
+    """Infere barras/año del espaciado mediano del índice (1h→8760, 4h→2190, 1d→365).
+
+    Permite validar CSVs de cualquier timeframe sin flags: las métricas anualizadas
+    (Sharpe/CAGR) quedan bien escaladas automáticamente.
+    """
+    if len(df) < 3:
+        return BARS_PER_YEAR_4H
+    deltas = df.index.to_series().diff().dropna()
+    bar_seconds = float(deltas.dt.total_seconds().median())
+    if bar_seconds <= 0:
+        return BARS_PER_YEAR_4H
+    return (365.0 * 24 * 3600) / bar_seconds
+
+
 def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     tcol = "timestamp" if "timestamp" in df.columns else ("date" if "date" in df.columns else None)
@@ -53,7 +68,12 @@ def load_csv(path: str) -> pd.DataFrame:
         df.index = pd.to_datetime(df[tcol], unit="ms", utc=True)
     else:
         df.index = pd.to_datetime(df[tcol], utc=True)
-    df = df[["open", "high", "low", "close", "volume"]].astype(float).sort_index()
+    cols = ["open", "high", "low", "close", "volume"]
+    # Preservar columnas de flujo opcionales (H2: taker_buy_volume de las klines de Binance).
+    for extra in ("taker_buy_volume",):
+        if extra in df.columns:
+            cols.append(extra)
+    df = df[cols].astype(float).sort_index()
     return df
 
 
@@ -92,12 +112,13 @@ def synthetic_ohlcv(n: int = 15000, seed: int = 42) -> pd.DataFrame:
 # Benchmarks
 # --------------------------------------------------------------------------- #
 
-def bench_buy_hold(df: pd.DataFrame, initial: float) -> dict:
+def bench_buy_hold(df: pd.DataFrame, initial: float, bars_per_year: float = BARS_PER_YEAR_4H) -> dict:
     eq = initial * df["close"] / df["close"].iloc[0]
-    return compute_metrics(eq, [], BARS_PER_YEAR_4H, initial)
+    return compute_metrics(eq, [], bars_per_year, initial)
 
 
-def bench_ma_cross(df: pd.DataFrame, initial: float, window: int = 200, fee_bps: float = 10.0) -> dict:
+def bench_ma_cross(df: pd.DataFrame, initial: float, window: int = 200, fee_bps: float = 10.0,
+                   bars_per_year: float = BARS_PER_YEAR_4H) -> dict:
     """Long-only: mantiene BTC cuando close>SMA(window), si no cash. Con fee por flip."""
     close = df["close"].astype(float)
     sma = close.rolling(window).mean()
@@ -112,7 +133,7 @@ def bench_ma_cross(df: pd.DataFrame, initial: float, window: int = 200, fee_bps:
         cost = fee if pos != pos_prev else 0.0
         eq[i] = eq[i - 1] * (1 + r) * (1 - cost)
         pos_prev = pos
-    return compute_metrics(pd.Series(eq, index=df.index), [], BARS_PER_YEAR_4H, initial)
+    return compute_metrics(pd.Series(eq, index=df.index), [], bars_per_year, initial)
 
 
 # --------------------------------------------------------------------------- #
@@ -227,13 +248,16 @@ def main() -> int:
         df = load_csv(args.data)
 
     params = DEFAULT_PARAMS[args.strategy]
+    bars_per_year = infer_bars_per_year(df)
+    if abs(bars_per_year - BARS_PER_YEAR_4H) > 1:
+        print(f"(timeframe inferido: {bars_per_year:.0f} barras/año)\n")
     bt_kwargs = dict(
         fee_bps=args.fee_bps,
         slippage_bps=args.slippage_bps,
         risk_pct=args.risk_pct,
         initial_equity=args.initial,
         direction=args.direction,
-        bars_per_year=BARS_PER_YEAR_4H,
+        bars_per_year=bars_per_year,
     )
 
     is_df = df.loc[: args.is_end]
@@ -297,8 +321,8 @@ def main() -> int:
         report["wf_sharpe_std"] = float(np.std(sharpes))
 
     # --- Benchmarks (in-sample) ---
-    bh = bench_buy_hold(is_df, args.initial)
-    ma = bench_ma_cross(is_df, args.initial, fee_bps=args.fee_bps)
+    bh = bench_buy_hold(is_df, args.initial, bars_per_year)
+    ma = bench_ma_cross(is_df, args.initial, fee_bps=args.fee_bps, bars_per_year=bars_per_year)
     report["benchmarks_in_sample"] = {"buy_hold": bh, "ma_cross": ma}
     print("\n== BENCHMARKS (in-sample) — la estrategia debe batirlos neto de costos ==")
     print("  buy&hold:", _fmt(bh))
@@ -310,7 +334,7 @@ def main() -> int:
         oos_m = run_segment(oos_df, args.strategy, params, bt_kwargs)
         report["oos"] = oos_m
         print(" ", _fmt(oos_m))
-        oos_bh = bench_buy_hold(oos_df, args.initial)
+        oos_bh = bench_buy_hold(oos_df, args.initial, bars_per_year)
         report["oos_buy_hold"] = oos_bh
         print("  oos buy&hold:", _fmt(oos_bh))
         is_sharpe = is_m.get("sharpe")

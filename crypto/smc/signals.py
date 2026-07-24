@@ -33,6 +33,8 @@ __all__ = [
     "regime_labels",
     "smc_sweep_signals",
     "donchian_bms_signals",
+    "volume_zscore",
+    "taker_buy_ratio",
 ]
 
 # Ventanas de la etiqueta de regimen (instrumentacion OBSERVACIONAL: no filtra senales,
@@ -152,6 +154,38 @@ def confirmed_swings(
     conf_high = sh_price.shift(right).ffill().rename("conf_swing_high")
     conf_low = sl_price.shift(right).ffill().rename("conf_swing_low")
     return conf_high, conf_low
+
+
+def volume_zscore(df: pd.DataFrame, window: int = 90) -> pd.Series:
+    """Z-score causal del volumen vs su media rolling (clímax de volumen = z alto).
+
+    z[t] = (vol[t] - mean(vol[t-window..t-1])) / std(...): la barra actual se compara
+    contra la historia PREVIA (shift(1) → causal estricto, la propia barra no infla su media).
+    """
+    vol = df["volume"].astype(float)
+    hist = vol.shift(1)
+    mu = hist.rolling(window).mean()
+    sd = hist.rolling(window).std()
+    z = (vol - mu) / sd.replace(0.0, np.nan)
+    return z.rename("volume_z")
+
+
+def taker_buy_ratio(df: pd.DataFrame, smooth: int = 1) -> pd.Series:
+    """Proporción de volumen agresor comprador (proxy de order flow, causal).
+
+    Requiere columna ``taker_buy_volume`` (klines de Binance, campo gratuito con historia
+    completa). ratio[t] = taker_buy[t] / volume[t] ∈ [0,1]; 0.5 = flujo neutro; <0.4 =
+    agresión vendedora fuerte (interesante como agotamiento en un sweep de mínimos).
+    ``smooth`` >1 aplica media rolling causal. Devuelve NaN si falta la columna.
+    """
+    if "taker_buy_volume" not in df.columns:
+        return pd.Series(np.nan, index=df.index, name="taker_buy_ratio")
+    vol = df["volume"].astype(float).replace(0.0, np.nan)
+    ratio = df["taker_buy_volume"].astype(float) / vol
+    ratio = ratio.clip(0.0, 1.0)
+    if smooth > 1:
+        ratio = ratio.rolling(smooth).mean()
+    return ratio.rename("taker_buy_ratio")
 
 
 def fair_value_gap(df: pd.DataFrame) -> pd.DataFrame:
