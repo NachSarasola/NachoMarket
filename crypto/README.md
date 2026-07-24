@@ -47,6 +47,8 @@ crypto/
 ├── ESTRATEGIA.md         # la estrategia en lenguaje llano + como leer la validacion
 ├── RECURSOS.md           # recursos curados para aprender (microestructura, quant, freqtrade)
 ├── ROADMAP.md            # diseño detallado (gated) de las etapas 2 y 3 — sin codigo prematuro
+├── HIPOTESIS.md          # programa de investigacion: specs congeladas H1/H2, priors, RIP
+├── MAPA_EDGES.md         # universo completo de edges + arbol de decision post-H1/H2
 └── DESPLIEGUE_VPS.md     # runbook de despliegue AISLADO en el VPS (sin tocar el otro bot)
 ```
 
