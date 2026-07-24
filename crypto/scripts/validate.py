@@ -47,7 +47,9 @@ def load_csv(path: str) -> pd.DataFrame:
     tcol = "timestamp" if "timestamp" in df.columns else ("date" if "date" in df.columns else None)
     if tcol is None:
         raise ValueError("CSV sin columna 'timestamp' ni 'date'")
-    if np.issubdtype(df[tcol].dtype, np.number):
+    # Numerico -> epoch ms (formato de ccxt/fetch_data); si no, parsear como fecha ISO.
+    # (pd.api.types maneja StringDtype de pandas 3.0, que rompe np.issubdtype.)
+    if pd.api.types.is_numeric_dtype(df[tcol]):
         df.index = pd.to_datetime(df[tcol], unit="ms", utc=True)
     else:
         df.index = pd.to_datetime(df[tcol], utc=True)

@@ -1,0 +1,26 @@
+name: crypto-tests
+
+# CI minimo (anti-sobre-ingenieria): corre la suite del bot de crypto en cada push/PR.
+# Protege de regresiones cuando iteremos con datos reales. Sin lint/coverage/etc. a proposito.
+
+on:
+  push:
+    paths:
+      - "crypto/**"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    paths:
+      - "crypto/**"
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps (ligeras)
+        run: pip install numpy pandas pytest
+      - name: Run crypto test suite
+        run: python -m pytest crypto/tests -q
