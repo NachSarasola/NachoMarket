@@ -68,6 +68,8 @@ def run_backtest(
     tp1_fraction: float = 0.5,
     bars_per_year: float = 6 * 365,  # 4h -> 6 barras/dia
     max_notional_pct: float = 1.0,
+    vol_target_annual: float | None = None,
+    vol_window: int = 30,
 ) -> BacktestResult:
     """Corre el backtest sobre ``df`` (OHLCV) usando las columnas de ``signals``.
 
@@ -82,6 +84,15 @@ def run_backtest(
             target de la senal no tiene TP1 != TP2, actua como salida unica.
         bars_per_year: para anualizar metricas (4h => 2190).
         max_notional_pct: tope de notional por trade como fraccion del equity (spot: 1.0).
+        vol_target_annual: overlay de volatility targeting (p.ej. 0.30 = 30% anual): escala
+            el tamaño por min(1, target/vol_realizada) medido causalmente al momento de la
+            senal. Solo REDUCE tamaño (nunca apalanca). None = desactivado.
+        vol_window: ventana (barras) de la vol realizada para el overlay.
+
+    Las señales pueden traer columnas opcionales ``exit_long``/``exit_short``: una salida
+    POR SEÑAL evaluada al cierre de la barra t se ejecuta al open de t+1 (misma convencion
+    causal que las entradas). El stop protector sigue activo mientras tanto. Esto habilita
+    sistemas long/flat (MA-timing, flow) ademas de los de stop/target.
 
     Returns:
         BacktestResult con trades, curva de equity y ``.metrics()``.
@@ -111,6 +122,25 @@ def run_backtest(
         if "regime" in signals
         else np.array([""] * len(idx), dtype=object)
     )
+    exit_long_arr = (
+        signals["exit_long"].to_numpy(dtype=bool)
+        if "exit_long" in signals
+        else np.zeros(len(idx), dtype=bool)
+    )
+    exit_short_arr = (
+        signals["exit_short"].to_numpy(dtype=bool)
+        if "exit_short" in signals
+        else np.zeros(len(idx), dtype=bool)
+    )
+
+    # Vol realizada causal para el overlay de vol-targeting (std de retornos hasta t).
+    if vol_target_annual is not None:
+        rets_s = pd.Series(close).pct_change()
+        realized_vol = (
+            rets_s.rolling(vol_window).std() * math.sqrt(bars_per_year)
+        ).to_numpy()
+    else:
+        realized_vol = None
 
     fee = fee_bps / 1e4
     slip = slippage_bps / 1e4
@@ -147,6 +177,11 @@ def run_backtest(
             return
         risk_budget = equity * risk_pct
         qty = risk_budget / risk_per_unit
+        # Overlay de vol-targeting: en vol alta achica; nunca agranda (min con 1).
+        if realized_vol is not None:
+            rv = realized_vol[t_sig]
+            if np.isfinite(rv) and rv > 0:
+                qty *= min(1.0, vol_target_annual / rv)
         # Tope de notional (spot: sin apalancamiento).
         max_qty = (equity * max_notional_pct) / entry
         qty = min(qty, max_qty)
@@ -222,7 +257,17 @@ def run_backtest(
         pos = {}
 
     i = 0
+    pending_signal_exit = False
     while i < n:
+        # 0) Salida POR SEÑAL pendiente (flag seteado al cierre de i-1) -> fill al open de i.
+        if in_pos and pending_signal_exit and i > pos["entry_i"]:
+            side = pos["side"]
+            fill = open_[i] * (1 - slip) if side == "long" else open_[i] * (1 + slip)
+            _close_qty(fill, pos["qty_open"], "signal")
+            pos["exit_i"] = i
+            _finalize()
+            pending_signal_exit = False
+
         # 1) Gestion de posicion abierta en la barra i.
         if in_pos and i > pos["entry_i"]:
             side = pos["side"]
@@ -277,6 +322,13 @@ def run_backtest(
                 pos["exit_i"] = i
                 _finalize()
                 exited = True
+
+        # 1b) Marcar salida por señal (evaluada al cierre de i, ejecuta al open de i+1).
+        if in_pos:
+            if (pos["side"] == "long" and exit_long_arr[i]) or (
+                pos["side"] == "short" and exit_short_arr[i]
+            ):
+                pending_signal_exit = True
 
         # 2) Nueva senal en la barra i (fill en i+1) si no hay posicion.
         if not in_pos and (enter_long[i] or enter_short[i]):

@@ -38,6 +38,64 @@
 - **Estructuras/SMC**: vuelven SOLO como hipótesis condicionadas (régimen + flujo), no como
   fe. El sweep desnudo ya fue falsado.
 
+## Priors calibrados con evidencia (investigación 2026-07-24; fuentes en RECURSOS.md §8)
+
+| Señal | Evidencia clave | Prior |
+|---|---|---|
+| Vol-targeting (overlay) | peer-reviewed, robusto; mejora Sharpe/Calmar sin nueva señal | **ALTO** |
+| MA-timing diario lento / momentum 1-8 sem | Detzel et al. (FM 2021) bate B&H; señales lentas > rápidas (RM 2026); Liu-Tsyvinski (NBER) | **MEDIO-ALTO** |
+| Taker buy/sell imbalance (por vela) | JFM 2026: +1σ → +0.2%/día, +0.9%/sem; horizonte 1d-1sem; dato GRATIS en klines | **MEDIO-ALTO** |
+| Funding extremo (contrarian/filtro) | BIS WP1087/Mgmt Sci: carry >10% anual = posicionamiento saturado; señal = cola extrema, semanas | **MEDIO** |
+| Reversión post-cascada de liquidaciones | mecanismo documentado (Osler→perps; longs liquidados 3.5%/día BitMEX) pero SIN backtest público; dato de liquidaciones truncado → proxies ΔOI+vol+funding | **MEDIO** |
+| Seasonality horaria (21-23 UTC etc.) | Quantpedia ~33-40% anual BRUTO; 2 trades/día → los fees se lo comen; solo como overlay | **MEDIO (overlay)** |
+| OI standalone / MVRV / stablecoin flows | mixta, dato parcial o de pago, horizonte equivocado | **BAJO** |
+| **Armónicos** | CERO backtests con fees en toda la literatura; detección ambigua = overfitting | **MITO — descartada, 0 trials gastados** |
+| **Whale/wallet-following** | 97% líderes rentables pero solo 44% de copiadores; datos buenos = de pago | **MITO — descartada, 0 trials** |
+| **CVD-divergencia / OFI de libro para swing** | el OFI real decae en minutos (HFT); la versión visual no tiene un solo backtest | **MITO — descartada, 0 trials** |
+
+Base rate del factor zoo (crypto y equities): **~70-80% de las hipótesis mueren OOS**. Falsar
+2/2 hasta ahora ES la tasa base, no mala suerte. Presupuestar en consecuencia.
+
+## SPECS CONGELADAS — listas para correr (reglas fijadas ANTES de tocar datos reales)
+
+### H1 — `ma_timing` (MA-timing diario long/flat, Detzel) — IMPLEMENTADA ✅
+- Datos: velas **1d** BTC/USDT y ETH/USDT 2019→hoy. IS 2019-2023, OOS 2024+ una pasada.
+- Reglas: long al cierre que cruza sobre SMA(**100**); flat al cruce inverso (fill al open
+  siguiente); stop paracaídas close−3·ATR14; **overlay vol-target 30% anual** (solo reduce).
+- Variantes permitidas: UNA (window=50). Total trials nuevos: 2 por par.
+- Peek declarado: el IS de la familia ya fue "visto" como benchmark en GATE 1 → el juicio
+  real de H1 es OOS + DSR (el gate de "batir ma_cross" es contra su propia familia: informativo).
+- Código: `signals.ma_timing_signals` + `validate.py --strategy ma_timing --vol-target 0.30`.
+
+### H2 — `flow` (taker-imbalance momentum, JFM 2026) — IMPLEMENTADA ✅
+- Datos: velas **4h y 1d CON flujo** (`fetch_data --with-flow`) BTC/ETH 2019→hoy.
+- Reglas: flow = media 6 velas de `taker_buy_ratio`; long cuando flow > cuantil 0.80 rolling
+  (ventana 360, historia previa → causal); flat bajo cuantil 0.50 (histéresis); stop 3·ATR.
+- Variantes permitidas: UNA tanda (enter_q 0.85 o flow_window 12) si la base falla SOFT.
+- Código: `signals.flow_momentum_signals` + `validate.py --strategy flow`.
+
+**Cómo correr en el VPS (cuando quieras):**
+```bash
+cd ~/nacho-crypto && git pull && source .venv-crypto/bin/activate && python -m pytest crypto/tests -q
+python crypto/scripts/fetch_data.py --with-flow --symbol BTC/USDT --timeframe 1d --since 2019-01-01 --out crypto/data/BTC_USDT-1d.csv
+python crypto/scripts/fetch_data.py --with-flow --symbol ETH/USDT --timeframe 1d --since 2019-01-01 --out crypto/data/ETH_USDT-1d.csv
+python crypto/scripts/fetch_data.py --with-flow --symbol BTC/USDT --timeframe 4h --since 2019-01-01 --out crypto/data/BTC_USDT-4h-flow.csv
+python crypto/scripts/fetch_data.py --with-flow --symbol ETH/USDT --timeframe 4h --since 2019-01-01 --out crypto/data/ETH_USDT-4h-flow.csv
+for d in crypto/data/BTC_USDT-1d.csv crypto/data/ETH_USDT-1d.csv; do
+  python crypto/scripts/validate.py --data $d --strategy ma_timing --vol-target 0.30 --compare --deflated-sharpe 120 --out ${d%.csv}-rep_ma.json
+done
+for d in crypto/data/BTC_USDT-4h-flow.csv crypto/data/ETH_USDT-4h-flow.csv crypto/data/BTC_USDT-1d.csv crypto/data/ETH_USDT-1d.csv; do
+  python crypto/scripts/validate.py --data $d --strategy flow --compare --deflated-sharpe 120 --out ${d%.csv}-rep_flow.json
+done
+python crypto/scripts/decide.py crypto/data/*-rep_*.json
+```
+(`--deflated-sharpe 120` = trials acumulados ~113 + los nuevos, redondeado en contra nuestra.)
+
+### H3 — funding extremo / cascadas (datos listos, spec PENDIENTE de congelar)
+`fetch_funding.py` ya baja la historia completa. La spec se congela recién al terminar H1/H2
+(una familia a la vez). Boceto: funding percentil <2% rolling → ventana long N días; y/o
+proxy de cascada = ΔOI<<0 + volumen z>3 + wick → entrada contraria. NO correr antes de congelar.
+
 ## Backlog de hipótesis (prioridad = prior × dato disponible × costo de test)
 
 | ID | Familia (reglas a congelar antes de correr) | Prior | Datos | Estado |

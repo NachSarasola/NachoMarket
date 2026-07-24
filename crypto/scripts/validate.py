@@ -32,7 +32,12 @@ sys.path.insert(0, __file__.rsplit("/crypto/", 1)[0])  # raiz del repo en path
 
 from crypto.smc.backtest import BacktestResult, compute_metrics, run_backtest  # noqa: E402
 from crypto.smc.report import export_trades_csv, slice_report  # noqa: E402
-from crypto.smc.signals import donchian_bms_signals, smc_sweep_signals  # noqa: E402
+from crypto.smc.signals import (  # noqa: E402
+    donchian_bms_signals,
+    flow_momentum_signals,
+    ma_timing_signals,
+    smc_sweep_signals,
+)
 from crypto.smc.stats import deflated_sharpe_ratio, monte_carlo_ruin  # noqa: E402
 
 BARS_PER_YEAR_4H = 6 * 365  # 2190
@@ -145,6 +150,10 @@ def gen_signals(df: pd.DataFrame, strategy: str, params: dict) -> pd.DataFrame:
         return smc_sweep_signals(df, **params)
     if strategy == "donchian":
         return donchian_bms_signals(df, **params)
+    if strategy == "ma_timing":
+        return ma_timing_signals(df, **params)
+    if strategy == "flow":
+        return flow_momentum_signals(df, **params)
     raise ValueError(f"estrategia desconocida: {strategy}")
 
 
@@ -197,6 +206,19 @@ DEFAULT_PARAMS = {
         "tp_r_multiple": 2.0,
         "time_stop_bars": 18,
     },
+    # H1 (spec congelada en HIPOTESIS.md): MA-timing diario long/flat, señal LENTA.
+    "ma_timing": {
+        "window": 100,
+        "sl_atr": 3.0,
+    },
+    # H2 (spec congelada en HIPOTESIS.md): taker-imbalance momentum long/flat.
+    "flow": {
+        "flow_window": 6,
+        "quantile_lookback": 360,
+        "enter_q": 0.80,
+        "exit_q": 0.50,
+        "sl_atr": 3.0,
+    },
 }
 
 
@@ -216,13 +238,15 @@ def main() -> int:
                      help="datos sinteticos SIN edge (random-walk multi-regimen) — smoke negativo")
     src.add_argument("--synthetic-positive", action="store_true",
                      help="datos sinteticos CON edge (sweeps inyectados) — demuestra el pipeline en verde")
-    p.add_argument("--strategy", choices=["sweep", "donchian"], default="sweep")
+    p.add_argument("--strategy", choices=["sweep", "donchian", "ma_timing", "flow"], default="sweep")
     p.add_argument("--direction", choices=["long", "short", "both"], default="long")
     p.add_argument("--is-end", default="2023-12-31", help="fin del in-sample (OOS empieza al dia sig.)")
     p.add_argument("--initial", type=float, default=500.0)
     p.add_argument("--fee-bps", type=float, default=10.0)
     p.add_argument("--slippage-bps", type=float, default=5.0)
     p.add_argument("--risk-pct", type=float, default=0.01)
+    p.add_argument("--vol-target", type=float, default=None,
+                   help="overlay de vol-targeting anual (p.ej. 0.30); solo reduce tamaño")
     p.add_argument("--folds", type=int, default=4)
     p.add_argument("--min-trades", type=int, default=100)
     p.add_argument("--deflated-sharpe", type=int, default=1, metavar="N_TRIALS",
@@ -258,6 +282,7 @@ def main() -> int:
         initial_equity=args.initial,
         direction=args.direction,
         bars_per_year=bars_per_year,
+        vol_target_annual=args.vol_target,
     )
 
     is_df = df.loc[: args.is_end]

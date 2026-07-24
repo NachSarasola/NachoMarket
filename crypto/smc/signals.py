@@ -35,6 +35,8 @@ __all__ = [
     "donchian_bms_signals",
     "volume_zscore",
     "taker_buy_ratio",
+    "ma_timing_signals",
+    "flow_momentum_signals",
 ]
 
 # Ventanas de la etiqueta de regimen (instrumentacion OBSERVACIONAL: no filtra senales,
@@ -398,6 +400,131 @@ def smc_sweep_signals(
     out["enter_tag"] = tag
     out["time_stop_bars"] = time_stop_bars
     out["regime"] = regime_labels(df, atr_period)  # observacional (journal/slices)
+    return out
+
+
+def ma_timing_signals(
+    df: pd.DataFrame,
+    window: int = 100,
+    atr_period: int = 14,
+    sl_atr: float = 3.0,
+) -> pd.DataFrame:
+    """H1 — MA-timing long/flat (Detzel et al. 2021): tendencia LENTA en barras diarias.
+
+    Evidencia: ratios precio/MA(5-100d) baten buy&hold en Sharpe y drawdown (Financial
+    Management 2021); señales lentas > rapidas (Risk Management 2026). Nuestro propio GATE 1
+    mostro que el benchmark ma_cross domino todo y que operar long bajo la media destruye.
+
+    Reglas (long/flat, pensado para velas 1D):
+      - Entrar long al cierre que CRUZA por encima de SMA(window).
+      - Salir (exit_long, fill al open siguiente) al cierre que cruza por debajo.
+      - Stop protector inicial: close - sl_atr*ATR (paracaidas, no gestion fina).
+      - Sin target ni time-stop: la salida es la señal contraria.
+    Parametros libres: window, sl_atr (2). El vol-targeting se aplica como overlay del
+    backtester (vol_target_annual), no aqui.
+    """
+    out = pd.DataFrame(index=df.index)
+    close = df["close"].astype(float)
+    atr = add_atr(df, atr_period)
+    sma = close.rolling(window).mean()
+
+    above = (close > sma).astype(bool)
+    # shift(fill_value=False) preserva dtype bool: con .fillna(False) pandas 3 devuelve
+    # object y ahi `~` es negacion BITWISE de int (~True == -2, truthy) -> cruces falsos.
+    prev_above = above.shift(1, fill_value=False)
+    cross_up = above & ~prev_above
+    cross_dn = ~above & prev_above & sma.notna()
+
+    out["enter_long"] = cross_up.fillna(False)
+    out["enter_short"] = False
+    out["exit_long"] = cross_dn.fillna(False)
+    out["exit_short"] = False
+    out["entry_price"] = close
+    out["atr"] = atr
+
+    sl_price = pd.Series(np.nan, index=df.index)
+    sl_price = sl_price.mask(out["enter_long"], close - sl_atr * atr)
+    out["sl_price"] = sl_price
+    out["tp1_price"] = np.nan  # sin target: sale por señal contraria (o stop)
+    out["tp2_price"] = np.nan
+    out["time_stop_bars"] = np.inf
+
+    tag = pd.Series("", index=df.index, dtype=object)
+    tag = tag.mask(out["enter_long"], "ma_timing_long")
+    out["enter_tag"] = tag
+    out["regime"] = regime_labels(df, atr_period)
+    return out
+
+
+def flow_momentum_signals(
+    df: pd.DataFrame,
+    flow_window: int = 6,
+    quantile_lookback: int = 360,
+    enter_q: float = 0.80,
+    exit_q: float = 0.50,
+    atr_period: int = 14,
+    sl_atr: float = 3.0,
+) -> pd.DataFrame:
+    """H2 — momentum de order flow (taker imbalance), long/flat.
+
+    Evidencia: el order flow agregado predice retornos de BTC/ETH a 1d-1sem (+0.2%/dia por
+    +1σ; Journal of Financial Markets 2026). Dato gratis: ``taker_buy_volume`` de las klines
+    (fetch_data --with-flow).
+
+    Reglas (long/flat):
+      - flow = media rolling de ``taker_buy_ratio`` sobre ``flow_window`` barras.
+      - Entrar long cuando flow supera su cuantil ``enter_q`` rolling (ventana
+        ``quantile_lookback``, calculada sobre historia PREVIA -> causal).
+      - Salir cuando flow cae bajo su cuantil ``exit_q`` (histeresis para no churnear).
+      - Stop protector: close - sl_atr*ATR. Sin target/time-stop.
+    Parametros libres: flow_window, enter_q, exit_q, quantile_lookback, sl_atr (5, al tope
+    del presupuesto). Sin columna ``taker_buy_volume`` -> ninguna señal (frame vacio).
+    """
+    out = pd.DataFrame(index=df.index)
+    close = df["close"].astype(float)
+    atr = add_atr(df, atr_period)
+
+    ratio = taker_buy_ratio(df, smooth=flow_window)
+    hist = ratio.shift(1)  # cuantiles sobre historia previa: causal
+    q_hi = hist.rolling(quantile_lookback).quantile(enter_q)
+    q_lo = hist.rolling(quantile_lookback).quantile(exit_q)
+
+    entry_raw = (ratio > q_hi).fillna(False)
+    exit_raw = (ratio < q_lo).fillna(False)
+
+    # Estado long/flat con histeresis (vectorizado seria ffill sobre +1/-1; loop claro y O(n)).
+    n = len(df)
+    state = np.zeros(n, dtype=bool)
+    prev = False
+    entry_np = entry_raw.to_numpy()
+    exit_np = exit_raw.to_numpy()
+    for i in range(n):
+        if not prev and entry_np[i]:
+            prev = True
+        elif prev and exit_np[i]:
+            prev = False
+        state[i] = prev
+    state_s = pd.Series(state, index=df.index)
+    prev_state = state_s.shift(1, fill_value=False)  # bool dtype preservado (ver ma_timing)
+
+    out["enter_long"] = (state_s & ~prev_state)
+    out["enter_short"] = False
+    out["exit_long"] = (~state_s & prev_state)
+    out["exit_short"] = False
+    out["entry_price"] = close
+    out["atr"] = atr
+
+    sl_price = pd.Series(np.nan, index=df.index)
+    sl_price = sl_price.mask(out["enter_long"], close - sl_atr * atr)
+    out["sl_price"] = sl_price
+    out["tp1_price"] = np.nan
+    out["tp2_price"] = np.nan
+    out["time_stop_bars"] = np.inf
+
+    tag = pd.Series("", index=df.index, dtype=object)
+    tag = tag.mask(out["enter_long"], "flow_momo_long")
+    out["enter_tag"] = tag
+    out["regime"] = regime_labels(df, atr_period)
     return out
 
 

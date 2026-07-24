@@ -39,6 +39,77 @@ def random_walk_ohlcv(n: int = 5000, seed: int = 1, vol: float = 0.01) -> pd.Dat
     )
 
 
+def trend_market_ohlcv(n_legs: int = 12, seed: int = 5) -> pd.DataFrame:
+    """Control POSITIVO de H1 (MA-timing): tramos de tendencia larga + chop intercalado.
+
+    Piernas alcistas fuertes (drift positivo sostenido ~400 barras), bajistas y laterales.
+    Un MA-timing lento DEBE capturar las alcistas y quedarse flat en lo demas.
+    """
+    rng = np.random.default_rng(seed)
+    rets: list[float] = []
+    kinds = ["up", "chop", "down", "chop"]
+    for leg in range(n_legs):
+        kind = kinds[leg % len(kinds)]
+        length = int(rng.integers(300, 500))
+        drift = {"up": 0.004, "down": -0.003, "chop": 0.0}[kind]
+        vol = {"up": 0.012, "down": 0.015, "chop": 0.008}[kind]
+        rets.extend(rng.normal(drift, vol, length).tolist())
+    r = np.array(rets)
+    close = 100.0 * np.exp(np.cumsum(r))
+    n = len(close)
+    open_ = np.empty(n)
+    open_[0] = close[0]
+    open_[1:] = close[:-1]
+    wick = np.abs(r) * close + 0.2
+    high = np.maximum(open_, close) + rng.uniform(0.1, 0.8, n) * wick
+    low = np.minimum(open_, close) - rng.uniform(0.1, 0.8, n) * wick
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": np.ones(n)},
+        index=_index(n),
+    )
+
+
+def flow_market_ohlcv(n: int = 6000, seed: int = 6, informative: bool = True) -> pd.DataFrame:
+    """Control de H2 (taker imbalance): episodios de flujo comprador que PRECEDEN drift.
+
+    Con ``informative=True``, un estado latente 'bull' eleva el taker_buy_ratio (~0.62) y el
+    drift de las barras SIGUIENTES: el flujo anticipa el retorno (como en el paper de JFM).
+    Con ``informative=False``, el ratio es ruido sin relacion con el drift -> control negativo
+    (la estrategia de flow no debe ganar).
+    """
+    rng = np.random.default_rng(seed)
+    state = np.zeros(n, dtype=bool)
+    s = False
+    for i in range(n):
+        # cambia de estado con prob baja -> episodios persistentes (~150 barras)
+        if rng.random() < 1 / 150:
+            s = not s
+        state[i] = s
+
+    drift = np.where(state, 0.0035, -0.0005)
+    rets = rng.normal(drift, 0.010)
+    close = 100.0 * np.exp(np.cumsum(rets))
+    open_ = np.empty(n)
+    open_[0] = close[0]
+    open_[1:] = close[:-1]
+    wick = 0.010 * close
+    high = np.maximum(open_, close) + rng.uniform(0.1, 0.9, n) * wick
+    low = np.minimum(open_, close) - rng.uniform(0.1, 0.9, n) * wick
+
+    volume = rng.uniform(80, 120, n)
+    if informative:
+        ratio = np.where(state, rng.normal(0.62, 0.04, n), rng.normal(0.50, 0.04, n))
+    else:
+        ratio = rng.normal(0.50, 0.06, n)
+    taker = np.clip(ratio, 0.0, 1.0) * volume
+
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close,
+         "volume": volume, "taker_buy_volume": taker},
+        index=_index(n),
+    )
+
+
 def sweep_market_ohlcv(
     n_events: int = 60,
     range_bars: int = 26,

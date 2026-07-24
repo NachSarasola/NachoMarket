@@ -137,6 +137,26 @@ Calibrá expectativas con datos duros: que "no fundirte" sea el KPI, no "generar
 > Concepto extra: buscá **"risk of ruin"** y **Kelly fraccionado / optimal f (Ralph Vince)**. Incluso
 > con edge positivo, un sizing agresivo te lleva a la ruina con prob alta. Por eso 1%/trade + kill-switch.
 
+## 7bis. Papers clave del programa de hipótesis v2 (evidencia que calibra los priors)
+
+- **Order Flow and Cryptocurrency Returns** (J. Financial Markets, 2026) — el taker imbalance
+  predice retornos BTC/ETH a 1d-1sem (+0.2%/día por 1σ). Base de H2.
+  https://www.sciencedirect.com/science/article/pii/S1386418126000029
+- **Detzel, Liu, Strauss, Zhou, Zhu — Learning and Predictability via Technical Analysis**
+  (Financial Management 2021) — ratios precio/MA(5-100d) baten buy&hold en crypto. Base de H1.
+  https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3115846
+- **BIS WP 1087 — Crypto Carry** (Schmeling, Schrimpf, Todorov; Mgmt Science 2024) — funding
+  como gauge de posicionamiento saturado; crash risk del carry. Base de H3 y de la Etapa 3.
+  https://www.bis.org/publ/work1087.htm
+- **Liu & Tsyvinski — Risks and Returns of Cryptocurrency** (NBER w24877) — momentum 1-4
+  semanas en BTC. https://www.nber.org/system/files/working_papers/w24877/w24877.pdf
+- **Liquidation, Leverage and Optimal Margin in Bitcoin Futures** (arXiv 2102.04591) — las
+  liquidaciones forzadas son estructurales (3.5%/día de longs en BitMEX): el Osler de perps.
+  https://arxiv.org/abs/2102.04591
+- **Factor zoo crypto: 49 anomalías IS vs OOS** — la mayoría muere fuera de muestra; base
+  rate 70-80% de mortalidad para CUALQUIER hipótesis.
+  https://www.sciencedirect.com/science/article/abs/pii/S0275531926000255
+
 ## 7. Comunidades y herramientas
 
 **Señal:** Quantitative Finance Stack Exchange (https://quant.stackexchange.com/) · freqtrade repo +
