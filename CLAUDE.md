@@ -29,10 +29,10 @@ de variantes (multiple-testing) en `crypto/REGLAS_CONGELADAS.md`.
 
 ## Estructura
 
-- crypto/smc/ — deteccion causal, backtester honesto, stats (DSR/Monte Carlo), sinteticos
+- crypto/smc/ — deteccion causal, backtester honesto, event-study (H7/H8), stats (DSR/MC), sinteticos
 - crypto/user_data/strategies/ — SmcSweep + DonchianControl (freqtrade v3)
-- crypto/scripts/ — fetch_data, validate (gates), param_sweep (meseta), vps_setup (aislado)
-- crypto/tests/ — 36 tests: causalidad, fills, controles positivo/negativo, stats, regimen
+- crypto/scripts/ — fetch_data/funding/unlocks/listings, validate + event_validate (gates), param_sweep, vps_* (aislados)
+- crypto/tests/ — 104 tests: causalidad, fills, controles positivo/negativo, stats, regimen, eventos
 - Docs: README (uso), ESTRATEGIA (que hace y por que), TESIS (tesis/roadmap/revision),
   REGLAS_CONGELADAS (spec + trials), RECURSOS (aprendizaje), DESPLIEGUE_VPS (runbook)
 
@@ -49,6 +49,8 @@ de variantes (multiple-testing) en `crypto/REGLAS_CONGELADAS.md`.
 - python crypto/scripts/weekly_review.py --freqtrade-csv <trades.csv> --baseline <report.json> — review semanal
 - bash crypto/scripts/vps_validate_all.sh — one-shot en el VPS (baja datos + gates + veredicto)
 - bash crypto/scripts/vps_run_hipotesis.sh — one-shot del programa de hipotesis (H1+H2 congeladas + veredicto)
+- bash crypto/scripts/vps_run_eventos.sh — one-shot event-driven (H7 unlocks + H8 listings, tesis invertida)
+- python crypto/scripts/event_validate.py --strategy h7_unlock --events <csv> --data-dir <dir> — event study con gates
 - freqtrade backtesting -c crypto/config-backtest.json --strategy SmcSweep --strategy-path crypto/user_data/strategies --enable-protections
 - freqtrade trade -c crypto/config-dryrun.json --strategy SmcSweep --strategy-path crypto/user_data/strategies — paper
 

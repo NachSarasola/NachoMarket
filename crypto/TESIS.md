@@ -11,9 +11,12 @@ Cada cambio de reglas se anota en `REGLAS_CONGELADAS.md` y cuenta como trial (De
 > (on-chain; RECURSOS §8) confirmó el meta-hallazgo — solo ~16-20% de 2.396 vaults de
 > Hyperliquid es rentable y NINGUNO por señal direccional ("risk control, not win rate") —
 > y re-rankeó la cola: H3b cascadas DEGRADADA a BAJO (cero evidencia pública); candidatas
-> nuevas **H7 short-unlocks (MEDIO-ALTO)** y **H8 listing-fade (MEDIO)**, specs propuestas
-> sin congelar en `HIPOTESIS.md`. Capital intacto: $0 perdidos en ~125 trials. La máquina
-> de validación es el activo.
+> nuevas **H7 short-unlocks (MEDIO-ALTO)** y **H8 listing-fade (MEDIO)**. Con el mandato
+> del usuario "invierte mi tesis: no importa el winrate sino el PnL" (2026-07-24), H7/H8
+> quedaron CONGELADAS e implementadas (event-study propio: `crypto/smc/events.py` +
+> `event_validate.py` + fetchers + 23 tests; el winrate se reporta pero no participa de
+> ningún gate). Pendiente: correr `vps_run_eventos.sh` en el VPS y registrar el veredicto.
+> Capital intacto: $0 perdidos en ~125 trials. La máquina de validación es el activo.
 
 ## La tesis en 5 puntos
 

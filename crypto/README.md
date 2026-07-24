@@ -41,7 +41,8 @@ crypto/
 │   ├── fetch_funding.py  # historia completa del funding de Binance perps (gratis) — H3a
 │   ├── vps_setup.sh      # setup AISLADO en el VPS (venv propio, no toca el otro bot)
 │   ├── vps_validate_all.sh  # one-shot VPS: baja datos + gates + veredicto + empaqueta
-│   └── vps_run_hipotesis.sh # one-shot VPS: H1+H2 con specs congeladas + veredicto
+│   ├── vps_run_hipotesis.sh # one-shot VPS: H1+H2 con specs congeladas + veredicto
+│   └── vps_run_eventos.sh   # one-shot VPS: H7 unlocks + H8 listings (event-driven, tesis invertida)
 ├── tests/                # 32 tests: causalidad, fills, control positivo/negativo, stats, FVG
 ├── config-backtest.json  # config freqtrade para backtesting
 ├── config-dryrun.json    # config freqtrade para paper trading (dry-run)

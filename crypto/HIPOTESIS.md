@@ -139,7 +139,20 @@ no encontraron NI UN paper ni backtest público del rebote post-cascada — solo
 degradado **MEDIO → BAJO**. Queda en cola DETRÁS de H7/H8 (que sí tienen soporte estadístico
 y datos gratis). No se implementa por ahora; 0 trials gastados.
 
-### H7 — short de unlocks tipo cliff (SPEC PROPUESTA — NO congelada; 0 trials)
+### H7 — short de unlocks tipo cliff — CONGELADA ✅ 2026-07-24, IMPLEMENTADA
+**Go del usuario (2026-07-24): "continua e invierte mi tesis... no importa el winrate sino
+el pnl. Cualquier crypto, metodo, etc."** Spec EXACTA y gates congelados en
+REGLAS_CONGELADAS.md → "SPECS CONGELADAS H7/H8" (winrate: se reporta, JAMÁS decide).
+Código: `crypto/smc/events.py` (simulador por evento + gates) + `event_validate.py`
+(specs) + `fetch_unlocks.py` (DeFiLlama) + `fetch_listings.py` + `fetch_data --futures`
++ 23 tests (controles positivo/negativo incluidos).
+
+**Correr en el VPS — UN comando (H7+H8 juntos, son la misma pasada de datos):**
+```bash
+cd ~/nacho-crypto && bash crypto/scripts/vps_run_eventos.sh
+```
+Variante única pre-registrada de cada una: `event_validate.py ... --variant` — SOLO tras
+registrar el veredicto base (cuenta como trial). Detalle original de la propuesta (histórico):
 La arista con mejor evidencia de la investigación 2026-07-24 (RECURSOS §8): ~90% de 16.000
 unlocks con impacto negativo (Keyrock); 88,5% negativo en 72h en 52 eventos de Binance (SSRN).
 Mecanismo: oferta programada e IGNORADA por holders — el vendedor es forzoso y conocido con
@@ -161,7 +174,9 @@ semanas de anticipación. Contraparte: quien compra sin mirar el calendario de e
 - **Por qué puede fallar** (escrito HOY): priced-in creciente (mercado ya mira calendarios),
   funding negativo de alts come el short, muestra OOS corta.
 
-### H8 — listing fade Binance (SPEC PROPUESTA — NO congelada; 0 trials)
+### H8 — listing fade Binance — CONGELADA ✅ 2026-07-24, IMPLEMENTADA
+Misma maquinaria y gates que H7 (`event_validate.py --strategy h8_listing`); se corre en la
+misma pasada del VPS. Variante única: salida día 3 (`--variant`). Detalle original (histórico):
 Evidencia: 24/27 listings 2025 con retorno negativo (media −44%); el pump es pre/intra-listing
 y el retail que compra el día 1 es la contraparte. Mecanismo: distribución programada (insiders/
 farmers venden el evento de liquidez).
@@ -174,8 +189,8 @@ farmers venden el evento de liquidez).
   stop 4% corte la mayoría de los trades — si eso pasa, es un FAIL del diseño a registrar,
   NO una licencia para aflojar el cap.
 
-**Orden propuesto de la cola (a confirmar por el usuario, porque gasta los próximos trials
-del presupuesto DSR): H7 → H8 → (recién después, si algo pasa) H3b.**
+**Orden de la cola CONFIRMADO por el usuario (2026-07-24, "continua e invierte mi tesis"):
+H7 → H8 → (recién después, si algo pasa) H3b. Trials: correr con `--deflated-sharpe 130`.**
 
 ## Backlog de hipótesis (prioridad = prior × dato disponible × costo de test)
 
@@ -187,8 +202,8 @@ del presupuesto DSR): H7 → H8 → (recién después, si algo pasa) H3b.**
 | **H4** | **Short side en régimen `dn_*`** (donchian/sweep espejo; investigación con `direction='both'`; live solo etapa perps) | MEDIO-BAJO | ya los tenemos | tras H1/H2 |
 | **H5** | Estructuras BOS/CHoCH multi-TF (1h piso, maker-only, con filtro de régimen) | BAJO | ya + 1h fetch | cola |
 | **H6** | Armónicos (Gartley/Bat, ratios FIJOS de la tabla del ebook, tolerancia única) | MUY BAJO | ya los tenemos | cola, opcional |
-| **H7** | **Short de unlocks tipo cliff** (event-driven; spec propuesta arriba) | **MEDIO-ALTO** | calendario gratis + klines/funding perp | **PRÓXIMA propuesta** (espera go del usuario) |
-| **H8** | **Listing fade Binance** (event-driven; spec propuesta arriba) | **MEDIO** | gratis (klines desde listing) | tras H7 |
+| **H7** | **Short de unlocks tipo cliff** (event-driven; spec congelada arriba) | **MEDIO-ALTO** | calendario gratis + klines/funding perp | **CONGELADA ✅ — lista para el VPS** (`vps_run_eventos.sh`) |
+| **H8** | **Listing fade Binance** (event-driven; spec congelada arriba) | **MEDIO** | gratis (klines desde listing) | **CONGELADA ✅ — misma pasada VPS** |
 
 **Reglas del programa** (innegociables):
 1. UNA familia por vez. Reglas y parámetros congelados en este archivo ANTES de tocar datos.

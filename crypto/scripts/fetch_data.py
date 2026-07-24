@@ -61,18 +61,22 @@ def fetch(exchange_id: str, symbol: str, timeframe: str, since_ms: int) -> list[
 _BINANCE_TF_MS = {"1h": 3600_000, "4h": 4 * 3600_000, "1d": 24 * 3600_000}
 
 
-def fetch_binance_raw(symbol: str, timeframe: str, since_ms: int) -> list[list[float]]:
-    """Klines crudas de Binance spot (sin ccxt): incluye taker_buy_volume (campo 9).
+def fetch_binance_raw(symbol: str, timeframe: str, since_ms: int,
+                      futures: bool = False) -> list[list[float]]:
+    """Klines crudas de Binance (sin ccxt): incluye taker_buy_volume (campo 9).
 
     Es el proxy de order flow GRATIS con historia completa: cuanto del volumen de cada
     vela fue agresion compradora. ccxt no lo expone en fetch_ohlcv; el endpoint publico si.
-    Devuelve filas [ts, open, high, low, close, volume, taker_buy_volume].
+    ``futures=True`` usa fapi (perps USDⓈ-M, mismo layout de campos; la historia arranca
+    en el onboard del contrato) — es el precio correcto cuando la estrategia SHORTEA el perp
+    (event studies H7/H8). Devuelve filas [ts, open, high, low, close, volume, taker_buy_volume].
     """
     import requests  # import diferido
 
     tf_ms = _BINANCE_TF_MS[timeframe]
     sym = symbol.replace("/", "")
-    url = "https://api.binance.com/api/v3/klines"
+    url = ("https://fapi.binance.com/fapi/v1/klines" if futures
+           else "https://api.binance.com/api/v3/klines")
     out: list[list[float]] = []
     cursor = since_ms
     while True:
@@ -112,15 +116,20 @@ def main() -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--with-flow", action="store_true",
                    help="usar el endpoint raw de Binance e incluir taker_buy_volume (order flow)")
+    p.add_argument("--futures", action="store_true",
+                   help="klines del PERP (fapi) en vez de spot — implica el modo raw con flow")
     args = p.parse_args()
 
+    raw = args.with_flow or args.futures
     print(f"Descargando {args.symbol} {args.timeframe} desde {args.since} "
-          f"({'binance-raw+flow' if args.with_flow else args.exchange})...", file=sys.stderr)
-    if args.with_flow:
+          f"({'fapi-perp' if args.futures else ('binance-raw+flow' if raw else args.exchange)})...",
+          file=sys.stderr)
+    if raw:
         if args.timeframe not in _BINANCE_TF_MS:
-            print(f"--with-flow soporta timeframes {list(_BINANCE_TF_MS)}", file=sys.stderr)
+            print(f"--with-flow/--futures soporta timeframes {list(_BINANCE_TF_MS)}", file=sys.stderr)
             return 1
-        rows = fetch_binance_raw(args.symbol, args.timeframe, _to_ms(args.since))
+        rows = fetch_binance_raw(args.symbol, args.timeframe, _to_ms(args.since),
+                                 futures=args.futures)
         header = ["timestamp", "open", "high", "low", "close", "volume", "taker_buy_volume"]
     else:
         rows = fetch(args.exchange, args.symbol, args.timeframe, _to_ms(args.since))

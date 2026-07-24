@@ -208,6 +208,56 @@ de trials sigue corriendo para siempre.
 - Paralelo no-backtest permitido (B6 del mapa): cosecha de incentivos con caps duros +
   presupuesto fijo de fees; HLP pasivo solo con sizing que tolere −30% en un día.
 
+## ★ SPECS CONGELADAS H7/H8 — 2026-07-24 (tesis INVERTIDA: PnL, no winrate)
+
+**Mandato del usuario (textual): "continua e invierte mi tesis, encuentra la forma de armar
+algún bot que gane tradeando, no importa el winrate sino el pnl. Cualquier crypto, metodo,
+etc."** → go explícito para gastar los próximos trials en H7/H8. Congeladas ANTES de bajar
+un solo dato de eventos. El winrate se REPORTA pero no participa de ningún gate.
+
+### H7 — short de unlocks tipo cliff (`event_validate.py --strategy h7_unlock`)
+- **Universo**: unlocks cliff ≥ **2.0%** del supply (basis `max_supply`, estática → sin
+  lookahead y conservadora vs circulante), token con perp USDT en Binance.
+- **Regla**: short al open de la primera vela 4h ≥ T−48h (calendario público con semanas de
+  anticipación → causal); cover al open de la primera vela ≥ T+24h; stop 4% (cap
+  inquebrantable, conservador intrabarra); riesgo 1%; sin re-entradas; eventos solapados del
+  mismo símbolo → solo el primero.
+- **Costos**: 6 bps fee + 10 bps slippage POR LADO + **funding acumulado** del período (el
+  corto paga el funding negativo — asesino documentado del trade).
+- **Variante ÚNICA permitida** (pre-registrada): umbral 1.0% (palanca de muestra). Nada más.
+
+### H8 — listing fade Binance (`event_validate.py --strategy h8_listing`)
+- **Universo**: listings spot Binance desde 2023 (fecha = primera vela 1d, mecánico, sin
+  scraping de anuncios) con perp USDT disponible.
+- **Regla**: short al open de la primera vela 4h ≥ T+24h (posterior al evento → causal);
+  salida por tiempo en T+168h (día 7) o stop 4%; riesgo 1%.
+- **Costos**: idénticos a H7 (funding incluido).
+- **Variante ÚNICA permitida** (pre-registrada): salida T+72h (día 3). Nada más.
+
+### Gates del event-study (congelados; en `crypto/smc/events.py::classify_event_study`)
+| Gate | Umbral | Severidad |
+|---|---|---|
+| Muestra total | ≥ 60 eventos ejecutables | soft → MUESTRA_INSUFICIENTE |
+| Muestra OOS | ≥ 15 eventos | soft |
+| IS con efecto | expectancy neta > 0 **y** p(bootstrap, media≤0) < 0.05 | **hard** |
+| OOS sostiene | expectancy OOS > 0 **y** OOS/IS ≥ 0.5 (una sola pasada, IS≤2024-12-31) | **hard** |
+| DSR | ≥ 0.95 sobre retornos POR EVENTO (n_trials acumulados) | **hard** |
+| Ruina | P(ruina MC) ≤ 10% a riesgo 1% | soft |
+| Datos | eventos truncados por fin de datos ≤ 10% | soft |
+
+**Sesgos pre-registrados (ambos CONSERVADORES para el short)**: universos de sobrevivientes
+(DeFiLlama y exchangeInfo no listan tokens muertos/delistados → faltan los mejores shorts);
+% de supply subestimado por basis max_supply.
+
+**Contador de trials**: base acumulada ~125 + H7 base + H7 variante + H8 base + H8 variante
+→ correr con `--deflated-sharpe 130` (redondeado en contra nuestra). La variante solo se
+corre TRAS registrar el veredicto base, y se anota como fila acá.
+
+**Alcance**: esto es INVESTIGACIÓN sobre alts/perps. La regla v1 ("spot, solo BTC/ETH")
+sigue vigente para operar: si H7/H8 validan, el pase a ejecución real es un cambio de
+alcance que se registra acá (perps = Etapa 2: Hyperliquid/Binance futures, shorts, dry-run
+4-8 semanas y GATE 2 completo ANTES de un dólar real). Nada de esto salta el pipeline.
+
 ## RESULTADO GATE 1 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
 
 Corrido en el VPS con datos reales (Binance, 4h, 2019→2026), costos 10+5 bps/lado.

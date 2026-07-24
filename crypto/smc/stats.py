@@ -122,6 +122,29 @@ def deflated_sharpe_ratio(
     }
 
 
+def bootstrap_mean_pvalue(
+    returns: np.ndarray | list[float], *, n_boot: int = 10000, seed: int = 0
+) -> dict:
+    """p-valor one-sided por bootstrap percentil: P(media verdadera <= 0).
+
+    Para event studies (retornos POR EVENTO, pocos y no gaussianos) el bootstrap es más
+    honesto que un t-test: respeta colas y asimetría. Devuelve también el CI95 de la media.
+    """
+    r = np.asarray(list(returns), dtype=float)
+    r = r[np.isfinite(r)]
+    if r.size < 3:
+        return {"p_value": float("nan"), "ci_lo": float("nan"), "ci_hi": float("nan"), "n": int(r.size)}
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, r.size, size=(n_boot, r.size))
+    means = r[idx].mean(axis=1)
+    return {
+        "p_value": round(float((means <= 0.0).mean()), 5),
+        "ci_lo": round(float(np.percentile(means, 2.5)), 5),
+        "ci_hi": round(float(np.percentile(means, 97.5)), 5),
+        "n": int(r.size),
+    }
+
+
 def monte_carlo_ruin(
     r_multiples: list[float] | np.ndarray,
     *,
