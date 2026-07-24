@@ -40,7 +40,7 @@ class DonchianControl(IStrategy):
     can_short = False
     process_only_new_candles = True
     use_custom_stoploss = True
-    stoploss = -0.99
+    stoploss = -0.08  # backstop duro (cap de riesgo ~6% + margen) si custom_stoploss devuelve None
     minimal_roi = {}
     startup_candle_count = 60
     trailing_stop = False

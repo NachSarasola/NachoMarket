@@ -64,10 +64,11 @@ def sweep_market_ohlcv(
     lows: list[float] = []
     closes: list[float] = []
 
-    level = 100.0
+    anchor = 100.0     # nivel medio de largo plazo
+    band_lo = anchor   # low de la banda actual (random walk con reversion a la media)
     for _ in range(n_events):
-        lo = level
-        hi = level + band
+        lo = band_lo
+        hi = band_lo + band
         mid = (lo + hi) / 2.0
         noise = band * 0.04
 
@@ -110,9 +111,10 @@ def sweep_market_ohlcv(
             opens.append(o); highs.append(h); lows.append(l); closes.append(cc)
             prev_c = cc
 
-        # Deriva suave de la banda para el proximo evento.
-        level = prev_c + rng.normal(0, band * 0.1)
-        level = max(level, 20.0)
+        # Banda del proximo evento: random walk MEAN-REVERTING alrededor de ``anchor``
+        # (evita una tendencia compuesta que haga que buy&hold domine el demo).
+        band_lo = band_lo + rng.normal(0, band * 0.2) - 0.15 * (band_lo - anchor)
+        band_lo = max(band_lo, 20.0)
 
     n = len(closes)
     return pd.DataFrame(

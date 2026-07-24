@@ -55,7 +55,10 @@ class SmcSweep(IStrategy):
     can_short = False            # SPOT: solo largos (barrido de sell-side liquidity).
     process_only_new_candles = True
     use_custom_stoploss = True
-    stoploss = -0.99             # placeholder; el stop real lo fija custom_stoploss.
+    # BACKSTOP DURO: si custom_stoploss no puede leer la vela de entrada (devuelve None),
+    # este stop estatico igual limita la perdida al nivel del cap de riesgo (~4%) + margen.
+    # Nunca dejar -0.99 aca: seria quedarse sin red exactamente como en la fundida anterior.
+    stoploss = -0.05
     minimal_roi = {}             # sin ROI fijo; salidas por custom_exit (target + time-stop).
     startup_candle_count = 120   # >= max(lookback, pda_lookback, atr_period) + margen.
     trailing_stop = False

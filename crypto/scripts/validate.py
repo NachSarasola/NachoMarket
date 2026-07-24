@@ -188,7 +188,10 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--data", help="CSV OHLCV (timestamp,open,high,low,close,volume)")
-    src.add_argument("--synthetic", action="store_true", help="datos sinteticos (smoke test)")
+    src.add_argument("--synthetic", action="store_true",
+                     help="datos sinteticos SIN edge (random-walk multi-regimen) — smoke negativo")
+    src.add_argument("--synthetic-positive", action="store_true",
+                     help="datos sinteticos CON edge (sweeps inyectados) — demuestra el pipeline en verde")
     p.add_argument("--strategy", choices=["sweep", "donchian"], default="sweep")
     p.add_argument("--direction", choices=["long", "short", "both"], default="long")
     p.add_argument("--is-end", default="2023-12-31", help="fin del in-sample (OOS empieza al dia sig.)")
@@ -208,7 +211,13 @@ def main() -> int:
 
     if args.synthetic:
         df = synthetic_ohlcv()
-        print("### MODO SINTETICO — NO es evidencia de edge, solo smoke del pipeline ###\n")
+        print("### SINTETICO SIN EDGE (random-walk) — debe dar NEGATIVO; es el control ###\n")
+    elif args.synthetic_positive:
+        from crypto.smc.synthetic import sweep_market_ohlcv
+        # Muchos eventos para abarcar IS (hasta 2023) y dejar barras reales para el OOS.
+        df = sweep_market_ohlcv(n_events=480, seed=7)
+        print("### SINTETICO CON EDGE (sweeps inyectados) — demuestra el pipeline en verde. "
+              "NO es dato real, solo muestra que detecta el fenomeno cuando existe ###\n")
     else:
         df = load_csv(args.data)
 

@@ -61,10 +61,12 @@ python -m pytest crypto/tests -q
 #   Incluye el control POSITIVO (con sweeps inyectados la estrategia DEBE ganar) y el
 #   NEGATIVO (en random-walk DEBE perder por costos). Un detector roto falla aca.
 
-# 1) Smoke del pipeline sobre datos sinteticos (NO es evidencia de edge):
+# 1) Smoke del pipeline. Dos modos para APRENDER a leer la validacion:
 python crypto/scripts/validate.py --synthetic --strategy sweep --compare --deflated-sharpe 20
-#   Reporta IS/walk-forward/OOS/benchmarks + Deflated Sharpe (multiple-testing) + Monte
-#   Carlo de ruina. En datos sin edge todo da negativo y el DSR ~0 (correcto).
+#   SIN edge (random-walk): todo NEGATIVO, DSR ~0. Asi se ve "no hay edge".
+python crypto/scripts/validate.py --synthetic-positive --strategy sweep --deflated-sharpe 108
+#   CON edge (sweeps inyectados): IS/OOS en verde, walk-forward estable (meseta), DSR pasa,
+#   P(ruina)=0. Asi se ve el exito atravesando TODOS los gates. (Sigue sin ser dato real.)
 
 # 1b) Barrido de parametros con deteccion de meseta (anti curve-fitting):
 python crypto/scripts/param_sweep.py --synthetic
