@@ -3,13 +3,17 @@
 Documento vivo. Se revisa con RESULTADOS (journal + slices por régimen), no con opiniones.
 Cada cambio de reglas se anota en `REGLAS_CONGELADAS.md` y cuenta como trial (Deflated Sharpe).
 
-> **ESTADO (2026-07-24, actualizado): CHECKPOINT ESTRATÉGICO.** Cinco familias falsadas
-> con datos reales (sweep, donchian, ma_timing, flow, funding) — todas con la misma firma:
-> estructura IS 2019-2023, colapso OOS 2024+. Conclusión: no hay edge direccional validable
-> en majors/swing/datos-gratis en el régimen actual. Resolución y salidas pre-escritas en
-> `REGLAS_CONGELADAS.md` → "CHECKPOINT ESTRATÉGICO" (pasiva DCA/hold · acumular hacia carry
-> $5k+ · solo mecanismos nuevos, candidata viva: H3b cascadas). Capital intacto: $0 perdidos
-> en ~125 trials. La máquina de validación es el activo.
+> **ESTADO (2026-07-24, actualizado): CHECKPOINT RESUELTO — salidas 2+3 elegidas.** Cinco
+> familias falsadas con datos reales (sweep, donchian, ma_timing, flow, funding) — todas con
+> la misma firma: estructura IS 2019-2023, colapso OOS 2024+. No hay edge direccional
+> validable en majors/swing/datos-gratis en el régimen actual. El usuario eligió: acumular
+> capital hacia carry ($5k+) Y solo mecanismos nuevos. La investigación de bots VERIFICADOS
+> (on-chain; RECURSOS §8) confirmó el meta-hallazgo — solo ~16-20% de 2.396 vaults de
+> Hyperliquid es rentable y NINGUNO por señal direccional ("risk control, not win rate") —
+> y re-rankeó la cola: H3b cascadas DEGRADADA a BAJO (cero evidencia pública); candidatas
+> nuevas **H7 short-unlocks (MEDIO-ALTO)** y **H8 listing-fade (MEDIO)**, specs propuestas
+> sin congelar en `HIPOTESIS.md`. Capital intacto: $0 perdidos en ~125 trials. La máquina
+> de validación es el activo.
 
 ## La tesis en 5 puntos
 

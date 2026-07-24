@@ -46,7 +46,15 @@
 | MA-timing diario lento / momentum 1-8 sem | Detzel et al. (FM 2021) bate B&H; señales lentas > rápidas (RM 2026); Liu-Tsyvinski (NBER) | **MEDIO-ALTO** |
 | Taker buy/sell imbalance (por vela) | JFM 2026: +1σ → +0.2%/día, +0.9%/sem; horizonte 1d-1sem; dato GRATIS en klines | **MEDIO-ALTO** |
 | Funding extremo (contrarian/filtro) | BIS WP1087/Mgmt Sci: carry >10% anual = posicionamiento saturado; señal = cola extrema, semanas | **MEDIO** |
-| Reversión post-cascada de liquidaciones | mecanismo documentado (Osler→perps; longs liquidados 3.5%/día BitMEX) pero SIN backtest público; dato de liquidaciones truncado → proxies ΔOI+vol+funding | **MEDIO** |
+| Reversión post-cascada de liquidaciones | mecanismo documentado (Osler→perps) pero 19 búsquedas dirigidas (2026-07-24) no hallaron NI UN paper/backtest público del rebote — solo anécdota | **BAJO — degradado 2026-07-24** |
+| **Short de unlocks tipo cliff (H7)** | Keyrock: ~90% de 16.000 eventos con impacto negativo a 30d; SSRN: 88,5% negativo en 72h (52 eventos Binance). Contras pre-registrados: parcialmente priced-in (estudio de 236 eventos); el funding/borrow del short puede comerse el edge | **MEDIO-ALTO** |
+| **Listing fade Binance (H8)** | 2025: 24/27 listings con retorno negativo (media −44%); el "Binance effect" pasó de descubrimiento a distribución | **MEDIO** |
+| Funding/basis en venues jóvenes (HIP-3, DEXs nuevos) | estructura two-tier del funding (MDPI): venues chicos se desvían más y por más tiempo; fábrica de mercados nuevos desde oct-2025. Alimenta la Etapa 3 | **MEDIO** |
+| Cosecha de incentivos (points/airdrops/HLP pasivo) | HYPE: ~$7B a 94k wallets, on-chain. NO backtesteable: contabilidad de EV + caps duros de riesgo (la versión corregida del bot de Polymarket) | **ALTO (hecho) / MEDIO (forward)** |
+| MM con rebate en pares long-tail (Kraken 650+) | subsidio explícito vigente 2026, pero Hummingbot Miner murió (mar-2026) y el adverse selection está medido; solo medible EN VIVO (markouts por fill) | **MEDIO-BAJO (solo live)** |
+| Cross-section alts long-short a escala retail | señal gross en papers; neta de costos retail muere (Chen & Welch 2026: 7bp/mes las ~200 anomalías) | **BAJO** |
+| Copy trading / leaderboards | 100.236 resultados en 90d: el copiador rinde < líder (delay de fill) + survivorship del leaderboard | **MITO — 0 trials** |
+| Scalping "maker gratis" en majors | adverse selection documentado (Tiniç&Sensoy; arXiv 2602.00776): sin velocidad, tu fill maker ES la mala noticia | **MITO — 0 trials** |
 | Seasonality horaria (21-23 UTC etc.) | Quantpedia ~33-40% anual BRUTO; 2 trades/día → los fees se lo comen; solo como overlay | **MEDIO (overlay)** |
 | OI standalone / MVRV / stablecoin flows | mixta, dato parcial o de pago, horizonte equivocado | **BAJO** |
 | **Armónicos** | CERO backtests con fees en toda la literatura; detección ambigua = overfitting | **MITO — descartada, 0 trials gastados** |
@@ -54,7 +62,10 @@
 | **CVD-divergencia / OFI de libro para swing** | el OFI real decae en minutos (HFT); la versión visual no tiene un solo backtest | **MITO — descartada, 0 trials** |
 
 Base rate del factor zoo (crypto y equities): **~70-80% de las hipótesis mueren OOS**. Falsar
-2/2 hasta ahora ES la tasa base, no mala suerte. Presupuestar en consecuencia.
+5/5 hasta ahora ES la tasa base, no mala suerte. Confirmación on-chain independiente
+(2026-07-24): de 2.396 vaults de Hyperliquid con PnL público e infalsificable, **solo ~16%
+rentable a 30d / ~20% lifetime** — y los ganadores NO usan señal técnica direccional (fuentes
+en RECURSOS §8). Presupuestar en consecuencia.
 
 ## SPECS CONGELADAS — listas para correr (reglas fijadas ANTES de tocar datos reales)
 
@@ -120,9 +131,51 @@ python crypto/scripts/validate.py --data crypto/data/ETH_USDT-4h-flow.csv --fund
 python crypto/scripts/decide.py crypto/data/rep_funding_*.json
 ```
 
-### H3b — proxy de cascadas de liquidación (DISEÑADA, no implementada)
+### H3b — proxy de cascadas de liquidación (DISEÑADA, no implementada — EN PAUSA)
 Requiere construir el dataset de proxies (ΔOI de los dumps de métricas + volumen z + wick +
 flip de funding). Se implementa SOLO si H3a resuelve y el programa sigue en pie (MAPA_EDGES B1).
+**Actualización 2026-07-24 (post-investigación de bots verificados):** 19 búsquedas dirigidas
+no encontraron NI UN paper ni backtest público del rebote post-cascada — solo anécdota. Prior
+degradado **MEDIO → BAJO**. Queda en cola DETRÁS de H7/H8 (que sí tienen soporte estadístico
+y datos gratis). No se implementa por ahora; 0 trials gastados.
+
+### H7 — short de unlocks tipo cliff (SPEC PROPUESTA — NO congelada; 0 trials)
+La arista con mejor evidencia de la investigación 2026-07-24 (RECURSOS §8): ~90% de 16.000
+unlocks con impacto negativo (Keyrock); 88,5% negativo en 72h en 52 eventos de Binance (SSRN).
+Mecanismo: oferta programada e IGNORADA por holders — el vendedor es forzoso y conocido con
+semanas de anticipación. Contraparte: quien compra sin mirar el calendario de emisión.
+- **Datos**: calendario histórico de unlocks (Tokenomist/CryptoRank/DropsTab, gratis) +
+  klines del PERP (Binance/Bybit, gratis) + funding del perp (`fetch_funding.py`).
+- **Universo**: unlocks cliff ≥ 2% del circulante, token con perp en Binance/Bybit.
+- **Regla propuesta** (se congela EXACTA antes de bajar el calendario): short al open de la
+  primera vela 4h posterior a T−48h; cover al open de la primera vela posterior a T+24h;
+  stop 4% (cap inquebrantable del programa); riesgo 1%; SIN re-entradas.
+- **Costos modelados**: taker 2 lados + slippage + **funding horario ACUMULADO** del período
+  short (asesino documentado de este trade — un backtest independiente murió por esto).
+- **Parámetros libres**: umbral % circulante, ventana de entrada, ventana de salida (3).
+  Variantes permitidas: UNA tanda.
+- **Gates**: event study IS 2023-2024 / OOS 2025-2026 (una pasada), ≥60 eventos para validar
+  (menos → informativo, no operable), DSR con trials acumulados, Monte Carlo. Muerte
+  pre-registrada: si el retorno medio del evento neto de costos ≤ 0 en OOS, o si el efecto
+  vive solo en tokens sin perp líquido (no ejecutable).
+- **Por qué puede fallar** (escrito HOY): priced-in creciente (mercado ya mira calendarios),
+  funding negativo de alts come el short, muestra OOS corta.
+
+### H8 — listing fade Binance (SPEC PROPUESTA — NO congelada; 0 trials)
+Evidencia: 24/27 listings 2025 con retorno negativo (media −44%); el pump es pre/intra-listing
+y el retail que compra el día 1 es la contraparte. Mecanismo: distribución programada (insiders/
+farmers venden el evento de liquidez).
+- **Datos**: lista de listings spot Binance 2023-2026 (anuncios públicos) + klines del perp
+  desde el listing + funding.
+- **Regla propuesta**: short al open de la vela 4h siguiente al cierre del día 1 post-listing
+  spot (si existe perp); salida por tiempo al día 7 o stop 4% (cap del programa); riesgo 1%.
+- **Parámetros libres**: día de entrada, día de salida (2). UNA tanda de variantes.
+- **Gates**: mismos que H7. Nota honesta pre-registrada: la vol del día 1 puede hacer que el
+  stop 4% corte la mayoría de los trades — si eso pasa, es un FAIL del diseño a registrar,
+  NO una licencia para aflojar el cap.
+
+**Orden propuesto de la cola (a confirmar por el usuario, porque gasta los próximos trials
+del presupuesto DSR): H7 → H8 → (recién después, si algo pasa) H3b.**
 
 ## Backlog de hipótesis (prioridad = prior × dato disponible × costo de test)
 
@@ -130,10 +183,12 @@ flip de funding). Se implementa SOLO si H3a resuelve y el programa sigue en pie 
 |----|---------------------------------------------|-------|-------|--------|
 | **H1** | **Tendencia diaria long/flat** (SMA/Donchian 1d + vol-targeting; la formalización del benchmark que ganó) | ALTO (evidencia académica + NUESTROS datos IS) | ya los tenemos | LISTA para congelar reglas. OJO: su IS ya fue "visto" como benchmark → cuenta ese peek; el juicio real es OOS+DSR |
 | **H2** | **Sweep 2.0 condicionado**: solo régimen `up_*` + confirmación de flujo (volume climax / taker-sell exhaustion en el barrido) | MEDIO (semilla up_hi n=20 + Osler + flow) | requiere fetch de taker-volume (gratis) | requiere infra F0 |
-| **H3** | **Funding/OI extremos** → mean-reversion o squeeze (la versión perp del stop-hunt: cascadas de liquidación) | MEDIO (pendiente evidencia agente) | funding gratis historia completa; OI corto | requiere infra F0 |
+| **H3** | **Funding/OI extremos** → mean-reversion o squeeze (la versión perp del stop-hunt: cascadas de liquidación) | H3a corrida → RIP; H3b degradada a BAJO (2026-07-24) | funding gratis historia completa; OI corto | H3b EN PAUSA |
 | **H4** | **Short side en régimen `dn_*`** (donchian/sweep espejo; investigación con `direction='both'`; live solo etapa perps) | MEDIO-BAJO | ya los tenemos | tras H1/H2 |
 | **H5** | Estructuras BOS/CHoCH multi-TF (1h piso, maker-only, con filtro de régimen) | BAJO | ya + 1h fetch | cola |
 | **H6** | Armónicos (Gartley/Bat, ratios FIJOS de la tabla del ebook, tolerancia única) | MUY BAJO | ya los tenemos | cola, opcional |
+| **H7** | **Short de unlocks tipo cliff** (event-driven; spec propuesta arriba) | **MEDIO-ALTO** | calendario gratis + klines/funding perp | **PRÓXIMA propuesta** (espera go del usuario) |
+| **H8** | **Listing fade Binance** (event-driven; spec propuesta arriba) | **MEDIO** | gratis (klines desde listing) | tras H7 |
 
 **Reglas del programa** (innegociables):
 1. UNA familia por vez. Reglas y parámetros congelados en este archivo ANTES de tocar datos.

@@ -188,6 +188,26 @@ método: es LA respuesta del método. El mercado post-ETF arbitró el rincón do
 DSR, decide.py) es el activo construido. Revisión trimestral como manda TESIS; el contador
 de trials sigue corriendo para siempre.
 
+**RESOLUCIÓN DEL CHECKPOINT — elegida por el usuario (2026-07-24): salidas 2 + 3**
+(acumular capital hacia carry $5k+ Y cargar solo mecanismos nuevos), más el mandato
+"encontrar otras aristas: cómo ganan los bots que ganan de verdad".
+
+**Enmienda por evidencia (mismo día, investigación de 19 búsquedas — RECURSOS §8):**
+- Dato central (on-chain, infalsificable): de 2.396 vaults de Hyperliquid, ~16% rentable a
+  30d / ~20% lifetime. Los ganadores: MM/HFT con control de riesgo brutal, **winrate BAJO**
+  y asimetría avg-win≫avg-loss. NINGUNO con señal técnica direccional en majors → tercera
+  confirmación independiente del meta-hallazgo. La frase "buen winrate ⇒ alguna forma hay"
+  queda invertida: WR 80-95% es la firma de martingala/grid/short-vol con cola letal
+  (incidente JELLY: −27% del vault en horas).
+- **H3b (cascadas) degradada MEDIO→BAJO**: cero papers/backtests públicos del rebote en 19
+  búsquedas. EN PAUSA (la salida 3 la nombraba "candidata viva"; la evidencia manda).
+- Entran con soporte estadístico y datos gratis: **H7 short-unlocks-cliff (MEDIO-ALTO)** y
+  **H8 listing-fade (MEDIO)** — specs propuestas SIN congelar en HIPOTESIS.md; **0 trials
+  gastados**. Congelar y correr requiere go explícito del usuario (gasta los próximos trials
+  del presupuesto DSR).
+- Paralelo no-backtest permitido (B6 del mapa): cosecha de incentivos con caps duros +
+  presupuesto fijo de fees; HLP pasivo solo con sizing que tolere −30% en un día.
+
 ## RESULTADO GATE 1 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
 
 Corrido en el VPS con datos reales (Binance, 4h, 2019→2026), costos 10+5 bps/lado.

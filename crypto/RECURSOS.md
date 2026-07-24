@@ -157,6 +157,74 @@ Calibrá expectativas con datos duros: que "no fundirte" sea el KPI, no "generar
   rate 70-80% de mortalidad para CUALQUIER hipótesis.
   https://www.sciencedirect.com/science/article/abs/pii/S0275531926000255
 
+## 8. Investigación 2026-07-24 — bots retail VERIFICADOS (qué hacen los que ganan)
+
+Pregunta: ¿existen bots retail rentables verificados y qué mecanismo los hace rentables?
+19 búsquedas; el único dataset no-falsificable es el PnL on-chain de los vaults de Hyperliquid.
+(Nota: el proxy bloqueó varias fuentes primarias; verificar a mano los 3 números marcados ★.)
+
+**Track records reales (no marketing):**
+- ★ Growi.fi — análisis de 2.396 vaults de Hyperliquid: **16,2% rentable a 30 días, 20,1%
+  lifetime**; con filtros de seriedad (≥6 meses, ≥$20k TVL, rentable desde inception) quedan
+  24. https://medium.com/@growi.fi/we-analyzed-the-top-hyperliquid-vaults-which-ones-are-really-profitable-b8fb43e1c6ee
+  (notebook reproducible: https://deepnote.com/app/growifi/Analysis-of-HyperLiquid-Vaults-by-Growifi-team-068ab19f-5133-4a52-89c1-e42ecc39f1f7)
+- Qué hacen los top: HFT de shorts en alts, trend con stop férreo, long-short balanceado.
+  Cita textual: "risk control, not win rate, is the cornerstone". El mejor Sharpe (Growi HF)
+  tiene ganancia media $159 vs pérdida media $9 → WINRATE BAJO y asimetría brutal.
+  https://www.panewslab.com/en/articles/c7b12e0f-2066-4791-9122-c9d9823918d5
+- HLP (vault comunitario de MM+liquidador): ~$136,9M acumulados desde 2023, 15-30% APR,
+  Sharpe ~2,9 — y −27% temporal en horas en el incidente JELLY (26-mar-2025): la cola existe.
+  https://www.coingecko.com/learn/hyperliquid-hlp-vault-analysis ·
+  https://www.coindesk.com/markets/2025/03/26/hyperliquid-delists-jellyjelly-after-vault-squeezed-in-usd13m-tussle
+- Copy trading: estudio de 90 días / 100.236 resultados — el copiador rinde sistemáticamente
+  menos que el líder (delay de fill). https://yieldfund.com/is-copy-trading-profitable-a-90-day-multi-exchange-study/
+
+**Event-driven con soporte estadístico (las aristas nuevas H7/H8):**
+- ★ Keyrock — 16.000+ unlocks: ~90% con impacto negativo en 30d; unlocks de equipo hasta −25%.
+  https://keyrock.com/from-locked-to-liquidity-what-16000-token-unlocks-teach-us/
+- SSRN 6632838 — 52 unlocks en Binance 2023-2025: 88,5% con retorno negativo en 72h.
+  https://papers.ssrn.com/sol3/Delivery.cfm/6632838.pdf?abstractid=6632838&mirid=1
+- Contrapunto honesto: efecto condicional y parcialmente priced-in (236 eventos)
+  https://insights.unlocks.app/do-token-unlocks-crash-prices/ · y un backtest independiente
+  murió por costos de funding/borrow: https://medium.com/coinmonks/i-backtested-shorting-token-unlocks-heres-why-i-m-not-trading-it-yet-42e237d40d9a
+- ★ Listings Binance 2025: solo 3 de 27 tokens con retorno positivo (media −44%).
+  https://beincrypto.com/binance-listed-tokens-negative-return/ · el "Binance effect" se
+  invirtió: https://web.ourcryptotalk.com/blog/binance-effect-reversal-token-listing-performance
+
+**Por qué el scalping/MM retail "gratis" no funciona (adverse selection medido):**
+- Tiniç & Sensoy — Adverse Selection in Cryptocurrency Markets.
+  https://nottingham-repository.worktribe.com/OutputFile/40584797
+- arXiv 2602.00776 — las señales se monetizan TOMANDO liquidez; las limit pasivas sufren
+  adverse selection, peor en estrés. https://arxiv.org/abs/2602.00776
+- Multicoin — "Adverse Selection Rules Everything Around Me" (feb-2026).
+  https://multicoin.capital/2026/02/17/adverse-selection-rules-everything-around-me/
+- La excepción subsidiada (única viva): rebates maker en 650+ pares long-tail de Kraken
+  (vigente 2026) https://support.kraken.com/articles/pairs-eligible-for-maker-fee-rebates —
+  pero Hummingbot Miner CERRÓ (mar-2026): el EV agregado era pobre. https://miner.hummingbot.io/
+
+**Incentivos (el edge retail más pagado de 2023-2026, verificable on-chain):**
+- Airdrop de Hyperliquid: ~310M HYPE (31% supply) a ~94.000 wallets (~$7B; ~$74k promedio).
+  https://eco.com/support/en/articles/15039718-hyperliquid-airdrop-what-happened-and-what-s-next
+- Farming de points en perp-DEXs nuevos sigue vivo en 2026 (Lighter/Paradex/Aster/SoDEX).
+  https://dropstab.com/research/alpha/top-perpetual-dex-platforms-for-point-farming
+- HLP como depósito pasivo: ~23% APR reciente, lockup 4 días, con la cola JELLY como riesgo.
+  https://vaultvision.tech/blog/hyperliquid-yield-guide
+
+**Cross-section y factor zoo (por qué NO gastar trials ahí):**
+- Chen & Welch — "What Useful Alphas?" (2026): ~200 anomalías publicadas ≈ 7bp/mes post-2005
+  fuera de micro-caps. https://arxiv.org/abs/2607.06502
+- Las anomalías crypto sobreviven exactamente donde los costos impiden arbitrarlas.
+  https://www.sciencedirect.com/science/article/abs/pii/S1057521924001509
+
+**Infraestructura (requisito, no edge):** el price discovery vive en AWS Tokio; MM top en
+milisegundos de un dígito; desde el continente equivocado 200-500ms.
+https://www.theblock.co/post/267317/a-need-for-speed-how-major-traders-and-venues-think-about-latency-in-todays-crypto-market
+(Nuestro VPS está en Dublín → ~250ms: NO jugamos juegos de latencia, y saberlo es parte del edge.)
+
+**Funding en venues jóvenes:** estructura de dos niveles del funding — venues/pares chicos se
+desvían más y por más tiempo https://www.mdpi.com/2227-7390/14/2/346 · HIP-3 (oct-2025) crea
+mercados perp nuevos en serie. https://www.datawallet.com/crypto/hip-3-explained-hyperliquid-upgrade
+
 ## 7. Comunidades y herramientas
 
 **Señal:** Quantitative Finance Stack Exchange (https://quant.stackexchange.com/) · freqtrade repo +

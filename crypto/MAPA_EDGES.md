@@ -49,7 +49,7 @@ nuestro plan → estado**.
 | Edge | Detalle | Estado |
 |---|---|---|
 | Stop-clustering spot (turtle soup) | Osler documenta el clustering, pero NUESTRO test dice: en 4h price-only NO sobrevive costos | **RIP (GATE 1)** — lección: el patrón sin contexto no monetiza |
-| **Cascadas de liquidación en perps** | La versión moderna y VIOLENTA del mismo fenómeno: 3.5%/día de longs liquidados (BitMEX, arXiv 2102.04591); overshoot → reversión en horas-días. Sin backtest público: el que lo valide, lo cobra. Datos: proxies gratis (ΔOI + volumen z + wick + flip de funding; el feed directo de liquidaciones está truncado por los exchanges) | **H3b — siguiente en cola** tras H1/H2. Research: gratis. Live: perps ($10 Hyperliquid) |
+| **Cascadas de liquidación en perps** | La versión moderna y VIOLENTA del mismo fenómeno: 3.5%/día de longs liquidados (BitMEX, arXiv 2102.04591); overshoot → reversión en horas-días. PERO: 19 búsquedas dirigidas (2026-07-24) no hallaron ni un paper/backtest público del rebote — solo anécdota | **H3b — degradada a BAJO y EN PAUSA (2026-07-24)**; detrás de H7/H8 en la cola |
 | Failed breakouts condicionados a flujo | Solo si H2 demuestra que el taker-flow tiene información: re-testear el sweep EXIGIENDO agotamiento de flujo en el barrido (la semilla up_hi wr80% n=20 del GATE 1) | **H2b — condicional a H2 PASS** |
 
 ### B2. Tendencia / momentum
@@ -71,6 +71,8 @@ nuestro plan → estado**.
 | **Funding extremo contrarian** | BIS WP1087: carry alto = posicionamiento saturado → desapalancamiento. Señal = cola extrema (funding <0 profundo → rebotes 30-180d). Pocas observaciones: usarlo como FILTRO/condición, no sistema | **H3a — spec a congelar tras H1/H2** (datos ya bajables con fetch_funding.py) |
 | OI como estado de fragilidad | OI alto + funding alto = mercado frágil (gasolina para cascadas). No señal standalone (dato misquoteado, arXiv 2310.14973): variable de estado de H3 | Integrado en H3 |
 | Seasonality horaria/semanal | Quantpedia: 21-23 UTC ~33-40% anual BRUTO — 2 trades/día = los fees se lo comen standalone. Como OVERLAY de ejecución (cronometrar entradas/salidas que ya ibas a hacer) cuesta CERO fees extra | Overlay de ejecución — se agrega a cualquier estrategia PASS en su segunda iteración trimestral |
+| **Short de unlocks tipo cliff** | El flujo forzado MÁS documentado accesible a retail: ~90% de 16.000 eventos con impacto negativo a 30d (Keyrock); 88,5% negativo en 72h en 52 eventos Binance (SSRN). El vendedor es programado y público (calendario). Riesgos pre-escritos: priced-in creciente; el funding del short come el edge. Datos: calendarios + klines/funding gratis | **H7 — spec propuesta en HIPOTESIS.md (prior MEDIO-ALTO)**, espera go |
+| **Listing fade Binance** | 24/27 listings 2025 en negativo (media −44%): el listing pasó de descubrimiento a evento de DISTRIBUCIÓN. Contraparte: FOMO retail del día 1. (El pump real vive en Corea/KRW — inaccesible sin KYC coreano; no perseguir) | **H8 — spec propuesta (prior MEDIO)**, tras H7 |
 | Stablecoin inflows | 1 paper (arXiv 2411.06327), horizonte horas; fuente gratis fiable dudosa | Watchlist — BAJO |
 | Flujos de ETF (2024+) | Dato público diario, pero solo ~2.5 años de historia → NO puede pasar nuestro diseño IS/OOS todavía | Watchlist — revisitar 2027 con 4+ años |
 
@@ -81,6 +83,8 @@ nuestro plan → estado**.
 |---|---|---|
 | **Carry delta-neutral (funding arb)** | El único edge "grande" con paper de Management Science detrás (>10% anual promedio, picos >40%). No predice nada: cobra el peaje del apalancamiento ajeno. Riesgos: funding negativo sostenido, basis, liquidación de la pata short, contraparte | **Etapa 3 ($5k+)** — EL DESTINO del programa. Diseño en ROADMAP.md |
 | Venta de volatilidad (opciones) | Prima real pero cola catastrófica: exactamente el perfil short-vol que te fundió en Polymarket. Con capital chico = ruina esperada | **DESCARTADO permanente** para este programa |
+| Funding/basis en venues JÓVENES (HIP-3, DEXs nuevos) | El funding tiene estructura de dos niveles (MDPI): los mercados chicos/nuevos se desvían más y por más tiempo — el carry vive donde el capital grande aún no entró. HIP-3 (oct-2025) fabrica mercados perp nuevos en serie. Riesgo real: venue nuevo = riesgo de contraparte/freeze | Screener semanal cuando arranque la **Etapa 3**; historiales de funding gratis (API Hyperliquid) → backtesteable |
+| HLP / vaults de liquidación como DEPÓSITO pasivo | Cobrar la prima del liquidador sin operar: ~23% APR reciente, Sharpe lifetime ~2,9, +10% en el crash oct-2025. NO es money market: cola JELLY = −27% intradía posible | Opción de la Etapa 2-3 para capital ocioso, sizing ≤ lo que tolere −30% en un día |
 
 ### B5. Estructuralmente fuera de alcance (saberlo también es edge)
 *Por qué NO perseguimos esto — cada línea nos ahorra meses:*
@@ -92,6 +96,22 @@ nuestro plan → estado**.
 - **Armónicos / CVD-divergencia**: cero evidencia con fees; grados de libertad ocultos. MITO (0 trials).
 - **ML end-to-end (predecir precio con redes)**: fábrica de overfitting con nuestro tamaño de muestra; el factor zoo crypto muere 70-80% OOS incluso con features "significativas".
 - **News/NLP/sentimiento**: latencia y datos de pago; el técnico ya adelanta al fundamental en nuestros horizontes.
+
+### B6. Subsidios / edge no-de-mercado (quien paga es una TESORERÍA, no el mercado)
+*El edge retail más PAGADO y verificado de 2023-2026 no fue de trading (RECURSOS §8).*
+
+| Edge | Detalle | Estado |
+|---|---|---|
+| **Points / airdrops de venues nuevos** | HYPE repartió ~$7B a 94k wallets (on-chain, verificado; ~$74k promedio). En 2026 sigue vivo en perp-DEXs nuevos. Es la tesis del bot de Polymarket CORREGIDA: cosechar subsidio con caps duros de riesgo y presupuesto de fees fijo — lo que lo fundió fue el riesgo sin tope, no la tesis | Paralelo permitido: presupuesto ≤$20-30/mes de fees como "lotería +EV", journal de EV realizado en el weekly review. NO cuenta trials (no es backtest) |
+| MM con rebate explícito en pares long-tail (Kraken 650+ pares, BitMEX) | ÚNICA variante de MM no cubierta por el descarte de B5 (el subsidio invierte el signo del peaje). Pero: Hummingbot Miner murió (mar-2026) y el adverse selection está medido — sin medición de markouts EN VIVO no hay forma de saber si cobrás spread o pagás selección | **MEDIO-BAJO, solo experimento live** (4-8 sem, tamaño mínimo, matar si markout medio > spread+rebate). NO revive el descarte general de B5 |
+| Copy trading / leaderboards | 100.236 resultados en 90 días: el copiador rinde sistemáticamente MENOS que el líder (delay de fill) + survivorship del leaderboard | **MITO — 0 trials** |
+
+**Base rate on-chain para calibrar TODO este mapa** (dato 2026-07-24, el único registro
+infalsificable): de 2.396 vaults de Hyperliquid con PnL público, **~16% rentable a 30 días,
+~20% lifetime**; con filtros de seriedad quedan 24 estrategias. Los ganadores: MM/HFT con
+control de riesgo brutal, winrate BAJO y asimetría avg-win ≫ avg-loss ("risk control, not
+win rate, is the cornerstone"). Ninguno gana con señal técnica direccional en majors — la
+tercera confirmación independiente del meta-hallazgo de nuestro programa.
 
 ---
 
@@ -118,3 +138,11 @@ Un trimestre que mata 3 mitos con $0 perdidos es un buen trimestre.
   Descartes permanentes: venta de vol, MM con inventario, HFT/MEV, whales, armónicos, CVD,
   ML end-to-end, news. Toda reversión de un descarte exige evidencia nueva peer-reviewed y
   cuenta como trial doble (castigo por revivir muertos).
+- 2026-07-24 (checkpoint estratégico): el usuario eligió **salidas 2+3** (acumular hacia
+  carry $5k+ Y cargar mecanismos nuevos). Investigación de bots verificados (19 búsquedas,
+  RECURSOS §8) el mismo día: **H3b cascadas degradada MEDIO→BAJO** (cero evidencia pública);
+  entran **H7 short-unlocks (MEDIO-ALTO)** y **H8 listing-fade (MEDIO)** con specs propuestas
+  en HIPOTESIS.md — 0 trials gastados hasta congelar y correr. Se agrega B6 (subsidios).
+  Números clave a verificar a mano antes de congelar H7/H8 (proxy bloqueó fuentes primarias):
+  16,2%/20,1% vaults rentables (Deepnote Growi), ~90% unlocks negativos (PDF Keyrock),
+  24/27 listings negativos (BeInCrypto).
