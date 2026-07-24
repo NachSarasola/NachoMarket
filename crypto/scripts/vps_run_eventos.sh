@@ -81,10 +81,15 @@ for S in $SYMS; do
 done
 
 echo "== 4/4 Event studies (specs congeladas; --deflated-sharpe 130) =="
-python crypto/scripts/event_validate.py --strategy h7_unlock \
-    --events "$EV/unlocks.csv" --data-dir "$EV" --funding-dir "$EV" \
-    --deflated-sharpe 130 --out "$OUT/rep_h7_unlock.json" \
-    --trades-out "$OUT/journal_h7_unlock.csv" | tee "$OUT/veredicto_h7.txt" || true
+if [ -f "$EV/unlocks.csv" ]; then
+    python crypto/scripts/event_validate.py --strategy h7_unlock \
+        --events "$EV/unlocks.csv" --data-dir "$EV" --funding-dir "$EV" \
+        --deflated-sharpe 130 --out "$OUT/rep_h7_unlock.json" \
+        --trades-out "$OUT/journal_h7_unlock.csv" | tee "$OUT/veredicto_h7.txt" || true
+else
+    echo "⚠️ SIN unlocks.csv: H7 no corre. Diagnostico:" | tee "$OUT/veredicto_h7.txt"
+    echo "   tail -30 $LOG   y   python crypto/scripts/fetch_unlocks.py --dump-raw aptos --out /tmp/llama_aptos.json" | tee -a "$OUT/veredicto_h7.txt"
+fi
 echo ""
 python crypto/scripts/event_validate.py --strategy h8_listing \
     --events "$EV/listings.csv" --data-dir "$EV" --funding-dir "$EV" \

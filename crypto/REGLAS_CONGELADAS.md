@@ -258,6 +258,32 @@ sigue vigente para operar: si H7/H8 validan, el pase a ejecución real es un cam
 alcance que se registra acá (perps = Etapa 2: Hyperliquid/Binance futures, shorts, dry-run
 4-8 semanas y GATE 2 completo ANTES de un dólar real). Nada de esto salta el pipeline.
 
+## RESULTADO H8 (listing fade) — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
+
+Corrido en el VPS con datos reales (178 listings 2023-2026 con perp; universo mecánico =
+primera vela spot; costos 6+10 bps/lado + funding acumulado). `event_validate.py`:
+
+| segmento | n | expectancy neta | mediana | WR (informativo) | p(media≤0) | DSR (130 trials) |
+|---|---|---|---|---|---|---|
+| IS 2023-2024 | 62 | **+1.50%** | −4.32% | 0.21 | 0.172 | 0.06 |
+| OOS 2025-2026 | 116 | **−0.23%** | −4.32% | 0.15 | 0.592 | 0.00 |
+
+Fallos HARD: IS sin significancia (p=0.17) + DSR 0.06. **Familia muerta** (HARD fail = sin
+ajuste; la variante pre-registrada NO se corre — sería curve-fitting sobre un hard fail y
+queda sin gastar). Trials: +1 → acumulado ~126 (seguir usando `--deflated-sharpe 130`).
+
+Autopsia (journal `eventos_20260724_2007/journal_h8_listing.csv`): 82.6% de los eventos
+salió por stop (la vol post-listing cruza 4% casi siempre); el 17% restante capturó caídas
+grandes — el PERFIL invertido (WR bajo + asimetría) apareció, pero no supera al azar con
+esta ejecución. Funding: −0.48%/evento en contra del short. Lección estructural registrada
+en HIPOTESIS.md → RIP: el cap de stop 4% es incompatible con vol de eventos en alts; un
+event-short futuro exigiría stop escalado por vol = **enmienda de regla INQUEBRANTABLE que
+solo el usuario puede autorizar** y contaría como spec nueva.
+
+**H7 (unlocks): PENDIENTE** — `fetch_unlocks.py` falló contra el API de DeFiLlama (forma
+del JSON a inspeccionar con `--dump-raw`); el resto del pipeline (klines/funding de 202
+perps) ya quedó cacheado en el VPS. Se corre al ajustar el parser.
+
 ## RESULTADO GATE 1 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
 
 Corrido en el VPS con datos reales (Binance, 4h, 2019→2026), costos 10+5 bps/lado.

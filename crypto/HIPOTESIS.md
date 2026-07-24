@@ -202,8 +202,8 @@ H7 → H8 → (recién después, si algo pasa) H3b. Trials: correr con `--deflat
 | **H4** | **Short side en régimen `dn_*`** (donchian/sweep espejo; investigación con `direction='both'`; live solo etapa perps) | MEDIO-BAJO | ya los tenemos | tras H1/H2 |
 | **H5** | Estructuras BOS/CHoCH multi-TF (1h piso, maker-only, con filtro de régimen) | BAJO | ya + 1h fetch | cola |
 | **H6** | Armónicos (Gartley/Bat, ratios FIJOS de la tabla del ebook, tolerancia única) | MUY BAJO | ya los tenemos | cola, opcional |
-| **H7** | **Short de unlocks tipo cliff** (event-driven; spec congelada arriba) | **MEDIO-ALTO** | calendario gratis + klines/funding perp | **CONGELADA ✅ — lista para el VPS** (`vps_run_eventos.sh`) |
-| **H8** | **Listing fade Binance** (event-driven; spec congelada arriba) | **MEDIO** | gratis (klines desde listing) | **CONGELADA ✅ — misma pasada VPS** |
+| **H7** | **Short de unlocks tipo cliff** (event-driven; spec congelada arriba) | **MEDIO-ALTO** | calendario gratis + klines/funding perp | **CONGELADA ✅ — pendiente fix parser DeFiLlama** (klines/funding ya cacheados en VPS) |
+| **H8** | **Listing fade Binance** (event-driven; spec congelada arriba) | ~~MEDIO~~ | gratis | **RIP 2026-07-24 (NO_OPERAR, hard fail)** — ver RIP |
 
 **Reglas del programa** (innegociables):
 1. UNA familia por vez. Reglas y parámetros congelados en este archivo ANTES de tocar datos.
@@ -242,4 +242,16 @@ H7 → H8 → (recién después, si algo pasa) H3b. Trials: correr con `--deflat
   (ratios -0.35/-0.55, DSR 0.29/0.05). Lección: ni el posicionamiento escapa al quiebre de
   régimen; 37-48 trades tampoco dan poder. QUINTA familia con la misma firma → el hallazgo
   es el régimen, no las estrategias. Ver CHECKPOINT en REGLAS_CONGELADAS.
+- **H8 listing fade (short T+24h→T+168h, stop 4%)** — 2026-07-24, NO_OPERAR con 178 eventos
+  reales 2023-2026: IS expectancy +1.5% pero p=0.17 y DSR 0.06; OOS (n=116) expectancy
+  −0.2%. La autopsia importa: **el 82.6% de los trades murió por el stop de 4%** (mediana
+  −4.32% = stop+costos) — la vol post-listing de una alt cruza 4% casi siempre; los pocos
+  que sobreviven ganan enorme (WR 21%, perfil invertido CORRECTO) pero no alcanzan
+  significancia y el funding se lleva −0.48%/evento. Lección doble: (1) el "listing fade"
+  de los estudios es de buy&hold a meses, no de un short ejecutable a 7 días; (2) **el cap
+  de stop 4% —diseñado para majors 4h— es estructuralmente incompatible con vol de eventos
+  en alts**: convierte una asimetría real en moneda cargada en contra. Cualquier futuro
+  event-short necesitaría stop escalado por vol (cambio de regla INQUEBRANTABLE → decisión
+  registrada del usuario, no un ajuste). El fallo fue pre-escrito en la spec ("si el stop
+  4% corta la mayoría, es FAIL del diseño, NO licencia para aflojar el cap") — y se cumplió.
 - **Scalping <1h con capital chico**: muerto por aritmética de costos, sin necesidad de test.

@@ -142,9 +142,19 @@ def main() -> int:
         perps = perp_symbols_from_info(_get_json(FAPI_INFO))
     print(f"Perps USDT activos: {len(perps)}", file=sys.stderr)
 
-    index = _get_json(LLAMA_INDEX)
+    try:
+        index = _get_json(LLAMA_INDEX)
+    except Exception as e:  # noqa: BLE001
+        print(f"❌ índice {LLAMA_INDEX} inaccesible: {e}", file=sys.stderr)
+        print("   Diagnóstico: curl -sS " + LLAMA_INDEX + " | head -c 500", file=sys.stderr)
+        return 1
+    index = _maybe_unwrap_body(index)
     if isinstance(index, dict):
         index = index.get("protocols") or index.get("body") or []
+    if not isinstance(index, list):
+        print(f"❌ índice con forma inesperada ({type(index).__name__}): "
+              f"{str(index)[:300]}", file=sys.stderr)
+        return 1
     slugs: list[str] = []
     for item in index:
         if isinstance(item, str):
@@ -156,6 +166,11 @@ def main() -> int:
     if args.limit:
         slugs = slugs[: args.limit]
     print(f"Protocolos en el índice: {len(slugs)}", file=sys.stderr)
+    if slugs[:3]:
+        print(f"  (muestra: {slugs[:3]})", file=sys.stderr)
+    if not slugs and index:
+        print(f"  ⚠️ índice no vacío pero sin slugs; primer item: {str(index[0])[:300]}",
+              file=sys.stderr)
 
     rows: list[dict] = []
     unparsed = 0

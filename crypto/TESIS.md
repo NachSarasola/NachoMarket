@@ -15,8 +15,11 @@ Cada cambio de reglas se anota en `REGLAS_CONGELADAS.md` y cuenta como trial (De
 > del usuario "invierte mi tesis: no importa el winrate sino el PnL" (2026-07-24), H7/H8
 > quedaron CONGELADAS e implementadas (event-study propio: `crypto/smc/events.py` +
 > `event_validate.py` + fetchers + 23 tests; el winrate se reporta pero no participa de
-> ningún gate). Pendiente: correr `vps_run_eventos.sh` en el VPS y registrar el veredicto.
-> Capital intacto: $0 perdidos en ~125 trials. La máquina de validación es el activo.
+> ningún gate). **H8 ya corrió con 178 listings reales: NO_OPERAR** (el perfil invertido
+> apareció — WR 21%, ganadores enormes — pero sin significancia: 82.6% muere en el stop 4%
+> y el OOS es negativo; sexta familia registrada en RIP). **H7 (unlocks) pendiente** del
+> fix del parser de DeFiLlama; datos de 202 perps ya cacheados en el VPS. Capital intacto:
+> $0 perdidos en ~126 trials. La máquina de validación es el activo.
 
 ## La tesis en 5 puntos
 
