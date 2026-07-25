@@ -204,6 +204,7 @@ H7 → H8 → (recién después, si algo pasa) H3b. Trials: correr con `--deflat
 | **H6** | Armónicos (Gartley/Bat, ratios FIJOS de la tabla del ebook, tolerancia única) | MUY BAJO | ya los tenemos | cola, opcional |
 | **H7** | **Short de unlocks tipo cliff** (event-driven; spec congelada arriba) | ~~MEDIO-ALTO~~ | supply-step (plan C) | **RIP 2026-07-25 (NO_OPERAR, hard fail)** — ver RIP |
 | **H8** | **Listing fade Binance** (event-driven; spec congelada arriba) | ~~MEDIO~~ | gratis | **RIP 2026-07-24 (NO_OPERAR, hard fail)** — ver RIP |
+| **H9** | **Long contrarian post-purga de OI** (cascadas; spec congelada en REGLAS → H9; 10 majors, evento observado al cierre → causal puro) | BAJO (sin backtest público; costo de test mínimo) | OI 5m gratis (dumps binance.vision) | **CONGELADA ✅ 2026-07-25 — lista: `vps_run_cascadas.sh`** |
 
 **Reglas del programa** (innegociables):
 1. UNA familia por vez. Reglas y parámetros congelados en este archivo ANTES de tocar datos.

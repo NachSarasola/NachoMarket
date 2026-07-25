@@ -13,16 +13,17 @@ Cada cambio de reglas se anota en `REGLAS_CONGELADAS.md` y cuenta como trial (De
 > y re-rankeó la cola: H3b cascadas DEGRADADA a BAJO (cero evidencia pública); candidatas
 > nuevas **H7 short-unlocks (MEDIO-ALTO)** y **H8 listing-fade (MEDIO)**. Con el mandato
 > del usuario "invierte mi tesis: no importa el winrate sino el PnL" (2026-07-24), H7/H8
-> quedaron CONGELADAS e implementadas (event-study propio: `crypto/smc/events.py` +
-> `event_validate.py` + fetchers + tests; el winrate se reporta pero no participa de
-> ningún gate). **BRAZO EVENT-DRIVEN CERRADO 2026-07-25: H8 NO_OPERAR** (178 listings; el
-> bruto existía pero la ejecución con stop 4% lo destruye — 83% stopped-out, OOS negativo)
-> **y H7 NO_OPERAR** (57 unlocks ejecutables, fuente supply-step tras el cierre total de
-> DeFiLlama; expectancy CERO en la ventana de 72h: el efecto documentado vive en drift de
-> ±30 días, inoperable a nuestro tamaño). Séptima familia falsada, variantes sin gastar,
-> ~127 trials, **$0 perdidos**. Quedan en pie: acumular capital hacia carry ($5k+, decisión
-> 2), cosecha de incentivos con caps duros (B6, paralelo no-backtest), y la máquina de
-> validación + review trimestral como activo permanente.
+> quedaron CONGELADAS e implementadas (event-study propio; el winrate se reporta pero no
+> participa de ningún gate). **H8 y H7: NO_OPERAR con datos reales** (178 listings / 57
+> unlocks; séptima familia, variantes sin gastar, ~127 trials, $0 perdidos).
+> **PLAN "TODAS LAS ARISTAS" (2026-07-25, mandato del usuario, que además aceptó riesgo
+> acotado):** 4 frentes en paralelo — (1) **H9 cascadas** congelada y lista
+> (`vps_run_cascadas.sh`; último mecanismo del atlas, causalidad pura); (2) **carry
+> operacionalizado** (`carry_monitor.py`: cuándo/cuánto paga + plan de capital a $5k);
+> (3) **presupuesto de riesgo vivo** (`budget_review.py`: incentivos/HLP/experimentos con
+> techo de burn y kill-rules — riesgo aceptado ≠ gates bajados, doctrina en REGLAS);
+> (4) **vigilancia de régimen trimestral** (`vps_quarterly.sh`). La máquina de validación
+> sigue siendo el único emisor de la etiqueta "edge validado".
 
 ## La tesis en 5 puntos
 

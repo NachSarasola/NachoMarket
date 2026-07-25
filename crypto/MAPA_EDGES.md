@@ -49,7 +49,7 @@ nuestro plan → estado**.
 | Edge | Detalle | Estado |
 |---|---|---|
 | Stop-clustering spot (turtle soup) | Osler documenta el clustering, pero NUESTRO test dice: en 4h price-only NO sobrevive costos | **RIP (GATE 1)** — lección: el patrón sin contexto no monetiza |
-| **Cascadas de liquidación en perps** | La versión moderna y VIOLENTA del mismo fenómeno: 3.5%/día de longs liquidados (BitMEX, arXiv 2102.04591); overshoot → reversión en horas-días. PERO: 19 búsquedas dirigidas (2026-07-24) no hallaron ni un paper/backtest público del rebote — solo anécdota | **H3b — degradada a BAJO y EN PAUSA (2026-07-24)**; detrás de H7/H8 en la cola |
+| **Cascadas de liquidación en perps** | La versión moderna y VIOLENTA del mismo fenómeno: 3.5%/día de longs liquidados (BitMEX, arXiv 2102.04591); overshoot → reversión en horas-días. Sin backtest público (19 búsquedas) → prior BAJO, pero el motor de eventos volvió el test casi gratis y la causalidad es PURA (el evento se observa al cierre, sin calendario) | **H9 — CONGELADA 2026-07-25** (ΔOI≤−3% + vol_z≥2 + barra roja → long 48h en 10 majors); correr: `vps_run_cascadas.sh`. Último mecanismo del atlas sin testear |
 | Failed breakouts condicionados a flujo | Solo si H2 demuestra que el taker-flow tiene información: re-testear el sweep EXIGIENDO agotamiento de flujo en el barrido (la semilla up_hi wr80% n=20 del GATE 1) | **H2b — condicional a H2 PASS** |
 
 ### B2. Tendencia / momentum
@@ -146,3 +146,12 @@ Un trimestre que mata 3 mitos con $0 perdidos es un buen trimestre.
   Números clave a verificar a mano antes de congelar H7/H8 (proxy bloqueó fuentes primarias):
   16,2%/20,1% vaults rentables (Deepnote Growi), ~90% unlocks negativos (PDF Keyrock),
   24/27 listings negativos (BeInCrypto).
+- 2026-07-25 (plan "todas las aristas", post H7/H8 RIP): mandato del usuario "continua con
+  todo bien planificado... debes encontrar el edge" + "acepto algo de riesgo". Se activan
+  los 4 frentes restantes EN PARALELO: (1) **H9 cascadas** congelada (último mecanismo del
+  atlas; motor de eventos lo vuelve barato); (2) **carry operacionalizado**
+  (`carry_monitor.py`: snapshot multi-venue + umbral de viabilidad 10% neto + plan de
+  capital a $5k); (3) **presupuesto de riesgo vivo** (`budget_review.py`: incentivos/HLP/
+  experimentos con techo de burn y kill-rules — doctrina en REGLAS); (4) **vigilancia de
+  régimen** (`vps_quarterly.sh`: re-corre las specs muertas con datos nuevos; si algo
+  revive, se abre ventana trimestral). Los gates estadísticos NO se tocan.

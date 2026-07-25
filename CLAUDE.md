@@ -50,7 +50,12 @@ de variantes (multiple-testing) en `crypto/REGLAS_CONGELADAS.md`.
 - bash crypto/scripts/vps_validate_all.sh — one-shot en el VPS (baja datos + gates + veredicto)
 - bash crypto/scripts/vps_run_hipotesis.sh — one-shot del programa de hipotesis (H1+H2 congeladas + veredicto)
 - bash crypto/scripts/vps_run_eventos.sh — one-shot event-driven (H7 unlocks + H8 listings, tesis invertida)
+- bash crypto/scripts/vps_run_cascadas.sh — one-shot H9 (cascadas: OI 5m + eventos de purga + gates)
 - python crypto/scripts/event_validate.py --strategy h7_unlock --events <csv> --data-dir <dir> — event study con gates
+- python crypto/scripts/carry_monitor.py --snapshot --capital 500 — funding multi-venue + viabilidad del carry
+- python crypto/scripts/carry_monitor.py --plan --start 300 --monthly 200 — meses hasta $5k (Etapa 3)
+- python crypto/scripts/budget_review.py --journal crypto/data/riesgo_vivo.csv — presupuesto de riesgo vivo (B6)
+- bash crypto/scripts/vps_quarterly.sh — review trimestral: re-corre specs muertas + carry (vigilancia de regimen)
 - freqtrade backtesting -c crypto/config-backtest.json --strategy SmcSweep --strategy-path crypto/user_data/strategies --enable-protections
 - freqtrade trade -c crypto/config-dryrun.json --strategy SmcSweep --strategy-path crypto/user_data/strategies — paper
 

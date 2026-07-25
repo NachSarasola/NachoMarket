@@ -49,8 +49,18 @@ EVENT_SPECS: dict[str, dict] = {
         "min_pct": None,
         "variant": {"exit_offset_h": 72.0},  # ÚNICA variante permitida (salida día 3)
     },
+    # H9 (spec congelada 2026-07-25): LONG contrarian tras purga de longs (ΔOI<=-3% +
+    # vol_z>=2 + barra roja) en 10 majors. El evento se OBSERVA al cierre -> entrada al
+    # open siguiente (entry_offset 0). La variante (oi_drop 2%) se aplica al GENERAR los
+    # eventos (make_cascade_events --oi-drop 2.0), no a este spec.
+    "h9_cascade": {
+        "spec": EventSpec(direction="long", entry_offset_h=0.0, exit_offset_h=48.0,
+                          stop_pct=0.04, fee_bps=6.0, slippage_bps=10.0, risk_pct=0.01),
+        "min_pct": None,
+        "variant": {"note": "regenerar eventos con make_cascade_events --oi-drop 2.0"},
+    },
 }
-DEFAULT_IS_END = "2024-12-31"  # IS 2023-2024, OOS 2025+ (una sola pasada)
+DEFAULT_IS_END = "2024-12-31"  # IS hasta 2024, OOS 2025+ (una sola pasada)
 
 
 def load_events(path: str) -> pd.DataFrame:
@@ -101,10 +111,13 @@ def main() -> int:
     if args.variant:
         var = dict(cfg["variant"])
         min_pct = var.pop("min_pct", min_pct)
+        note = var.pop("note", "")
         if var:
             from dataclasses import replace
             spec = replace(spec, **var)
         print(f"### VARIANTE pre-registrada activa: {cfg['variant']} — cuenta como trial ###")
+        if note:
+            print(f"### NOTA: {note} ###")
 
     events = load_events(args.events)
     n_raw = len(events)

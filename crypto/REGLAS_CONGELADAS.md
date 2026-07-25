@@ -323,11 +323,70 @@ forking-paths puro. Trials: +1 → acumulado ~127 (seguir con `--deflated-sharpe
   diluyen. Con IS en cero exacto, ni el escenario más generoso con esos caveats sugiere un
   edge ejecutable escondido.
 
-**Cierre del brazo event-driven**: H7 y H8 muertas bajo los caps del programa. Re-testear
-event-shorts exigiría (a) enmienda de la regla INQUEBRANTABLE del stop 4% (solo el usuario)
-y (b) una tesis de ventana distinta (drift ±30d ≠ evento 72h) = familia NUEVA con spec
-nueva y trial contado. No se recomienda: el drift a 30 días con shorts de alts es carry
-negativo + borrow + 30 días de riesgo de squeeze por 1-2% esperado.
+**Cierre del brazo event-driven de OFERTA (unlocks/listings)**: H7 y H8 muertas bajo los
+caps del programa. Re-testear event-shorts exigiría (a) enmienda de la regla INQUEBRANTABLE
+del stop 4% (solo el usuario) y (b) una tesis de ventana distinta (drift ±30d ≠ evento 72h)
+= familia NUEVA con spec nueva y trial contado. No se recomienda: el drift a 30 días con
+shorts de alts es carry negativo + borrow + 30 días de riesgo de squeeze por 1-2% esperado.
+
+## ★ PRESUPUESTO DE RIESGO VIVO — 2026-07-25 (doctrina registrada)
+
+**Mandato del usuario (textual): "no quiero algo perfecto, no existe tal cosa, acepto algo
+de riesgo."** Interpretación registrada — y límite de la interpretación:
+
+- **Aceptar riesgo ≠ bajar los gates.** Los gates estadísticos (DSR, OOS, bootstrap) no
+  miden "riesgo": miden si algo se distingue del RUIDO. Operar ruido no es tomar riesgo,
+  es pagar fees por una ficción (lección de los $162). Los umbrales NO se tocan.
+- **El riesgo que SÍ se acepta:** desplegar capital ACOTADO, YA, en las vías con EV
+  documentado y varianza real — sin esperar validación estadística porque su naturaleza
+  no es backtesteable:
+  1. **incentivos** (B6): fees de volumen como costo de lotería +EV (el único edge retail
+     con pagos verificados on-chain).
+  2. **hlp**: depósito pasivo en el vault liquidador (~15-30% APR histórico, cola JELLY
+     −27% intradía posible).
+  3. **experimento**: pruebas live capadas (p.ej. MM long-tail con rebate midiendo
+     markouts; o una hipótesis borderline en tamaño mínimo ETIQUETADA como apuesta, no
+     como edge).
+- **Mecánica (script `budget_review.py`, journal `crypto/data/riesgo_vivo.csv`):**
+  - Techo de burn mensual (fees + pérdidas realizadas de TODAS las vías): default **$30**
+    o ~10% del equity — el usuario fija el número; las ganancias NO amplían el techo.
+  - Exposición HLP ≤ lo que se tolera perder en un −30% intradía (default **$150**).
+  - `STOP_BURN` / `STOP_HLP` = parar esa vía hasta el review semanal. Sin excepciones.
+  - El techo es un TECHO, no una meta.
+- **Etiquetado honesto:** lo desplegado bajo este presupuesto se llama APUESTA/COSECHA en
+  el journal — nunca "edge validado". La máquina de validación sigue siendo el único
+  emisor de esa etiqueta.
+
+## ★ SPEC CONGELADA H9 — 2026-07-25 (cascadas de liquidación, ÚLTIMO mecanismo del mapa)
+
+**Mandato del usuario: "continua con todo bien planificado, abarca todas las aristas y
+espectros posibles."** H9 = H3b reformulada como EVENT STUDY con el motor ya construido.
+Es el único mecanismo del atlas sin testear (contraparte = liquidado FORZOSO, horizonte
+horas-días). Prior BAJO (sin backtest público — si valida, nadie lo publicó antes) pero
+costo de test mínimo y CERO conflicto causal: el evento se OBSERVA al cierre de la barra
+(no requiere calendario). Congelada ANTES de bajar un solo dato de OI.
+
+- **Universo FIJO (10 majors líquidos, stop 4% sano a diferencia de alts):** BTCUSDT,
+  ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, DOGEUSDT, ADAUSDT, LINKUSDT, AVAXUSDT, LTCUSDT.
+- **Datos:** klines 4h del perp (ya cacheables) + **open interest 5m** de los dumps
+  mensuales públicos de Binance (data.binance.vision → metrics), alineado CAUSALMENTE al
+  cierre de cada barra 4h (última observación ≤ close).
+- **Evento (purga de longs):** en la barra t: ΔOI = OI_close(t)/OI_close(t−1) − 1 ≤
+  **−3%** Y volume_z(90, causal) ≥ **2** Y retorno de la barra < 0. Timestamp del evento =
+  cierre de la barra t → entrada LONG contrarian al open de la barra siguiente (causal
+  puro, `entry_offset_h=0`).
+- **Salida:** por tiempo a **+48h** o stop 4% (cap inquebrantable); riesgo 1%; costos
+  6+10 bps/lado + funding acumulado (acá el funding suele FAVORECER al long post-purga).
+- **Parámetros libres: 3** (oi_drop 3%, vol_z 2, salida 48h). **Variante ÚNICA
+  pre-registrada:** oi_drop 2% (palanca de muestra). Lado short (squeeze de shorts) NO se
+  testea en v1 (presupuesto).
+- **Gates:** los mismos del event-study (≥60 eventos, IS p<0.05, OOS/IS≥0.5 con IS
+  2022-2024 / OOS 2025-2026, DSR≥0.95, ruina≤10%). IS empieza 2022 (los dumps de metrics
+  arrancan ~dic-2021).
+- **Trials:** base + variante → correr con `--deflated-sharpe 132`.
+- **Muerte pre-escrita:** si la purga no rebota neto de costos en 48h, el overshoot
+  intra-evento no es cosechable a 4h y la familia muere — el mapa direccional queda
+  COMPLETO y cerrado con ~129 trials y $0.
 
 **Actualización 2026-07-25: GitHub upstream TAMBIÉN privatizado** (404 en codeload/api;
 clone anónimo pide credenciales; grep.app sin forks; Software Heritage sin el origen).
