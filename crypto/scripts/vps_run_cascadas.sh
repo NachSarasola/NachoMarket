@@ -53,13 +53,20 @@ done
 echo "== 2/3 Eventos de purga (spec congelada: oi_drop 3%, vol_z 2) =="
 python crypto/scripts/make_cascade_events.py --data-dir "$CAS" \
     --symbols "$(echo "$UNIVERSE" | tr ' ' ',')" --oi-drop 3.0 --vol-z 2.0 \
-    --out "$CAS/events.csv" 2>&1 | tee -a "$LOG" | tail -12
+    --out "$CAS/events.csv" 2>&1 | tee -a "$LOG" | tail -12 || true
 
 echo "== 3/3 Event study H9 (--deflated-sharpe 132) =="
-python crypto/scripts/event_validate.py --strategy h9_cascade \
-    --events "$CAS/events.csv" --data-dir "$CAS" --funding-dir "$CAS" \
-    --is-end 2024-12-31 --deflated-sharpe 132 --out "$OUT/rep_h9_cascade.json" \
-    --trades-out "$OUT/journal_h9_cascade.csv" | tee "$OUT/veredicto_h9.txt" || true
+if [ -s "$CAS/events.csv" ]; then
+    python crypto/scripts/event_validate.py --strategy h9_cascade \
+        --events "$CAS/events.csv" --data-dir "$CAS" --funding-dir "$CAS" \
+        --is-end 2024-12-31 --deflated-sharpe 132 --out "$OUT/rep_h9_cascade.json" \
+        --trades-out "$OUT/journal_h9_cascade.csv" | tee "$OUT/veredicto_h9.txt" || true
+else
+    { echo "❌ sin events.csv — diagnostico del origen de OI:"
+      curl -sS -o /dev/null -w "  daily BTCUSDT 2024-01-15 -> HTTP %{http_code}\n" \
+        "https://data.binance.vision/data/futures/um/daily/metrics/BTCUSDT/BTCUSDT-metrics-2024-01-15.zip"
+      echo "  y: tail -20 $LOG"; } | tee "$OUT/veredicto_h9.txt"
+fi
 
 TARBALL="$DATA/cascadas_$STAMP.tar.gz"
 tar czf "$TARBALL" -C "$DATA" "cascadas_$STAMP"

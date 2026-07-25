@@ -22,7 +22,8 @@ import time
 import zipfile
 from datetime import datetime, timezone
 
-BASE = "https://data.binance.vision/data/futures/um/monthly/metrics/{sym}/{sym}-metrics-{ym}.zip"
+MONTHLY = "https://data.binance.vision/data/futures/um/monthly/metrics/{sym}/{sym}-metrics-{ym}.zip"
+DAILY = "https://data.binance.vision/data/futures/um/daily/metrics/{sym}/{sym}-metrics-{ymd}.zip"
 
 
 def month_range(since_ym: str) -> list[str]:
@@ -36,6 +37,14 @@ def month_range(since_ym: str) -> list[str]:
         if m > 12:
             y, m = y + 1, 1
     return out
+
+
+def days_in_month(ym: str) -> list[str]:
+    """['2024-02-01', ..., '2024-02-29'] — días de calendario del mes."""
+    import calendar as _cal
+
+    y, m = (int(x) for x in ym.split("-"))
+    return [f"{y:04d}-{m:02d}-{d:02d}" for d in range(1, _cal.monthrange(y, m)[1] + 1)]
 
 
 def parse_metrics_csv(text: str) -> list[tuple[int, float]]:
@@ -55,18 +64,42 @@ def parse_metrics_csv(text: str) -> list[tuple[int, float]]:
     return rows
 
 
-def fetch_month(sym: str, ym: str) -> list[tuple[int, float]] | None:
-    """Baja y parsea un mes; None si el dump no existe (404)."""
-    import requests  # diferido
-
-    url = BASE.format(sym=sym, ym=ym)
-    r = requests.get(url, timeout=60)
+def _fetch_zip_rows(session, url: str) -> list[tuple[int, float]] | None:
+    """Baja un ZIP y parsea su CSV; None si no existe (404)."""
+    r = session.get(url, timeout=60)
     if r.status_code == 404:
         return None
     r.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         name = z.namelist()[0]
         return parse_metrics_csv(z.read(name).decode())
+
+
+def fetch_month(session, sym: str, ym: str) -> tuple[list[tuple[int, float]], int]:
+    """Un mes de metrics: intenta el ZIP mensual y cae a los ZIPs DIARIOS.
+
+    (Binance Vision publica 'metrics' principalmente como dumps diarios; el intento
+    mensual queda por si algún día existe.) Devuelve (filas, días_faltantes).
+    """
+    rows = _fetch_zip_rows(session, MONTHLY.format(sym=sym, ym=ym))
+    if rows is not None:
+        return rows, 0
+    out: list[tuple[int, float]] = []
+    missing_days = 0
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for ymd in days_in_month(ym):
+        if ymd >= today:
+            break
+        try:
+            day = _fetch_zip_rows(session, DAILY.format(sym=sym, ymd=ymd))
+        except Exception:  # noqa: BLE001 — día puntual ilegible: contar y seguir
+            day = None
+        if day is None:
+            missing_days += 1
+        else:
+            out.extend(day)
+        time.sleep(0.08)
+    return out, missing_days
 
 
 def main() -> int:
@@ -76,22 +109,24 @@ def main() -> int:
     p.add_argument("--out", required=True)
     args = p.parse_args()
 
+    import requests  # diferido
+
+    session = requests.Session()
+    session.headers["User-Agent"] = "nacho-crypto/1.0"
     months = month_range(args.since)
     all_rows: list[tuple[int, float]] = []
     missing = 0
     for ym in months:
         try:
-            rows = fetch_month(args.symbol, ym)
+            rows, missing_days = fetch_month(session, args.symbol, ym)
         except Exception as e:  # noqa: BLE001
             print(f"  ⚠️ {ym}: {e}", file=sys.stderr)
             missing += 1
             continue
-        if rows is None:
-            missing += 1
-            continue
+        missing += missing_days
         all_rows.extend(rows)
-        print(f"  {ym}: {len(rows)} obs ({len(all_rows)} total)", file=sys.stderr)
-        time.sleep(0.3)
+        print(f"  {ym}: {len(rows)} obs ({len(all_rows)} total; "
+              f"dias sin dump: {missing_days})", file=sys.stderr)
 
     seen: set[int] = set()
     dedup = []
@@ -108,7 +143,7 @@ def main() -> int:
         w.writerow(["timestamp", "open_interest"])
         for ts, oi in dedup:
             w.writerow([ts, oi])
-    print(f"OK: {len(dedup)} obs 5m -> {args.out} (meses sin dump: {missing})", file=sys.stderr)
+    print(f"OK: {len(dedup)} obs 5m -> {args.out} (dumps faltantes: {missing})", file=sys.stderr)
     return 0
 
 

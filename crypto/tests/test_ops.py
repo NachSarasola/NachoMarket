@@ -93,6 +93,8 @@ def test_fetch_metrics_parser_and_month_range() -> None:
     assert rows[0][0] == int(datetime(2024, 1, 1, 0, 5, tzinfo=timezone.utc).timestamp() * 1000)
     months = fm.month_range("2021-12")
     assert months[0] == "2021-12" and "2022-01" in months and len(months) > 30
+    feb = fm.days_in_month("2024-02")
+    assert len(feb) == 29 and feb[0] == "2024-02-01" and feb[-1] == "2024-02-29"
 
 
 # --------------------------- carry monitor --------------------------- #
