@@ -494,7 +494,42 @@ def adapter_events_to_rows(parsed: dict, symbol: str) -> list[dict]:
     return rows
 
 
-GECKO_LIST = "https://api.coingecko.com/api/v3/coins/list"
+GECKO_BASE = "https://api.coingecko.com/api/v3"
+GECKO_LIST = GECKO_BASE + "/coins/list"
+
+
+def _cg_get(path_or_url: str, cache_path: str = "", max_retries: int = 4):
+    """GET a CoinGecko con demo key opcional, backoff en 429 y cache en disco."""
+    if cache_path and os.path.exists(cache_path):
+        with open(cache_path) as f:
+            return json.load(f)
+    import requests  # diferido
+
+    url = path_or_url if path_or_url.startswith("http") else GECKO_BASE + path_or_url
+    headers = dict(UA)
+    key = os.environ.get("COINGECKO_API_KEY", "")
+    if key:
+        headers["x-cg-demo-api-key"] = key
+    for attempt in range(max_retries):
+        r = requests.get(url, timeout=60, headers=headers)
+        if r.status_code == 429:
+            wait = int(r.headers.get("Retry-After", "65") or 65)
+            print(f"  (rate limit CoinGecko: espero {wait}s)", file=sys.stderr)
+            time.sleep(min(wait, 120))
+            continue
+        r.raise_for_status()
+        data = r.json()
+        if cache_path:
+            os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+            with open(cache_path, "w") as f:
+                json.dump(data, f)
+        return data
+    raise RuntimeError(f"CoinGecko agoto reintentos: {url}")
+
+
+def load_gecko_list(cache_dir: str) -> list[dict]:
+    """coins/list crudo (id, symbol, name), cacheado."""
+    return _cg_get("/coins/list", os.path.join(cache_dir, "gecko_list.json"))
 
 
 def load_gecko_symbol_map(cache_path: str) -> dict[str, str]:
@@ -502,20 +537,152 @@ def load_gecko_symbol_map(cache_path: str) -> dict[str, str]:
     if cache_path and os.path.exists(cache_path):
         with open(cache_path) as f:
             return json.load(f)
-    import requests  # diferido
-
-    headers = dict(UA)
-    key = os.environ.get("COINGECKO_API_KEY", "")
-    if key:
-        headers["x-cg-demo-api-key"] = key
-    r = requests.get(GECKO_LIST, timeout=60, headers=headers)
-    r.raise_for_status()
-    out = {c["id"]: str(c.get("symbol", "")).upper() for c in r.json() if c.get("id")}
+    data = _cg_get("/coins/list")
+    out = {c["id"]: str(c.get("symbol", "")).upper() for c in data if c.get("id")}
     if cache_path:
         os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
         with open(cache_path, "w") as f:
             json.dump(out, f)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Fuente PLAN C: reconstrucción de cliffs por SALTOS de supply circulante
+# --------------------------------------------------------------------------- #
+# circulante_t = market_cap_t / price_t (diario, CoinGecko). Un cliff contractual aparece
+# como salto discreto y PERSISTENTE del circulante. Supuestos PRE-REGISTRADOS (REGLAS):
+# (1) conocibilidad ex-ante: los cliffs de vesting son contractuales y públicos desde el
+#     TGE → un salto realizado era conocible antes (válido para cliffs; los mints no
+#     programados generan falsos eventos que DILUYEN el efecto → conservador);
+# (2) timestamp = punto medio entre las dos muestras diarias (blur ±12h);
+# (3) filtros de MEDICIÓN congelados: persistencia 0.7, ruido 0.2, separación 5 días.
+
+STEP_PERSIST_FRAC = 0.7
+STEP_NOISE_FRAC = 0.2
+STEP_MIN_SEP_DAYS = 5
+
+
+def circ_series(prices: list[list[float]], mcaps: list[list[float]]) -> list[tuple[int, float]]:
+    """Alinea prices y market_caps de market_chart por timestamp -> [(ms, circulante)]."""
+    pm = {int(t): float(p) for t, p in prices if p and float(p) > 0}
+    out: list[tuple[int, float]] = []
+    for t, m in mcaps:
+        t = int(t)
+        p = pm.get(t)
+        if p and m and float(m) > 0:
+            out.append((t, float(m) / p))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def detect_supply_steps(series: list[tuple[int, float]], min_pct: float) -> list[dict]:
+    """Saltos discretos y persistentes del circulante (proxy de cliff). Puro y testeado.
+
+    Devuelve [{'ts_ms' (punto medio), 'step_pct'}]. Filtros congelados arriba.
+    """
+    n = len(series)
+    events: list[dict] = []
+    for i in range(1, n):
+        t1, c1 = series[i]
+        t0, c0 = series[i - 1]
+        if c0 <= 0:
+            continue
+        step = c1 / c0 - 1.0
+        if step < min_pct / 100.0:
+            continue
+        prev = [abs(series[j][1] / series[j - 1][1] - 1.0)
+                for j in range(max(1, i - 15), i) if series[j - 1][1] > 0]
+        if prev and sorted(prev)[len(prev) // 2] > step * STEP_NOISE_FRAC:
+            continue  # serie ruidosa: el "salto" no se distingue del ruido de mcap/price
+        nxt = [series[j][1] for j in range(i, min(n, i + 3))]
+        if not nxt or sorted(nxt)[len(nxt) // 2] < c0 * (1 + STEP_PERSIST_FRAC * step):
+            continue  # no persiste: glitch de datos, no un unlock
+        events.append({"ts_ms": (t0 + t1) // 2, "step_pct": round(step * 100.0, 4)})
+    events.sort(key=lambda e: e["ts_ms"])
+    out: list[dict] = []
+    for e in events:
+        if out and e["ts_ms"] - out[-1]["ts_ms"] < STEP_MIN_SEP_DAYS * 86_400_000:
+            if e["step_pct"] > out[-1]["step_pct"]:
+                out[-1] = e
+        else:
+            out.append(e)
+    return out
+
+
+def gecko_candidates(bases: set[str], gecko_list: list[dict]) -> dict[str, list[str]]:
+    """SYMBOL base ('APT') -> ids candidatos de CoinGecko (colisiones incluidas)."""
+    by_sym: dict[str, list[str]] = {}
+    for c in gecko_list:
+        sym = str(c.get("symbol", "")).upper()
+        if sym in bases and c.get("id"):
+            by_sym.setdefault(sym, []).append(c["id"])
+    return by_sym
+
+
+def pick_ids_by_mcap(cands: dict[str, list[str]], markets: list[dict]) -> dict[str, str]:
+    """Desambigua colisiones de ticker: gana el id con mayor market cap."""
+    mcap = {m.get("id"): (m.get("market_cap") or 0) for m in markets if m.get("id")}
+    out: dict[str, str] = {}
+    for sym, ids in cands.items():
+        best = max(ids, key=lambda i: mcap.get(i, 0))
+        if mcap.get(best, 0) > 0:
+            out[sym] = best
+    return out
+
+
+def source_supply_step(perps: set[str], min_pct: float, cache_dir: str,
+                       since_ms: int = 1672531200000) -> tuple[list[dict], dict]:
+    """Plan C completo: perps -> ids CoinGecko -> series de circulante -> saltos."""
+    bases = {p[: -len("USDT")] for p in perps if p.endswith("USDT")}
+    glist = load_gecko_list(cache_dir)
+    cands = gecko_candidates(bases, glist)
+    all_ids = sorted({i for ids in cands.values() for i in ids})
+    print(f"supply-step: {len(bases)} bases, {len(cands)} con id CoinGecko "
+          f"({len(all_ids)} candidatos)", file=sys.stderr)
+
+    markets: list[dict] = []
+    for k in range(0, len(all_ids), 200):
+        chunk = all_ids[k: k + 200]
+        markets += _cg_get(
+            "/coins/markets?vs_currency=usd&per_page=200&ids=" + ",".join(chunk),
+            os.path.join(cache_dir, f"markets_{k}.json"))
+        time.sleep(2.2 if os.environ.get("COINGECKO_API_KEY") else 12.0)
+    chosen = pick_ids_by_mcap(cands, markets)
+    print(f"supply-step: {len(chosen)} tokens desambiguados por mcap", file=sys.stderr)
+
+    rows: list[dict] = []
+    stats = {"tokens": len(chosen), "con_serie": 0, "eventos": 0, "errores": 0}
+    charts_dir = os.path.join(cache_dir, "charts")
+    for j, (base, cid) in enumerate(sorted(chosen.items())):
+        try:
+            data = _cg_get(f"/coins/{cid}/market_chart?vs_currency=usd&days=max&interval=daily",
+                           os.path.join(charts_dir, f"{cid}.json"))
+            series = circ_series(data.get("prices") or [], data.get("market_caps") or [])
+        except Exception:  # noqa: BLE001
+            stats["errores"] += 1
+            continue
+        if len(series) < 30:
+            continue
+        stats["con_serie"] += 1
+        for ev in detect_supply_steps(series, min_pct):
+            if ev["ts_ms"] < since_ms:
+                continue
+            rows.append({
+                "protocol": cid,
+                "symbol": base + "USDT",
+                "timestamp": ev["ts_ms"],
+                "tokens": "",
+                "pct_supply": ev["step_pct"],
+                "pct_basis": "circ_supply_step",
+                "category": "supply_step",
+            })
+            stats["eventos"] += 1
+        if j % 25 == 0:
+            print(f"  {j}/{len(chosen)} tokens ({stats['eventos']} eventos)...",
+                  file=sys.stderr)
+        time.sleep(2.2 if os.environ.get("COINGECKO_API_KEY") else 12.0)
+    rows.sort(key=lambda r: r["timestamp"])
+    return rows, stats
 
 
 def source_adapters(adapters_dir: str, perps: set[str], min_pct: float,
@@ -660,7 +827,8 @@ def main() -> int:
     p.add_argument("--min-pct", type=float, default=1.0,
                    help="pre-filtro de % supply (1.0 cubre la variante; el gate congelado usa 2.0)")
     p.add_argument("--limit", type=int, default=0, help="máx protocolos (0 = todos)")
-    p.add_argument("--source", choices=["auto", "adapters", "llama-site", "llama-api"],
+    p.add_argument("--source",
+                   choices=["auto", "adapters", "supply-step", "llama-site", "llama-api"],
                    default="auto")
     p.add_argument("--adapters-dir", default="crypto/data/events/emissions-adapters",
                    help="clone local de github.com/DefiLlama/emissions-adapters")
@@ -694,6 +862,20 @@ def main() -> int:
         print("Descargando exchangeInfo de fapi...", file=sys.stderr)
         perps = perp_symbols_from_info(_get_json(FAPI_INFO))
     print(f"Perps USDT activos: {len(perps)}", file=sys.stderr)
+
+    # --- PLAN C: reconstrucción por saltos de supply circulante (CoinGecko) ---
+    if args.source == "supply-step":
+        rows, stats = source_supply_step(perps, args.min_pct, args.cache_dir)
+        print(f"Fuente: supply-step ({stats})", file=sys.stderr)
+        if not rows:
+            print("❌ supply-step: 0 eventos (¿CoinGecko accesible? ¿key?)", file=sys.stderr)
+            return 1
+        _write_rows(args.out, rows)
+        print(f"OK (supply-step): {len(rows)} eventos (salto >= {args.min_pct}% del "
+              f"circulante, con perp) -> {args.out}", file=sys.stderr)
+        print("   Supuestos pre-registrados: conocibilidad ex-ante (cliffs contractuales), "
+              "timestamp = punto medio ±12h, filtros de medición congelados.", file=sys.stderr)
+        return 0
 
     # --- Fuente 1: clone del repo emissions-adapters (fuente de verdad, sin scraping) ---
     if args.source in ("auto", "adapters"):

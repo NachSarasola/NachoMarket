@@ -48,16 +48,29 @@ if [ ! -f "$EV/unlocks.csv" ]; then
         # Heritage), sin credenciales. Si SWH esta "cocinando", reintentar en unos min.
         bash "$SCRIPT_DIR/vps_get_adapters.sh" || echo "  ⚠️ instalador de adapters fallo (rc=$?)"
     fi
-    if python crypto/scripts/fetch_unlocks.py --source adapters --adapters-dir "$ADP" \
-        --perps-json "$EV/perps.json" --min-pct 1.0 --out "$EV/unlocks.csv" \
-        2>&1 | tee -a "$LOG" | tail -5 && [ -s "$EV/unlocks.csv" ]; then
+    if [ -d "$ADP/protocols" ]; then
+        python crypto/scripts/fetch_unlocks.py --source adapters --adapters-dir "$ADP" \
+            --perps-json "$EV/perps.json" --min-pct 1.0 --out "$EV/unlocks.csv" \
+            2>&1 | tee -a "$LOG" | tail -5 || true
+        if [ ! -s "$EV/unlocks.csv" ]; then
+            echo "  ⚠️ 0 eventos del parser — muestras para ajustarlo:"
+            ls "$ADP/protocols" 2>/dev/null | head -15
+            for f in aptos arbitrum celestia; do
+                [ -f "$ADP/protocols/$f.ts" ] && { echo "----- $f.ts"; sed -n '1,60p' "$ADP/protocols/$f.ts"; break; }
+            done
+        fi
+    fi
+    if [ ! -s "$EV/unlocks.csv" ]; then
+        echo "  == PLAN C: reconstruccion por saltos de supply circulante (CoinGecko) =="
+        echo "     (con COINGECKO_API_KEY demo gratis ~25 min; sin key ~2h por rate limit)"
+        python crypto/scripts/fetch_unlocks.py --source supply-step \
+            --perps-json "$EV/perps.json" --min-pct 1.0 --out "$EV/unlocks.csv" \
+            2>&1 | tee -a "$LOG" | tail -6 || true
+    fi
+    if [ -s "$EV/unlocks.csv" ]; then
         echo "  ✅ unlocks.csv ($(($(wc -l < "$EV/unlocks.csv") - 1)) eventos)"
     else
-        echo "  ⚠️ 0 eventos del parser — pegar estas muestras para ajustarlo:"
-        ls "$ADP/protocols" 2>/dev/null | head -15
-        for f in aptos arbitrum celestia; do
-            [ -f "$ADP/protocols/$f.ts" ] && { echo "----- $f.ts"; sed -n '1,60p' "$ADP/protocols/$f.ts"; break; }
-        done
+        echo "  ❌ sin unlocks.csv por ninguna via (ver $LOG)"
     fi
 else echo "  (cache) $EV/unlocks.csv"; fi
 

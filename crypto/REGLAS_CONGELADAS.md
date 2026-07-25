@@ -293,6 +293,22 @@ parseables → `pct_basis=sum_parcial`. Mapeo gecko_id→ticker vía CoinGecko c
 quedan como fallback en cascada. El resto del pipeline (klines/funding de 202 perps) ya
 quedó cacheado en el VPS.
 
+**Actualización 2026-07-25: GitHub upstream TAMBIÉN privatizado** (404 en codeload/api;
+clone anónimo pide credenciales; grep.app sin forks; Software Heritage sin el origen).
+DeFiLlama cerró calendario por las 3 vías — señal de que el dato VALE. **PLAN C activado y
+PRE-REGISTRADO antes de ver resultado alguno** (`fetch_unlocks.py --source supply-step`):
+reconstrucción de cliffs desde saltos del supply circulante (circulante = mcap/precio
+diario, CoinGecko gratis). Supuestos congelados: (1) conocibilidad ex-ante — los cliffs de
+vesting son contractuales y públicos desde el TGE, por lo que un salto realizado era
+anticipable; los mints NO programados que se cuelen generan eventos falsos que DILUYEN el
+efecto medido → sesgo conservador; (2) timestamp del evento = punto medio entre muestras
+diarias (blur ±12h, mismas ventanas congeladas); (3) filtros de MEDICIÓN congelados (no son
+parámetros de trading): persistencia 0.7, ruido 0.2, separación 5 días; (4) pct_basis =
+salto % del CIRCULANTE (base más fiel que max_supply). El instalador de adapters
+(`vps_get_adapters.sh`: forks vía búsqueda oficial de GitHub + Software Heritage) queda
+como vía A si alguna reaparece; UNA sola fuente alimenta el run que se registre (sin dobles
+miradas al OOS).
+
 ## RESULTADO GATE 1 — 2026-07-24 — VEREDICTO: NO_OPERAR ❌
 
 Corrido en el VPS con datos reales (Binance, 4h, 2019→2026), costos 10+5 bps/lado.

@@ -39,6 +39,45 @@ try_repo() {  # $1 = owner/repo
     return 1
 }
 
+echo "== 0) Buscando forks/mirrors con el buscador oficial de GitHub (anónimo) =="
+GH_CANDS=$(python3 - <<'PY'
+import json
+import urllib.parse
+import urllib.request
+
+found: list[str] = []
+for q in ("emissions-adapters in:name fork:true",
+          "emissions-adapters defillama fork:true",
+          "emissions adapters unlocks in:name,description fork:true"):
+    url = ("https://api.github.com/search/repositories?per_page=30&sort=updated&q="
+           + urllib.parse.quote(q))
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "nacho-crypto/1.0", "Accept": "application/vnd.github+json"})
+        data = json.load(urllib.request.urlopen(req, timeout=30))
+    except Exception:
+        continue
+    for it in data.get("items", []):
+        fn = it.get("full_name", "")
+        br = it.get("default_branch", "master")
+        if fn and "emissions" in fn.lower():
+            pair = f"{fn}@{br}"
+            if pair not in found:
+                found.append(pair)
+print(" ".join(found[:15]))
+PY
+)
+echo "  candidatos github: ${GH_CANDS:-ninguno}"
+for RB in $GH_CANDS; do
+    R="${RB%@*}"; B="${RB#*@}"
+    code=$(curl -sSL --max-time 180 -o /tmp/ea.tgz -w '%{http_code}' \
+        "https://codeload.github.com/$R/tar.gz/refs/heads/$B" 2>/dev/null)
+    echo "    $R @$B -> HTTP $code"
+    if [ "$code" = "200" ] && install_tgz /tmp/ea.tgz; then
+        echo "✅ instalado desde fork: $R"; exit 0
+    fi
+done
+
 echo "== 1) Buscando forks públicos del repo (grep.app) =="
 CANDS=$(python3 - <<'PY'
 import json
@@ -97,10 +136,26 @@ def post(u):
         return json.loads(r.read().decode())
 
 
+visits = None
 try:
     visits = get(f"{BASE}/origin/{ORIGIN}/visits/")
 except Exception as e:  # noqa: BLE001
-    print(f"SWH: origen no consultable: {e}")
+    print(f"SWH: origen directo no consultable ({e}); busco por nombre...")
+    try:
+        hits = get(f"{BASE}/origin/search/emissions-adapters/?limit=20")
+        for h in hits:
+            u = h.get("url", "")
+            if "emissions-adapters" in u:
+                print("  origen archivado:", u)
+                try:
+                    visits = get(f"{BASE}/origin/{u}/visits/")
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception as e2:  # noqa: BLE001
+        print(f"SWH: búsqueda por nombre falló: {e2}")
+if not visits:
+    print("SWH: sin origen archivado")
     sys.exit(1)
 snap = next((v["snapshot"] for v in visits
              if v.get("status") == "full" and v.get("snapshot")), None)

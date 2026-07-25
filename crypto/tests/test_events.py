@@ -410,6 +410,59 @@ def test_listings_filters_leveraged_and_stables_keep_jup() -> None:
     assert got == {"JUP"}
 
 
+def _daily(vals: list[float], t0: int = 1_700_000_000_000) -> list[tuple[int, float]]:
+    return [(t0 + i * 86_400_000, v) for i, v in enumerate(vals)]
+
+
+def test_supply_step_detects_persistent_cliff() -> None:
+    fu = _load_script("fetch_unlocks")
+    series = _daily([100.0] * 20 + [103.0] * 10)  # +3% que persiste
+    evs = fu.detect_supply_steps(series, min_pct=1.0)
+    assert len(evs) == 1 and np.isclose(evs[0]["step_pct"], 3.0)
+    # timestamp = punto medio entre las dos muestras diarias
+    assert evs[0]["ts_ms"] == series[19][0] + 43_200_000
+
+
+def test_supply_step_rejects_glitch_that_reverts() -> None:
+    fu = _load_script("fetch_unlocks")
+    series = _daily([100.0] * 20 + [103.0] + [100.0] * 9)  # salto que revierte = glitch
+    assert fu.detect_supply_steps(series, min_pct=1.0) == []
+
+
+def test_supply_step_rejects_noisy_series() -> None:
+    fu = _load_script("fetch_unlocks")
+    rng = np.random.default_rng(0)
+    vals = list(100 * np.cumprod(1 + rng.normal(0, 0.02, 40)))  # mcap/price ruidoso 2%/d
+    evs = fu.detect_supply_steps(_daily(vals), min_pct=1.0)
+    assert evs == []  # nada distinguible del ruido
+
+
+def test_supply_step_min_separation_keeps_largest() -> None:
+    fu = _load_script("fetch_unlocks")
+    series = _daily([100.0] * 10 + [102.0] * 2 + [107.0] * 10)  # dos saltos a 2 dias
+    evs = fu.detect_supply_steps(series, min_pct=1.0)
+    assert len(evs) == 1 and evs[0]["step_pct"] > 4.0  # queda el mayor (~4.9%)
+
+
+def test_circ_series_and_mcap_disambiguation() -> None:
+    fu = _load_script("fetch_unlocks")
+    prices = [[1000, 2.0], [2000, 4.0], [3000, 0.0]]
+    mcaps = [[1000, 200.0], [2000, 400.0], [3000, 999.0], [4000, 50.0]]
+    s = fu.circ_series(prices, mcaps)
+    assert s == [(1000, 100.0), (2000, 100.0)]  # alinea y descarta price<=0 / ts sin par
+    cands = {"APT": ["aptos", "fake-apt"]}
+    markets = [{"id": "aptos", "market_cap": 5e9}, {"id": "fake-apt", "market_cap": 1e3}]
+    assert fu.pick_ids_by_mcap(cands, markets) == {"APT": "aptos"}
+
+
+def test_gecko_candidates_matches_perp_bases() -> None:
+    fu = _load_script("fetch_unlocks")
+    glist = [{"id": "aptos", "symbol": "apt"}, {"id": "x", "symbol": "zzz"},
+             {"id": "apt-clone", "symbol": "APT"}]
+    out = fu.gecko_candidates({"APT"}, glist)
+    assert out == {"APT": ["aptos", "apt-clone"]}
+
+
 def test_perp_onboard_map() -> None:
     fl = _load_script("fetch_listings")
     info = {"symbols": [
