@@ -44,26 +44,9 @@ echo "== 2/4 Calendario historico de unlocks (repo open-source emissions-adapter
 ADP="$EV/emissions-adapters"
 if [ ! -f "$EV/unlocks.csv" ]; then
     if [ ! -d "$ADP/protocols" ]; then
-        # Tarball sin git: evita el prompt de password que inyecta la config global
-        # (url NachSarasola@github.com) — un repo publico no necesita credenciales.
-        echo "  bajando emissions-adapters (tarball, sin credenciales)..."
-        for U in \
-            "https://codeload.github.com/DefiLlama/emissions-adapters/tar.gz/refs/heads/master" \
-            "https://codeload.github.com/DefiLlama/emissions-adapters/tar.gz/refs/heads/main" \
-            "https://api.github.com/repos/DefiLlama/emissions-adapters/tarball"; do
-            echo "  intento: $U (HTTP $(curl -sSL --max-time 180 -o /tmp/ea.tgz -w '%{http_code}' "$U" 2>>"$LOG"))"
-            if tar tzf /tmp/ea.tgz >/dev/null 2>&1; then
-                rm -rf "$EV/ea_x" "$ADP" && mkdir -p "$EV/ea_x" \
-                    && tar xzf /tmp/ea.tgz -C "$EV/ea_x" \
-                    && mv "$EV/ea_x"/* "$ADP" && rmdir "$EV/ea_x" && break
-            else
-                head -c 200 /tmp/ea.tgz >>"$LOG" 2>/dev/null; echo >>"$LOG"
-            fi
-        done
-        [ -d "$ADP/protocols" ] || GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null \
-            GIT_CONFIG_SYSTEM=/dev/null git clone --depth 1 \
-            https://github.com/DefiLlama/emissions-adapters "$ADP" >>"$LOG" 2>&1 \
-            || echo "  ⚠️ descarga fallo (ver $LOG)"
+        # GitHub upstream privatizado (2026): instalador multi-via (forks / Software
+        # Heritage), sin credenciales. Si SWH esta "cocinando", reintentar en unos min.
+        bash "$SCRIPT_DIR/vps_get_adapters.sh" || echo "  ⚠️ instalador de adapters fallo (rc=$?)"
     fi
     if python crypto/scripts/fetch_unlocks.py --source adapters --adapters-dir "$ADP" \
         --perps-json "$EV/perps.json" --min-pct 1.0 --out "$EV/unlocks.csv" \
