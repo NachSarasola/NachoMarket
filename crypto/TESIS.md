@@ -14,12 +14,15 @@ Cada cambio de reglas se anota en `REGLAS_CONGELADAS.md` y cuenta como trial (De
 > nuevas **H7 short-unlocks (MEDIO-ALTO)** y **H8 listing-fade (MEDIO)**. Con el mandato
 > del usuario "invierte mi tesis: no importa el winrate sino el PnL" (2026-07-24), H7/H8
 > quedaron CONGELADAS e implementadas (event-study propio: `crypto/smc/events.py` +
-> `event_validate.py` + fetchers + 23 tests; el winrate se reporta pero no participa de
-> ningún gate). **H8 ya corrió con 178 listings reales: NO_OPERAR** (el perfil invertido
-> apareció — WR 21%, ganadores enormes — pero sin significancia: 82.6% muere en el stop 4%
-> y el OOS es negativo; sexta familia registrada en RIP). **H7 (unlocks) pendiente** del
-> fix del parser de DeFiLlama; datos de 202 perps ya cacheados en el VPS. Capital intacto:
-> $0 perdidos en ~126 trials. La máquina de validación es el activo.
+> `event_validate.py` + fetchers + tests; el winrate se reporta pero no participa de
+> ningún gate). **BRAZO EVENT-DRIVEN CERRADO 2026-07-25: H8 NO_OPERAR** (178 listings; el
+> bruto existía pero la ejecución con stop 4% lo destruye — 83% stopped-out, OOS negativo)
+> **y H7 NO_OPERAR** (57 unlocks ejecutables, fuente supply-step tras el cierre total de
+> DeFiLlama; expectancy CERO en la ventana de 72h: el efecto documentado vive en drift de
+> ±30 días, inoperable a nuestro tamaño). Séptima familia falsada, variantes sin gastar,
+> ~127 trials, **$0 perdidos**. Quedan en pie: acumular capital hacia carry ($5k+, decisión
+> 2), cosecha de incentivos con caps duros (B6, paralelo no-backtest), y la máquina de
+> validación + review trimestral como activo permanente.
 
 ## La tesis en 5 puntos
 

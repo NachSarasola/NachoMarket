@@ -202,7 +202,7 @@ H7 → H8 → (recién después, si algo pasa) H3b. Trials: correr con `--deflat
 | **H4** | **Short side en régimen `dn_*`** (donchian/sweep espejo; investigación con `direction='both'`; live solo etapa perps) | MEDIO-BAJO | ya los tenemos | tras H1/H2 |
 | **H5** | Estructuras BOS/CHoCH multi-TF (1h piso, maker-only, con filtro de régimen) | BAJO | ya + 1h fetch | cola |
 | **H6** | Armónicos (Gartley/Bat, ratios FIJOS de la tabla del ebook, tolerancia única) | MUY BAJO | ya los tenemos | cola, opcional |
-| **H7** | **Short de unlocks tipo cliff** (event-driven; spec congelada arriba) | **MEDIO-ALTO** | calendario gratis + klines/funding perp | **CONGELADA ✅ — pendiente fix parser DeFiLlama** (klines/funding ya cacheados en VPS) |
+| **H7** | **Short de unlocks tipo cliff** (event-driven; spec congelada arriba) | ~~MEDIO-ALTO~~ | supply-step (plan C) | **RIP 2026-07-25 (NO_OPERAR, hard fail)** — ver RIP |
 | **H8** | **Listing fade Binance** (event-driven; spec congelada arriba) | ~~MEDIO~~ | gratis | **RIP 2026-07-24 (NO_OPERAR, hard fail)** — ver RIP |
 
 **Reglas del programa** (innegociables):
@@ -242,6 +242,12 @@ H7 → H8 → (recién después, si algo pasa) H3b. Trials: correr con `--deflat
   (ratios -0.35/-0.55, DSR 0.29/0.05). Lección: ni el posicionamiento escapa al quiebre de
   régimen; 37-48 trades tampoco dan poder. QUINTA familia con la misma firma → el hallazgo
   es el régimen, no las estrategias. Ver CHECKPOINT en REGLAS_CONGELADAS.
+- **H7 short unlocks cliff (T−48h→T+24h, stop 4%, fuente supply-step)** — 2026-07-25,
+  NO_OPERAR con 57 eventos ejecutables: IS expectancy +0.0000 (p=0.53, DSR 0.004), OOS
+  +0.0009. Lección: el efecto documentado de unlocks (~90% negativo) vive en horizontes de
+  ±30 DÍAS (drift lento), no en una ventana ejecutable de 72h alrededor del evento — que
+  era la única compatible con nuestros caps. A diferencia de H8, acá NO hubo bruto que la
+  ejecución matara: la ventana estaba vacía. Séptima familia; variante sin gastar; $0.
 - **H8 listing fade (short T+24h→T+168h, stop 4%)** — 2026-07-24, NO_OPERAR con 178 eventos
   reales 2023-2026: IS expectancy +1.5% pero p=0.17 y DSR 0.06; OOS (n=116) expectancy
   −0.2%. La autopsia importa: **el 82.6% de los trades murió por el stop de 4%** (mediana

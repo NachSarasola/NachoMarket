@@ -293,6 +293,42 @@ parseables → `pct_basis=sum_parcial`. Mapeo gecko_id→ticker vía CoinGecko c
 quedan como fallback en cascada. El resto del pipeline (klines/funding de 202 perps) ya
 quedó cacheado en el VPS.
 
+## RESULTADO H7 (short unlocks cliff) — 2026-07-25 — VEREDICTO: NO_OPERAR ❌
+
+Fuente de eventos: **plan C supply-step** (pre-registrada; salto ≥2% del circulante,
+CoinGecko): 457 eventos ≥1% → 150 tras el umbral congelado 2% → **57 ejecutables** (93 sin
+perp vivo al momento del evento — Binance listó el perp después). Costos 6+10 bps/lado +
+funding. `event_validate.py --strategy h7_unlock --deflated-sharpe 130`:
+
+| segmento | n | expectancy neta | mediana | WR (informativo) | p(media≤0) | DSR |
+|---|---|---|---|---|---|---|
+| IS 2023-2024 | 26 | **+0.0000** | −4.26% | 0.35 | 0.530 | 0.004 |
+| OOS 2025-2026 | 31 | **+0.0009** | −4.30% | 0.29 | 0.511 | 0.005 |
+
+Fallos HARD (IS sin efecto + DSR≈0) y SOFT (57<60 eventos). **Familia muerta; la variante
+pre-registrada (umbral 1%) NO se corre** — regla del programa: hard fail = sin ajuste, y
+con expectancy IS literalmente cero, agrandar la muestra con eventos más chicos es
+forking-paths puro. Trials: +1 → acumulado ~127 (seguir con `--deflated-sharpe 130`).
+
+**Autopsia — distinta a la de H8 y eso importa:**
+- En H8 el bruto EXISTÍA (+1.17%/evento) y lo mató la ejecución (83% stopped-out). En H7
+  el bruto es ~cero (+0.41% vs 0.32% de costos) en NUESTRA ventana T−48h→T+24h: el efecto
+  de la literatura (~90% negativo) vive en horizontes ±30 días (drift lento), NO en un
+  short ejecutable de 72h alrededor del evento. La ventana congelada no lo captura — y esa
+  ventana era la única compatible con nuestros caps de riesgo.
+- Stops 63% (cap 4% de nuevo mordiendo alts) pero NO fue lo decisivo acá: sin bruto no hay
+  nada que el stop pueda estar destruyendo.
+- Funding −0.04%/evento (menor de lo temido a 72h).
+- Caveats de la fuente (pre-registrados): blur ±12h del timestamp y eventos falsos que
+  diluyen. Con IS en cero exacto, ni el escenario más generoso con esos caveats sugiere un
+  edge ejecutable escondido.
+
+**Cierre del brazo event-driven**: H7 y H8 muertas bajo los caps del programa. Re-testear
+event-shorts exigiría (a) enmienda de la regla INQUEBRANTABLE del stop 4% (solo el usuario)
+y (b) una tesis de ventana distinta (drift ±30d ≠ evento 72h) = familia NUEVA con spec
+nueva y trial contado. No se recomienda: el drift a 30 días con shorts de alts es carry
+negativo + borrow + 30 días de riesgo de squeeze por 1-2% esperado.
+
 **Actualización 2026-07-25: GitHub upstream TAMBIÉN privatizado** (404 en codeload/api;
 clone anónimo pide credenciales; grep.app sin forks; Software Heritage sin el origen).
 DeFiLlama cerró calendario por las 3 vías — señal de que el dato VALE. **PLAN C activado y
