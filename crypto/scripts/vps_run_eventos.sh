@@ -44,9 +44,21 @@ echo "== 2/4 Calendario historico de unlocks (repo open-source emissions-adapter
 ADP="$EV/emissions-adapters"
 if [ ! -f "$EV/unlocks.csv" ]; then
     if [ ! -d "$ADP/protocols" ]; then
-        echo "  clonando emissions-adapters (fuente de verdad de DefiLlama)..."
-        git clone --depth 1 https://github.com/DefiLlama/emissions-adapters "$ADP" \
-            >>"$LOG" 2>&1 || echo "  ⚠️ clone fallo (ver $LOG)"
+        # Tarball sin git: evita el prompt de password que inyecta la config global
+        # (url NachSarasola@github.com) — un repo publico no necesita credenciales.
+        echo "  bajando emissions-adapters (tarball, sin credenciales)..."
+        for BR in master main; do
+            if curl -sSL --max-time 180 \
+                "https://codeload.github.com/DefiLlama/emissions-adapters/tar.gz/refs/heads/$BR" \
+                -o /tmp/ea.tgz 2>>"$LOG" && tar tzf /tmp/ea.tgz >/dev/null 2>&1; then
+                tar xzf /tmp/ea.tgz -C "$EV" && rm -rf "$ADP" \
+                    && mv "$EV/emissions-adapters-$BR" "$ADP" && break
+            fi
+        done
+        [ -d "$ADP/protocols" ] || GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_SYSTEM=/dev/null git clone --depth 1 \
+            https://github.com/DefiLlama/emissions-adapters "$ADP" >>"$LOG" 2>&1 \
+            || echo "  ⚠️ descarga fallo (ver $LOG)"
     fi
     if python crypto/scripts/fetch_unlocks.py --source adapters --adapters-dir "$ADP" \
         --perps-json "$EV/perps.json" --min-pct 1.0 --out "$EV/unlocks.csv" \
