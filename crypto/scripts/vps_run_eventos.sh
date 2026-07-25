@@ -47,12 +47,17 @@ if [ ! -f "$EV/unlocks.csv" ]; then
         # Tarball sin git: evita el prompt de password que inyecta la config global
         # (url NachSarasola@github.com) — un repo publico no necesita credenciales.
         echo "  bajando emissions-adapters (tarball, sin credenciales)..."
-        for BR in master main; do
-            if curl -sSL --max-time 180 \
-                "https://codeload.github.com/DefiLlama/emissions-adapters/tar.gz/refs/heads/$BR" \
-                -o /tmp/ea.tgz 2>>"$LOG" && tar tzf /tmp/ea.tgz >/dev/null 2>&1; then
-                tar xzf /tmp/ea.tgz -C "$EV" && rm -rf "$ADP" \
-                    && mv "$EV/emissions-adapters-$BR" "$ADP" && break
+        for U in \
+            "https://codeload.github.com/DefiLlama/emissions-adapters/tar.gz/refs/heads/master" \
+            "https://codeload.github.com/DefiLlama/emissions-adapters/tar.gz/refs/heads/main" \
+            "https://api.github.com/repos/DefiLlama/emissions-adapters/tarball"; do
+            echo "  intento: $U (HTTP $(curl -sSL --max-time 180 -o /tmp/ea.tgz -w '%{http_code}' "$U" 2>>"$LOG"))"
+            if tar tzf /tmp/ea.tgz >/dev/null 2>&1; then
+                rm -rf "$EV/ea_x" "$ADP" && mkdir -p "$EV/ea_x" \
+                    && tar xzf /tmp/ea.tgz -C "$EV/ea_x" \
+                    && mv "$EV/ea_x"/* "$ADP" && rmdir "$EV/ea_x" && break
+            else
+                head -c 200 /tmp/ea.tgz >>"$LOG" 2>/dev/null; echo >>"$LOG"
             fi
         done
         [ -d "$ADP/protocols" ] || GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null \
